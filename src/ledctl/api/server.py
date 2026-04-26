@@ -171,7 +171,7 @@ def create_app(
 
     # Default startup: a single `scroll` layer.
     # — orange/yellow/red palette, scrolling stage-right (positive x speed)
-    # — top row leads the bottom row by 0.15 cycles via cross_phase
+    # — top row leads the bottom row by 0.075 cycles via cross_phase
     # — brightness bound to audio RMS, swinging in [0.5, 1.0]. The audio
     #   source is auto-scaled by the rolling-window normalizer in capture,
     #   so the natural dynamic range of the room maps to the full [0, 1]
@@ -185,12 +185,13 @@ def create_app(
             "wavelength": 1.5,
             "shape": "cosine",
             "softness": 1.0,
-            "cross_phase": [0.0, 0.15, 0.0],
+            "cross_phase": [0.0, 0.075, 0.0],
             "palette": {
                 "stops": [
-                    {"pos": 0.0, "color": "#ff3000"},
-                    {"pos": 0.5, "color": "#ffaa00"},
-                    {"pos": 1.0, "color": "#ff5000"},
+                    {"pos": 0.0, "color": "#ff2000"},
+                    {"pos": 0.4, "color": "#ff8000"},
+                    {"pos": 0.7, "color": "#ffdd00"},
+                    {"pos": 1.0, "color": "#ffffff"},
                 ],
             },
             "bindings": {
