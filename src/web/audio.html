@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ledctl audio</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; min-height: 100%; background: #050505; color: #ddd;
+                  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    body { padding: 24px 28px; }
+    h1 { font-size: 14px; margin: 0 0 4px; color: #93c5fd; }
+    h2 { font-size: 12px; margin: 24px 0 8px; color: #fbbf24; }
+    .crumbs { font-size: 11px; color: #888; margin-bottom: 18px; }
+    .crumbs a { color: #93c5fd; }
+    .panel {
+      background: rgba(20, 20, 20, 0.6); border: 1px solid #222; border-radius: 6px;
+      padding: 14px 16px; margin-bottom: 14px; max-width: 720px;
+    }
+    .row { display: flex; align-items: center; gap: 10px; margin: 6px 0; font-size: 12px; }
+    .label { opacity: 0.6; min-width: 110px; }
+    select, button, input[type=text] {
+      background: #0a0a0a; color: #ddd; border: 1px solid #333; border-radius: 4px;
+      padding: 6px 8px; font-family: inherit; font-size: 12px;
+    }
+    select { min-width: 360px; }
+    button { cursor: pointer; }
+    button.primary { background: #15803d; border-color: #16a34a; color: #f0fdf4; }
+    button.primary:hover { background: #16a34a; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 10px; border: 1px solid #333; background: rgba(0,0,0,0.4);
+    }
+    .pill.ok  { color: #4ade80; border-color: #166534; background: rgba(20, 83, 45, 0.25); }
+    .pill.bad { color: #f87171; border-color: #7f1d1d; background: rgba(127, 29, 29, 0.25); }
+    .pill.dim { color: #888; }
+    .meter {
+      display: grid; grid-template-columns: 60px 1fr 60px; gap: 8px 12px;
+      align-items: center; font-size: 11px;
+    }
+    .meter-label { opacity: 0.7; }
+    .bar { position: relative; height: 14px; background: #111; border: 1px solid #222; border-radius: 3px; overflow: hidden; }
+    .fill { height: 100%; transition: width 60ms linear; }
+    .fill.rms  { background: linear-gradient(90deg, #22c55e, #facc15, #f87171); }
+    .fill.peak { background: #93c5fd; opacity: 0.7; }
+    .fill.low  { background: #ef4444; }
+    .fill.mid  { background: #facc15; }
+    .fill.high { background: #38bdf8; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; opacity: 0.8; }
+    .help { font-size: 11px; color: #888; line-height: 1.5; }
+    .help code { color: #ddd; background: #0a0a0a; padding: 1px 4px; border-radius: 3px; }
+    #msg { font-size: 11px; }
+    #msg.ok { color: #4ade80; }
+    #msg.bad { color: #f87171; }
+    #msg.warn { color: #fbbf24; }
+    .device-meta { font-size: 11px; color: #888; margin-left: 4px; }
+  </style>
+</head>
+<body>
+  <h1>ledctl · audio input</h1>
+  <div class="crumbs">
+    <a href="/">← live view</a> · <a href="/editor">/editor</a>
+  </div>
+
+  <div class="panel">
+    <h2 style="margin-top:0">device</h2>
+    <div class="row">
+      <span class="label">status</span>
+      <span id="status-pill" class="pill dim">loading…</span>
+      <span id="device-info" class="device-meta"></span>
+    </div>
+    <div class="row">
+      <span class="label">input source</span>
+      <select id="devices"><option value="">— loading —</option></select>
+      <button id="apply" class="primary" disabled>apply &amp; save</button>
+    </div>
+    <div class="row">
+      <span class="label">configured</span>
+      <code id="configured" class="device-meta">—</code>
+    </div>
+    <div class="row">
+      <span class="label"></span>
+      <span id="msg" class="help"></span>
+    </div>
+    <p class="help">
+      Pick the microphone or line-in feeding the install, then hit <b>apply &amp; save</b>.
+      The chosen device is written to <code>config.yaml</code> under <code>audio.device</code>
+      (by name, so it survives index reshuffles between reboots) and becomes the source
+      every effect reacts to.
+    </p>
+  </div>
+
+  <div class="panel">
+    <h2 style="margin-top:0">live levels</h2>
+    <div class="meter" id="meter">
+      <span class="meter-label">RMS</span>
+      <div class="bar"><div class="fill rms" id="bar-rms" style="width:0%"></div></div>
+      <span class="num" id="num-rms">0.000</span>
+
+      <span class="meter-label">peak</span>
+      <div class="bar"><div class="fill peak" id="bar-peak" style="width:0%"></div></div>
+      <span class="num" id="num-peak">0.000</span>
+
+      <span class="meter-label">low</span>
+      <div class="bar"><div class="fill low" id="bar-low" style="width:0%"></div></div>
+      <span class="num" id="num-low">0.000</span>
+
+      <span class="meter-label">mid</span>
+      <div class="bar"><div class="fill mid" id="bar-mid" style="width:0%"></div></div>
+      <span class="num" id="num-mid">0.000</span>
+
+      <span class="meter-label">high</span>
+      <div class="bar"><div class="fill high" id="bar-high" style="width:0%"></div></div>
+      <span class="num" id="num-high">0.000</span>
+    </div>
+    <p class="help" style="margin-top:14px">
+      Polled at ~20 fps. RMS is the smoothed loudness; <b>peak</b> uses a slow-decay hold
+      so transients stay visible. The three band rows are FFT-summed magnitudes for
+      low (20–250 Hz), mid (250 Hz–2 kHz), and high (2–12 kHz) ranges.
+    </p>
+  </div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const POLL_MS = 50; // ~20 fps
+  let devices = [];
+  let configuredDevice = null;
+
+  function setMsg(text, kind) {
+    const el = $("msg");
+    el.textContent = text || "";
+    el.className = "help" + (kind ? " " + kind : "");
+  }
+
+  async function loadDevices() {
+    const r = await fetch("/audio/devices");
+    const body = await r.json();
+    devices = body.devices || [];
+    renderDevices();
+  }
+
+  function renderDevices() {
+    const sel = $("devices");
+    sel.innerHTML = "";
+    if (!devices.length) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = "(no input devices found — sounddevice/PortAudio missing?)";
+      o.disabled = true;
+      sel.appendChild(o);
+      $("apply").disabled = true;
+      return;
+    }
+    // Default option = system default
+    const dflt = document.createElement("option");
+    dflt.value = "__default__";
+    dflt.textContent = "(system default)";
+    sel.appendChild(dflt);
+    for (const d of devices) {
+      const o = document.createElement("option");
+      o.value = d.name;
+      const tags = [];
+      if (d.is_default) tags.push("default");
+      tags.push(`${d.max_input_channels}ch`);
+      if (d.hostapi) tags.push(d.hostapi);
+      o.textContent = `[${d.index}] ${d.name}  · ${tags.join(" · ")}`;
+      sel.appendChild(o);
+    }
+    selectConfigured();
+    $("apply").disabled = false;
+  }
+
+  function selectConfigured() {
+    const sel = $("devices");
+    if (configuredDevice == null) {
+      sel.value = "__default__";
+      return;
+    }
+    if (typeof configuredDevice === "number") {
+      const dev = devices.find((d) => d.index === configuredDevice);
+      if (dev) { sel.value = dev.name; return; }
+    } else {
+      const target = String(configuredDevice).toLowerCase();
+      // Try exact then substring (mirrors server-side resolve_device).
+      let dev = devices.find((d) => d.name.toLowerCase() === target);
+      if (!dev) dev = devices.find((d) => d.name.toLowerCase().includes(target));
+      if (dev) { sel.value = dev.name; return; }
+    }
+    sel.value = "__default__";
+  }
+
+  async function pollState() {
+    try {
+      const r = await fetch("/audio/state");
+      const s = await r.json();
+      configuredDevice = s.configured_device !== undefined ? s.configured_device : configuredDevice;
+
+      const pill = $("status-pill");
+      if (s.enabled) {
+        pill.textContent = "capturing";
+        pill.className = "pill ok";
+      } else if (s.error) {
+        pill.textContent = "error";
+        pill.className = "pill bad";
+      } else {
+        pill.textContent = "idle";
+        pill.className = "pill dim";
+      }
+
+      const meta = [];
+      if (s.device) meta.push(s.device);
+      if (s.samplerate) meta.push(`${s.samplerate} Hz`);
+      if (s.blocksize) meta.push(`block ${s.blocksize}`);
+      if (s.error) meta.push("· " + s.error);
+      $("device-info").textContent = meta.join(" · ");
+
+      $("configured").textContent =
+        s.configured_device == null ? "(system default)" : String(s.configured_device);
+
+      const pct = (v) => Math.max(0, Math.min(100, v * 100)).toFixed(1) + "%";
+      const fmt = (v) => (v == null ? "—" : Number(v).toFixed(3));
+      $("bar-rms").style.width  = pct(s.rms);
+      $("bar-peak").style.width = pct(s.peak);
+      $("bar-low").style.width  = pct(s.low);
+      $("bar-mid").style.width  = pct(s.mid);
+      $("bar-high").style.width = pct(s.high);
+      $("num-rms").textContent  = fmt(s.rms);
+      $("num-peak").textContent = fmt(s.peak);
+      $("num-low").textContent  = fmt(s.low);
+      $("num-mid").textContent  = fmt(s.mid);
+      $("num-high").textContent = fmt(s.high);
+    } catch (e) {
+      // Network blip; keep polling.
+    }
+  }
+
+  $("apply").addEventListener("click", async () => {
+    const sel = $("devices");
+    const value = sel.value;
+    const device = value === "__default__" || value === "" ? null : value;
+    setMsg("applying…", "warn");
+    $("apply").disabled = true;
+    try {
+      const r = await fetch("/audio/select", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ device, persist: true }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setMsg("failed: " + (body.detail ? JSON.stringify(body.detail) : r.status), "bad");
+        return;
+      }
+      const where = body.saved_to ? ` (saved to ${body.saved_to})` : " (in-memory only)";
+      setMsg(`applied → ${body.device || "(default)"}` + where, "ok");
+      configuredDevice = body.configured_device;
+      selectConfigured();
+    } finally {
+      $("apply").disabled = false;
+    }
+  });
+
+  async function init() {
+    await loadDevices();
+    await pollState();
+    setInterval(pollState, POLL_MS);
+  }
+  init();
+})();
+</script>
+</body>
+</html>

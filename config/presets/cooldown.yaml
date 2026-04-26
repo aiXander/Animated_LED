@@ -1,0 +1,20 @@
+crossfade_seconds: 3.0
+layers:
+  - effect: scroll
+    blend: normal
+    opacity: 1.0
+    params:
+      axis: x
+      speed: 0.03
+      wavelength: 3.0
+      shape: cosine
+      softness: 1.0
+      cross_phase: [0.0, 0.08, 0.0]
+      palette: sunset
+      bindings:
+        brightness:
+          source: audio.rms
+          floor: 0.3
+          ceiling: 0.7
+          gain: 2.0
+          release_ms: 1200

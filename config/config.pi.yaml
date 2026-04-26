@@ -50,3 +50,14 @@ transport:
   mode: ddp
   sim:
     ws_path: /ws/frames
+
+audio:
+  enabled: true
+  # Set this to the INMP441 ALSA card name once Phase 8 wires it up
+  # (e.g. "snd_rpi_simple_card" or whatever `arecord -l` shows).
+  device: null
+  samplerate: 48000
+  blocksize: 512
+  channels: 1
+  gain: 1.0
+  smoothing: 0.4

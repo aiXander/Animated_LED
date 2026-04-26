@@ -11,14 +11,32 @@
     #hud {
       position: fixed; top: 12px; left: 12px; padding: 10px 14px;
       background: rgba(0,0,0,0.55); border: 1px solid #222; border-radius: 8px;
-      font-size: 12px; line-height: 1.5; pointer-events: none; user-select: none;
+      font-size: 12px; line-height: 1.5; user-select: none;
+      max-width: 360px;
     }
     #hud .row { display: flex; gap: 8px; }
-    #hud .k { opacity: 0.6; min-width: 84px; }
+    #hud .k { opacity: 0.6; min-width: 88px; }
+    #hud a { color: #93c5fd; }
     .ok  { color: #4ade80; }
     .bad { color: #f87171; }
+    .warn { color: #fbbf24; }
     .dim { color: #888; }
-    canvas { display: block; }
+    #cal-banner {
+      position: fixed; top: 12px; right: 12px; padding: 8px 12px;
+      background: rgba(127, 29, 29, 0.85); border: 1px solid #b91c1c; border-radius: 8px;
+      color: #fee2e2; font-size: 12px; display: none;
+    }
+    #cal-banner button {
+      margin-left: 10px; background: #b91c1c; color: #fee2e2; border: 0;
+      padding: 4px 8px; border-radius: 4px; font-family: inherit; cursor: pointer;
+    }
+    #tooltip {
+      position: fixed; pointer-events: none; padding: 6px 8px;
+      background: rgba(10, 10, 10, 0.92); border: 1px solid #333; border-radius: 6px;
+      font-size: 11px; line-height: 1.4; display: none; z-index: 10;
+    }
+    #tooltip .gid { color: #93c5fd; }
+    canvas { display: block; cursor: crosshair; }
   </style>
 </head>
 <body>
@@ -28,13 +46,31 @@
     <div class="row"><span class="k">frames</span><span id="frames">0</span></div>
     <div class="row"><span class="k">leds</span><span id="leds">0</span></div>
     <div class="row"><span class="k">bbox</span><span id="bbox" class="dim">—</span></div>
+    <div class="row"><span class="k">tip</span><span class="dim">click an LED to solo it • <a href="/editor">/editor</a> • <a href="/audio">/audio</a></span></div>
   </div>
+  <div id="cal-banner">
+    <span id="cal-text">calibration active</span>
+    <button id="cal-clear">clear</button>
+  </div>
+  <div id="tooltip"></div>
   <canvas id="canvas"></canvas>
 <script>
 (() => {
   const canvas = document.getElementById("canvas");
   const ctx = canvas.getContext("2d", { alpha: false });
+  const tooltip = document.getElementById("tooltip");
+  const calBanner = document.getElementById("cal-banner");
+  const calText = document.getElementById("cal-text");
+  const calClear = document.getElementById("cal-clear");
   const $ = (id) => document.getElementById(id);
+
+  // Each LED renders as a single fixed-size square. No per-LED glow / halo —
+  // the simulator should reflect color and luminance only, never bleed onto
+  // neighbouring pixels, so what you see in the browser matches what the
+  // strip will do. Tweak LED_SIZE to taste; ~half of it is the visible gap to
+  // the next LED at the default zoom.
+  const LED_SIZE = 6;
+  const LED_HALF = LED_SIZE / 2;
 
   let leds = [];
   let bboxMin = [0, 0, 0];
@@ -44,6 +80,14 @@
   let lastFpsT = performance.now();
   let framesSinceFpsTick = 0;
 
+  // Cached projected (x,y) per LED, recomputed on resize / topology reload.
+  let projected = null;
+  // Mouse state for hover lookup.
+  let mouseX = -1, mouseY = -1;
+  // Solo state we set ourselves; the truth is /state.calibration but we
+  // remember what we asked for to make click-to-toggle feel snappy.
+  let mySolo = null;
+
   function resize() {
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.floor(window.innerWidth * dpr);
@@ -51,11 +95,12 @@
     canvas.style.width = window.innerWidth + "px";
     canvas.style.height = window.innerHeight + "px";
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    reproject();
   }
   window.addEventListener("resize", resize);
-  resize();
 
-  function makeProjector() {
+  function reproject() {
+    if (!leds.length) { projected = null; return; }
     const margin = 60;
     const ww = window.innerWidth - 2 * margin;
     const hh = window.innerHeight - 2 * margin;
@@ -66,52 +111,133 @@
     const cy = window.innerHeight / 2;
     const ox = (bboxMin[0] + bboxMax[0]) / 2;
     const oy = (bboxMin[1] + bboxMax[1]) / 2;
-    return (p) => [cx + (p[0] - ox) * s, cy - (p[1] - oy) * s];
+    projected = new Float32Array(leds.length * 2);
+    for (let i = 0; i < leds.length; i++) {
+      projected[i * 2]     = cx + (leds[i].position[0] - ox) * s;
+      projected[i * 2 + 1] = cy - (leds[i].position[1] - oy) * s;
+    }
+  }
+
+  // Hit-test: closest LED within `radius` px of the mouse.
+  function pickLED() {
+    if (!projected || mouseX < 0) return -1;
+    const radius = 10, r2 = radius * radius;
+    let best = -1, bestD = r2;
+    for (let i = 0; i < leds.length; i++) {
+      const dx = projected[i * 2] - mouseX;
+      const dy = projected[i * 2 + 1] - mouseY;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD) { bestD = d2; best = i; }
+    }
+    return best;
   }
 
   function draw() {
     ctx.fillStyle = "#050505";
     ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
-    if (leds.length && lastFrame) {
-      const project = makeProjector();
-      // Body dots first (uniform, no glow) for speed.
+    if (leds.length && lastFrame && projected) {
       for (let i = 0; i < leds.length; i++) {
         const r = lastFrame[i * 3];
         const g = lastFrame[i * 3 + 1];
         const b = lastFrame[i * 3 + 2];
-        const [x, y] = project(leds[i].position);
+        const x = projected[i * 2];
+        const y = projected[i * 2 + 1];
         ctx.fillStyle = `rgb(${r},${g},${b})`;
-        ctx.beginPath();
-        ctx.arc(x, y, 3, 0, Math.PI * 2);
-        ctx.fill();
-        const lum = r + g + b;
-        if (lum > 90) {
-          ctx.strokeStyle = `rgba(${r},${g},${b},0.18)`;
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(x, y, 7, 0, Math.PI * 2);
-          ctx.stroke();
-        }
+        ctx.fillRect(x - LED_HALF, y - LED_HALF, LED_SIZE, LED_SIZE);
+      }
+      const hit = pickLED();
+      if (hit >= 0) {
+        const x = projected[hit * 2], y = projected[hit * 2 + 1];
+        ctx.strokeStyle = "#fbbf24";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(
+          x - LED_HALF - 2, y - LED_HALF - 2,
+          LED_SIZE + 4, LED_SIZE + 4
+        );
+        const led = leds[hit];
+        tooltip.style.display = "block";
+        tooltip.style.left = (mouseX + 12) + "px";
+        tooltip.style.top = (mouseY + 12) + "px";
+        tooltip.innerHTML =
+          `<div class="gid">global #${led.global_index}</div>` +
+          `<div>${led.strip_id} · local ${led.local_index}</div>` +
+          `<div class="dim">x=${led.position[0].toFixed(2)} y=${led.position[1].toFixed(2)}</div>`;
+      } else {
+        tooltip.style.display = "none";
       }
     }
     requestAnimationFrame(draw);
   }
 
+  canvas.addEventListener("mousemove", (e) => { mouseX = e.clientX; mouseY = e.clientY; });
+  canvas.addEventListener("mouseleave", () => { mouseX = -1; tooltip.style.display = "none"; });
+
+  canvas.addEventListener("click", async () => {
+    const hit = pickLED();
+    if (hit < 0) return;
+    const gid = leds[hit].global_index;
+    if (mySolo === gid) {
+      await fetch("/calibration/stop", { method: "POST" });
+      mySolo = null;
+    } else {
+      await fetch("/calibration/solo", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ indices: [gid] }),
+      });
+      mySolo = gid;
+    }
+    pollState();
+  });
+
+  calClear.addEventListener("click", async () => {
+    await fetch("/calibration/stop", { method: "POST" });
+    mySolo = null;
+    pollState();
+  });
+
+  async function pollState() {
+    try {
+      const r = await fetch("/state");
+      const s = await r.json();
+      const cal = s.calibration;
+      if (cal) {
+        calBanner.style.display = "block";
+        if (cal.mode === "solo") {
+          calText.textContent = `solo lit: #${cal.indices.join(", #")}`;
+        } else {
+          calText.textContent =
+            `walk · step ${cal.step} · ${cal.interval}s · current #${cal.current}`;
+        }
+      } else {
+        calBanner.style.display = "none";
+        mySolo = null;
+      }
+    } catch (e) { /* ignore */ }
+  }
+  setInterval(pollState, 1000);
+
+  async function loadTopology() {
+    const r = await fetch("/topology");
+    const topo = await r.json();
+    leds = topo.leds;
+    bboxMin = topo.bbox_min;
+    bboxMax = topo.bbox_max;
+    $("leds").textContent = topo.pixel_count;
+    $("bbox").textContent = `x[${bboxMin[0].toFixed(1)}, ${bboxMax[0].toFixed(1)}] ` +
+                            `y[${bboxMin[1].toFixed(1)}, ${bboxMax[1].toFixed(1)}]`;
+    reproject();
+  }
+
   async function init() {
     try {
-      const r = await fetch("/topology");
-      const topo = await r.json();
-      leds = topo.leds;
-      bboxMin = topo.bbox_min;
-      bboxMax = topo.bbox_max;
-      $("leds").textContent = topo.pixel_count;
-      $("bbox").textContent = `x[${bboxMin[0].toFixed(1)}, ${bboxMax[0].toFixed(1)}] ` +
-                              `y[${bboxMin[1].toFixed(1)}, ${bboxMax[1].toFixed(1)}]`;
+      await loadTopology();
     } catch (e) {
       $("status").textContent = "topology fetch failed";
       $("status").className = "bad";
       return;
     }
+    resize();
 
     const wsUrl = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws/frames";
     const ws = new WebSocket(wsUrl);
@@ -120,7 +246,11 @@
     ws.onclose = () => { $("status").textContent = "disconnected"; $("status").className = "bad"; };
     ws.onerror = () => { $("status").textContent = "error"; $("status").className = "bad"; };
     ws.onmessage = (ev) => {
-      lastFrame = new Uint8Array(ev.data);
+      const buf = new Uint8Array(ev.data);
+      // Topology can grow/shrink mid-session if the operator saves the editor;
+      // refetch when the frame size disagrees with the cached LED count.
+      if (buf.length !== leds.length * 3) { loadTopology(); }
+      lastFrame = buf;
       frameCount++;
       framesSinceFpsTick++;
       $("frames").textContent = frameCount;
@@ -132,6 +262,7 @@
       }
     };
     requestAnimationFrame(draw);
+    pollState();
   }
 
   init();

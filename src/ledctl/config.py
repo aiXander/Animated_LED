@@ -57,6 +57,47 @@ class TransportConfig(BaseModel):
     sim: SimTransportConfig = SimTransportConfig()
 
 
+class OutputConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    gamma: float = Field(
+        2.2, ge=0.1, le=5.0,
+        description=(
+            "Gamma applied at the transport boundary; 1.0 disables. "
+            "Set 1.0 if WLED is also gamma-correcting."
+        ),
+    )
+
+
+class AudioConfig(BaseModel):
+    """Audio capture settings (Phase 5).
+
+    `device` is the input source the install listens to. Save by name (string)
+    rather than index — indices reshuffle between sessions and machines, names
+    don't (within a host). The /audio web route is the canonical way to pick it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = Field(True, description="Whether to start the capture stream on boot")
+    device: str | int | None = Field(
+        None,
+        description=(
+            "Input device — name (preferred), index, or null for the system default. "
+            "Edit interactively at /audio."
+        ),
+    )
+    samplerate: int = Field(48000, gt=0, description="Capture sample rate in Hz")
+    blocksize: int = Field(
+        512, gt=0,
+        description="Frames per callback block; smaller = lower latency, higher CPU",
+    )
+    channels: int = Field(1, ge=1, le=8, description="Capture channel count (mono = 1)")
+    gain: float = Field(1.0, ge=0.0, description="Linear gain applied before features")
+    smoothing: float = Field(
+        0.4, ge=0.0, le=0.99,
+        description="EMA factor on RMS/band energies; 0 = no smoothing, ~0.9 = sluggish",
+    )
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project: ProjectConfig
@@ -64,6 +105,8 @@ class AppConfig(BaseModel):
     controllers: dict[str, ControllerConfig]
     strips: list[StripConfig]
     transport: TransportConfig = TransportConfig()
+    output: OutputConfig = OutputConfig()
+    audio: AudioConfig = AudioConfig()
 
     @model_validator(mode="after")
     def _check_strip_layout(self) -> "AppConfig":

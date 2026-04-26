@@ -1,8 +1,12 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .config import AppConfig, StripConfig
+
+if TYPE_CHECKING:
+    from .audio.state import AudioState
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,9 @@ class Topology:
     bbox_max: np.ndarray  # (3,) float32
     pixel_count: int
     strips: list[StripConfig]
+    # Optional audio analysis snapshot, set by Engine.attach_audio. Effects
+    # that want audio reactivity read it via `self.topology.audio_state`.
+    audio_state: "AudioState | None" = field(default=None, repr=False)
 
     @classmethod
     def from_config(cls, cfg: AppConfig) -> "Topology":

@@ -87,6 +87,8 @@ output:
   gamma: 2.2
 audio:
   enabled: true
+  # Pick interactively at http://127.0.0.1:8000/audio — the page writes the
+  # chosen device name back here on save. `null` = system default input.
   device: null
   samplerate: 48000
   blocksize: 512

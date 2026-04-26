@@ -40,7 +40,9 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config(args.config)
         host = args.host or cfg.server.host
         port = args.port or cfg.server.port
-        app = create_app(cfg)
+        # Presets live alongside the config file by convention.
+        presets_dir = args.config.parent / "presets"
+        app = create_app(cfg, presets_dir=presets_dir, config_path=args.config.resolve())
         # Imported lazily so `show-config` doesn't pay the uvicorn import cost.
         import uvicorn
         uvicorn.run(app, host=host, port=port, log_level=args.log_level)
