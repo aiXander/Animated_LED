@@ -1,0 +1,186 @@
+{
+  "main": {
+    "id": "16a63601cad92a08",
+    "type": "split",
+    "children": [
+      {
+        "id": "64cecc22330833ff",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "0a3998bee9ec862d",
+            "type": "leaf",
+            "state": {
+              "type": "empty",
+              "state": {},
+              "icon": "lucide-file",
+              "title": "New tab"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "49d591473c42e2ad",
+    "type": "split",
+    "children": [
+      {
+        "id": "e2589b77fbb8c054",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "97716b1d8816561d",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "064e76efbb844d3a",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "bc35ff517d826bf5",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "341c347e38a8c399",
+    "type": "split",
+    "children": [
+      {
+        "id": "8ff0b1da0c99be5b",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "f1d486e30ee75275",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "power_consumption.png",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for power_consumption"
+            }
+          },
+          {
+            "id": "17ae41119243fde9",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "power_consumption.png",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from power_consumption"
+            }
+          },
+          {
+            "id": "c5e32e6be8c435a5",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "17575a8b3a361cc7",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "power_consumption.png",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of power_consumption"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "0a3998bee9ec862d",
+  "lastOpenFiles": [
+    "Hardware_setup.md",
+    "README.md",
+    "tests/__pycache__/test_wave_effect.cpython-311-pytest-9.0.3.pyc",
+    "tests/__pycache__/test_topology.cpython-311-pytest-9.0.3.pyc",
+    "tests/__pycache__/test_ddp.cpython-311-pytest-9.0.3.pyc",
+    "tests/__pycache__/test_config.cpython-311-pytest-9.0.3.pyc",
+    "tests/__pycache__/__init__.cpython-311.pyc",
+    "tests/__pycache__",
+    "src/ledctl/transports/__pycache__/simulator.cpython-311.pyc",
+    "src/ledctl/transports/__pycache__/multi.cpython-311.pyc",
+    "src/ledctl/transports/__pycache__/ddp.cpython-311.pyc",
+    "src/ledctl/transports/__pycache__/base.cpython-311.pyc",
+    "implementation_roadmap.md",
+    "Audio-Reactive LED installation.md",
+    "power_consumption.png"
+  ]
+}

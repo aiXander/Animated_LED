@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ledctl simulator</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #050505; color: #ddd;
+                  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; }
+    #hud {
+      position: fixed; top: 12px; left: 12px; padding: 10px 14px;
+      background: rgba(0,0,0,0.55); border: 1px solid #222; border-radius: 8px;
+      font-size: 12px; line-height: 1.5; pointer-events: none; user-select: none;
+    }
+    #hud .row { display: flex; gap: 8px; }
+    #hud .k { opacity: 0.6; min-width: 84px; }
+    .ok  { color: #4ade80; }
+    .bad { color: #f87171; }
+    .dim { color: #888; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div class="row"><span class="k">status</span><span id="status" class="bad">connecting…</span></div>
+    <div class="row"><span class="k">render fps</span><span id="fps">—</span></div>
+    <div class="row"><span class="k">frames</span><span id="frames">0</span></div>
+    <div class="row"><span class="k">leds</span><span id="leds">0</span></div>
+    <div class="row"><span class="k">bbox</span><span id="bbox" class="dim">—</span></div>
+  </div>
+  <canvas id="canvas"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const $ = (id) => document.getElementById(id);
+
+  let leds = [];
+  let bboxMin = [0, 0, 0];
+  let bboxMax = [1, 1, 1];
+  let lastFrame = null;
+  let frameCount = 0;
+  let lastFpsT = performance.now();
+  let framesSinceFpsTick = 0;
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    canvas.style.width = window.innerWidth + "px";
+    canvas.style.height = window.innerHeight + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function makeProjector() {
+    const margin = 60;
+    const ww = window.innerWidth - 2 * margin;
+    const hh = window.innerHeight - 2 * margin;
+    const dx = bboxMax[0] - bboxMin[0] || 1;
+    const dy = bboxMax[1] - bboxMin[1] || 1;
+    const s = Math.min(ww / dx, hh / dy);
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    const ox = (bboxMin[0] + bboxMax[0]) / 2;
+    const oy = (bboxMin[1] + bboxMax[1]) / 2;
+    return (p) => [cx + (p[0] - ox) * s, cy - (p[1] - oy) * s];
+  }
+
+  function draw() {
+    ctx.fillStyle = "#050505";
+    ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+    if (leds.length && lastFrame) {
+      const project = makeProjector();
+      // Body dots first (uniform, no glow) for speed.
+      for (let i = 0; i < leds.length; i++) {
+        const r = lastFrame[i * 3];
+        const g = lastFrame[i * 3 + 1];
+        const b = lastFrame[i * 3 + 2];
+        const [x, y] = project(leds[i].position);
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fill();
+        const lum = r + g + b;
+        if (lum > 90) {
+          ctx.strokeStyle = `rgba(${r},${g},${b},0.18)`;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(x, y, 7, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    }
+    requestAnimationFrame(draw);
+  }
+
+  async function init() {
+    try {
+      const r = await fetch("/topology");
+      const topo = await r.json();
+      leds = topo.leds;
+      bboxMin = topo.bbox_min;
+      bboxMax = topo.bbox_max;
+      $("leds").textContent = topo.pixel_count;
+      $("bbox").textContent = `x[${bboxMin[0].toFixed(1)}, ${bboxMax[0].toFixed(1)}] ` +
+                              `y[${bboxMin[1].toFixed(1)}, ${bboxMax[1].toFixed(1)}]`;
+    } catch (e) {
+      $("status").textContent = "topology fetch failed";
+      $("status").className = "bad";
+      return;
+    }
+
+    const wsUrl = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws/frames";
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => { $("status").textContent = "connected"; $("status").className = "ok"; };
+    ws.onclose = () => { $("status").textContent = "disconnected"; $("status").className = "bad"; };
+    ws.onerror = () => { $("status").textContent = "error"; $("status").className = "bad"; };
+    ws.onmessage = (ev) => {
+      lastFrame = new Uint8Array(ev.data);
+      frameCount++;
+      framesSinceFpsTick++;
+      $("frames").textContent = frameCount;
+      const now = performance.now();
+      if (now - lastFpsT >= 1000) {
+        $("fps").textContent = (framesSinceFpsTick * 1000 / (now - lastFpsT)).toFixed(1);
+        framesSinceFpsTick = 0;
+        lastFpsT = now;
+      }
+    };
+    requestAnimationFrame(draw);
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

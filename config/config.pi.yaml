@@ -1,0 +1,52 @@
+project:
+  name: festival_scaffold
+  target_fps: 60
+
+server:
+  host: 0.0.0.0
+  port: 8000
+
+controllers:
+  gledopto_main:
+    type: wled-ddp
+    host: 10.0.0.2
+    port: 4048
+    pixel_count: 1800
+
+strips:
+  - id: top_left
+    controller: gledopto_main
+    output: 1
+    pixel_offset: 0
+    pixel_count: 450
+    leds_per_meter: 30
+    geometry: { type: line, start: [0.0, 0.5, 0.0], end: [-15.0, 0.5, 0.0] }
+
+  - id: top_right
+    controller: gledopto_main
+    output: 2
+    pixel_offset: 450
+    pixel_count: 450
+    leds_per_meter: 30
+    geometry: { type: line, start: [0.0, 0.5, 0.0], end: [15.0, 0.5, 0.0] }
+
+  - id: bottom_left
+    controller: gledopto_main
+    output: 3
+    pixel_offset: 900
+    pixel_count: 450
+    leds_per_meter: 30
+    geometry: { type: line, start: [0.0, -0.5, 0.0], end: [-15.0, -0.5, 0.0] }
+
+  - id: bottom_right
+    controller: gledopto_main
+    output: 4
+    pixel_offset: 1350
+    pixel_count: 450
+    leds_per_meter: 30
+    geometry: { type: line, start: [0.0, -0.5, 0.0], end: [15.0, -0.5, 0.0] }
+
+transport:
+  mode: ddp
+  sim:
+    ws_path: /ws/frames
