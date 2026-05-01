@@ -55,6 +55,13 @@ class ChatRequest(BaseModel):
     )
 
 
+class AgentConfigPatch(BaseModel):
+    """Live-tunable subset of the agent config — affects future turns only."""
+
+    model_config = ConfigDict(extra="forbid")
+    default_crossfade_seconds: float | None = Field(None, ge=0.0, le=30.0)
+
+
 def _turn_to_dict(turn: AgentTurn) -> dict[str, Any]:
     d = asdict(turn)
     return d
@@ -86,8 +93,7 @@ def build_router(app: FastAPI) -> APIRouter:
     """
     router = APIRouter(prefix="/agent", tags=["agent"])
 
-    @router.get("/config")
-    async def agent_config() -> dict:
+    def _config_payload() -> dict:
         cfg: AgentConfig = app.state.agent_cfg
         # Never echo the api key env *value* — only the var name.
         return {
@@ -101,6 +107,17 @@ def build_router(app: FastAPI) -> APIRouter:
             "api_key_env": cfg.api_key_env,
             "retry_on_tool_error": cfg.retry_on_tool_error,
         }
+
+    @router.get("/config")
+    async def agent_config() -> dict:
+        return _config_payload()
+
+    @router.patch("/config")
+    async def patch_agent_config(body: AgentConfigPatch) -> dict:
+        cfg: AgentConfig = app.state.agent_cfg
+        if body.default_crossfade_seconds is not None:
+            cfg.default_crossfade_seconds = body.default_crossfade_seconds
+        return _config_payload()
 
     @router.get("/sessions/{session_id}")
     async def get_session(session_id: str) -> dict:
@@ -168,6 +185,9 @@ def build_router(app: FastAPI) -> APIRouter:
         result = None
         primary_call: dict[str, Any] | None = None
         primary_tool_result: dict[str, Any] | None = None
+        # Usage from the LLM call that produced `primary_call` (or the most
+        # recent attempt if no tool call was ever emitted).
+        primary_usage: dict[str, int] | None = None
 
         for attempt in range(max_attempts):
             # Regenerate per-turn prompt so each retry sees a fresh audio
@@ -243,6 +263,12 @@ def build_router(app: FastAPI) -> APIRouter:
             if attempt_primary_call is not None:
                 primary_call = attempt_primary_call
                 primary_tool_result = attempt_primary_result
+                primary_usage = result.usage
+            elif primary_call is None:
+                # No tool call this attempt, and none from a prior attempt
+                # either — fall back to this attempt's usage so the UI still
+                # has token info for chat-only turns.
+                primary_usage = result.usage
 
             # Decide whether to retry.
             #   - No tool calls at all → model is just chatting; done.
@@ -274,6 +300,7 @@ def build_router(app: FastAPI) -> APIRouter:
                 "arguments": primary_call["arguments"],
             }
             turn.tool_result = primary_tool_result
+        turn.usage = primary_usage
         sess.turns.append(turn)
 
         finish_reason = result.finish_reason if result else ""
@@ -312,6 +339,7 @@ def build_router(app: FastAPI) -> APIRouter:
             "finish_reason": finish_reason,
             "history_size": len(sess.messages),
             "retries_used": turn.retries_used,
+            "usage": turn.usage,
         }
 
     return router

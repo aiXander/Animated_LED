@@ -30,6 +30,10 @@ class AgentTurn:
     # Number of automatic retries the agent ran on top of the initial attempt
     # before the loop exited (success, no-tool, or budget-exhausted).
     retries_used: int = 0
+    # Token usage of the LLM call that produced `tool_call` (or the last
+    # attempt if no tool call was emitted). `{input_tokens, output_tokens,
+    # total_tokens}` — None when the provider didn't return a usage block.
+    usage: dict[str, int] | None = None
     created_at: float = field(default_factory=time.time)
 
 

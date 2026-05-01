@@ -36,6 +36,7 @@ class CompletionResult:
     raw_message: dict[str, Any]       # full {role, content, tool_calls?} for buffer
     finish_reason: str = ""
     model: str = ""
+    usage: dict[str, int] | None = None  # {input_tokens, output_tokens, total_tokens}
 
 
 class AgentClient:
@@ -170,6 +171,7 @@ class AgentClient:
                 raw_message={"role": "assistant", "content": ""},
                 finish_reason="error",
                 model=resp.model or effective_model,
+                usage=_extract_usage(resp),
             )
         choice = resp.choices[0]
         msg = choice.message
@@ -238,7 +240,30 @@ class AgentClient:
             raw_message=raw_message,
             finish_reason=finish,
             model=resp.model or effective_model,
+            usage=_extract_usage(resp),
         )
+
+
+def _extract_usage(resp: Any) -> dict[str, int] | None:
+    """Pull `prompt_tokens` / `completion_tokens` / `total_tokens` off the SDK
+    response and return a normalised `{input_tokens, output_tokens, total_tokens}`
+    dict, or None if the provider didn't include a usage block."""
+    u = getattr(resp, "usage", None)
+    if u is None:
+        return None
+    pt = getattr(u, "prompt_tokens", None)
+    ct = getattr(u, "completion_tokens", None)
+    tt = getattr(u, "total_tokens", None)
+    if pt is None and ct is None and tt is None:
+        return None
+    out: dict[str, int] = {}
+    if pt is not None:
+        out["input_tokens"] = int(pt)
+    if ct is not None:
+        out["output_tokens"] = int(ct)
+    if tt is not None:
+        out["total_tokens"] = int(tt)
+    return out or None
 
 
 def _safe_dump(obj: Any) -> str:

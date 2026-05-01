@@ -105,3 +105,9 @@ agent:
   api_key_env: OPENROUTER_API_KEY
   debug_logging: true
   retry_on_tool_error: 1
+masters:
+  brightness: 1.0
+  speed: 1.0
+  audio_reactivity: 1.0
+  saturation: 1.0
+  freeze: false

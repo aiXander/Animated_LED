@@ -9,7 +9,7 @@
     html, body { margin: 0; height: 100%; background: #050505; color: #ddd;
                   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                   overflow: hidden; }
-    #app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
+    #app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
     .ok  { color: #4ade80; }
     .bad { color: #f87171; }
     .warn { color: #fbbf24; }
@@ -23,7 +23,7 @@
     }
     #canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
     #cal-banner {
-      position: absolute; top: 10px; right: 12px; padding: 6px 10px;
+      position: absolute; top: 48px; right: 12px; padding: 6px 10px;
       background: rgba(127, 29, 29, 0.85); border: 1px solid #b91c1c;
       border-radius: 6px; color: #fee2e2; font-size: 11px; display: none;
     }
@@ -31,6 +31,17 @@
       margin-left: 8px; background: #b91c1c; color: #fee2e2; border: 0;
       padding: 3px 6px; border-radius: 3px; font-family: inherit; cursor: pointer;
     }
+    #viz-nav {
+      position: absolute; top: 10px; right: 12px; display: flex;
+      gap: 6px; z-index: 5;
+    }
+    #viz-nav a {
+      padding: 4px 10px; background: rgba(17, 17, 17, 0.85);
+      border: 1px solid #2a2a2a; border-radius: 6px; color: #ddd;
+      text-decoration: none; font-size: 11px;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    #viz-nav a:hover { background: #1a1a1a; border-color: #3a3a3a; color: #93c5fd; }
     #tooltip {
       position: fixed; pointer-events: none; padding: 6px 8px;
       background: rgba(10, 10, 10, 0.92); border: 1px solid #333;
@@ -103,6 +114,7 @@
     #status-panel {
       min-width: 200px; overflow-y: auto; padding: 14px;
       font-size: 12px; background: #080808;
+      scrollbar-gutter: stable;
     }
     #status-panel h3 {
       font-size: 11px; margin: 16px 0 6px; color: #fbbf24;
@@ -115,28 +127,69 @@
     .stat .v { font-variant-numeric: tabular-nums; word-break: break-word; flex: 1; }
     #audio-meter { margin-top: 4px; }
     .layer-row {
-      padding: 4px 6px; margin: 3px 0; border-radius: 4px;
-      background: rgba(20, 20, 20, 0.7); border: 1px solid #1a1a1a;
-      font-size: 11px; line-height: 1.3;
+      position: relative; padding: 5px 8px; margin: 3px 0; border-radius: 4px;
+      border: 1px solid #1a1a1a; font-size: 11px; line-height: 1.3;
+      cursor: ew-resize; user-select: none; overflow: hidden;
+      --op: 100%;
+      background:
+        linear-gradient(
+          to right,
+          rgba(59, 130, 246, 0.32) 0,
+          rgba(59, 130, 246, 0.32) var(--op),
+          rgba(20, 20, 20, 0.7) var(--op),
+          rgba(20, 20, 20, 0.7) 100%
+        );
     }
-    .layer-row .name { color: #93c5fd; font-weight: 600; }
+    .layer-row:hover { border-color: #2a2a2a; }
+    .layer-row.dragging { border-color: #3b82f6; }
+    .layer-row > * { position: relative; pointer-events: none; }
+    .layer-row .head {
+      position: relative;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .layer-row .name { color: #dbeafe; font-weight: 600; }
+    .layer-row .op-num {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      font-variant-numeric: tabular-nums; opacity: 0.85;
+    }
+    .layer-row .remove {
+      margin-left: auto; pointer-events: auto;
+      background: transparent; border: 1px solid #3a1a1a; color: #f87171;
+      border-radius: 4px; padding: 0 7px; font-family: inherit;
+      font-size: 13px; line-height: 1.4; cursor: pointer;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+    .layer-row .remove:hover {
+      background: #7f1d1d; border-color: #b91c1c; color: #fee2e2;
+    }
     .layer-row .blend { opacity: 0.55; }
 
-    /* ---- bottom nav ---- */
-    #nav {
-      display: flex; gap: 8px; padding: 10px 14px;
-      border-top: 1px solid #1a1a1a; background: #080808;
-      flex-wrap: wrap; align-items: center;
+    /* ---- masters ---- */
+    .master-row {
+      display: flex; align-items: center; gap: 8px; padding: 3px 0;
     }
-    #nav .label { font-size: 11px; opacity: 0.5; margin-right: 6px; }
-    #nav a {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 6px 12px; background: #111; border: 1px solid #2a2a2a;
-      border-radius: 6px; color: #ddd; text-decoration: none;
-      font-size: 12px; transition: background 0.15s, border-color 0.15s;
+    .master-row > label {
+      flex: 0 0 84px; opacity: 0.6; font-size: 11px;
     }
-    #nav a:hover { background: #1a1a1a; border-color: #3a3a3a; color: #93c5fd; }
-    #nav .spacer { flex: 1; }
+    .master-row input[type=range] {
+      flex: 1; min-width: 0; accent-color: #93c5fd; height: 4px;
+    }
+    .master-row .v {
+      flex: 0 0 36px; text-align: right; font-size: 11px;
+      font-variant-numeric: tabular-nums; opacity: 0.85;
+    }
+    .master-row button {
+      background: #111; color: #ddd; border: 1px solid #2a2a2a;
+      border-radius: 6px; padding: 4px 10px; font-family: inherit;
+      font-size: 11px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+    }
+    .master-row button:hover { background: #1a1a1a; border-color: #3a3a3a; }
+    .master-row button.on {
+      background: #b45309; border-color: #d97706; color: #fef3c7;
+    }
+    .master-row.toggles { gap: 6px; padding-top: 6px; }
+    .master-row.toggles button { flex: 1; }
+
   </style>
 </head>
 <body>
@@ -145,6 +198,11 @@
     <div id="viz">
       <span id="ws-pill" class="dim">connecting…</span>
       <canvas id="canvas"></canvas>
+      <nav id="viz-nav">
+        <a href="/editor">layout editor</a>
+        <a href="/audio">audio</a>
+        <a href="/docs">api docs</a>
+      </nav>
       <div id="cal-banner">
         <span id="cal-text">calibration active</span>
         <button id="cal-clear">clear</button>
@@ -186,12 +244,40 @@
 
         <h3>output</h3>
         <div class="stat"><span class="k">leds</span><span class="v" id="leds">0</span></div>
-        <div class="stat"><span class="k">bbox</span><span class="v dim" id="bbox">—</span></div>
         <div class="stat"><span class="k">transport</span><span class="v" id="transport">—</span></div>
         <div class="stat"><span class="k">sim clients</span><span class="v" id="sim-clients">0</span></div>
         <div class="stat"><span class="k">gamma</span><span class="v dim" id="gamma">—</span></div>
-        <div class="stat"><span class="k">blackout</span><span class="v" id="blackout-state">false</span></div>
-        <div class="stat"><span class="k">crossfading</span><span class="v" id="crossfading-state">false</span></div>
+
+        <h3>masters</h3>
+        <div class="master-row">
+          <label for="m-brightness">brightness</label>
+          <input type="range" id="m-brightness" min="0" max="1" step="0.01" value="1" />
+          <span class="v" id="m-brightness-v">1.00</span>
+        </div>
+        <div class="master-row">
+          <label for="m-speed">speed</label>
+          <input type="range" id="m-speed" min="0" max="3" step="0.01" value="1" />
+          <span class="v" id="m-speed-v">1.00</span>
+        </div>
+        <div class="master-row">
+          <label for="m-audio-reactivity">audio react</label>
+          <input type="range" id="m-audio-reactivity" min="0" max="3" step="0.01" value="1" />
+          <span class="v" id="m-audio-reactivity-v">1.00</span>
+        </div>
+        <div class="master-row">
+          <label for="m-saturation">saturation</label>
+          <input type="range" id="m-saturation" min="0" max="1" step="0.01" value="1" />
+          <span class="v" id="m-saturation-v">1.00</span>
+        </div>
+        <div class="master-row">
+          <label for="m-crossfade">crossfade</label>
+          <input type="range" id="m-crossfade" min="0" max="5" step="0.05" value="1" />
+          <span class="v" id="m-crossfade-v">1.00s</span>
+        </div>
+        <div class="master-row toggles">
+          <button id="m-freeze" type="button">freeze</button>
+          <button id="m-blackout" type="button">blackout</button>
+        </div>
 
         <h3>audio</h3>
         <div class="stat"><span class="k">device</span><span class="v dim" id="audio-device">—</span></div>
@@ -202,15 +288,6 @@
       </aside>
     </div>
 
-    <!-- ===== bottom: nav ===== -->
-    <nav id="nav">
-      <span class="label">go to</span>
-      <a href="/editor">layout editor</a>
-      <a href="/audio">audio</a>
-      <a href="/docs">api docs</a>
-      <span class="spacer"></span>
-      <a href="#" id="blackout-toggle">blackout</a>
-    </nav>
   </div>
 
 <script src="/audio-meter.js"></script>
@@ -418,9 +495,12 @@
     fps: $("fps"), targetFps: $("target-fps"),
     frames: $("frames"), dropped: $("dropped"), elapsed: $("elapsed"),
     transport: $("transport"), simClients: $("sim-clients"), gamma: $("gamma"),
-    blackoutState: $("blackout-state"), crossfadingState: $("crossfading-state"),
     audioDevice: $("audio-device"),
     layersList: $("layers-list"),
+    freezeBtn: $("m-freeze"),
+    blackoutBtn: $("m-blackout"),
+    crossfadeSlider: $("m-crossfade"),
+    crossfadeVal: $("m-crossfade-v"),
   };
   const audioMeter = window.AudioMeter.mount($("audio-meter"));
 
@@ -446,59 +526,213 @@
     node.className = cls;
   }
 
-  // Layers are structural — keep one DOM row per layer and only rebuild when
-  // the count or per-row signature changes. This protects the chat / log
-  // scroll position and avoids ~5 element churns per second.
+  // Layers — each row is a click-drag opacity bar. Structural changes
+  // (count, effect, blend) trigger a rebuild; opacity changes update the
+  // CSS var only so the active drag isn't interrupted.
   let lastLayersSig = null;
-  const layerRowCache = []; // [{row, name, blend}]
+  const layerRowCache = []; // [{row, name, blend, opNum, idx}]
+  const lastLayerEdit = new Map();      // index → ms (suppress incoming sync during drag)
+  const pendingOpacity = new Map();     // index → 0..1
+  let opacitySendTimer = null;
+
+  function flushOpacity() {
+    opacitySendTimer = null;
+    const snapshot = Array.from(pendingOpacity.entries());
+    pendingOpacity.clear();
+    for (const [i, v] of snapshot) {
+      fetch(`/layers/${i}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ opacity: v }),
+      }).catch(() => { /* WS will resync */ });
+    }
+  }
+  function queueOpacity(i, v) {
+    pendingOpacity.set(i, v);
+    lastLayerEdit.set(i, performance.now());
+    if (!opacitySendTimer) opacitySendTimer = setTimeout(flushOpacity, 33);
+  }
+  function setRowOpacity(cache, opacity) {
+    const pct = Math.max(0, Math.min(1, opacity)) * 100;
+    cache.row.style.setProperty("--op", pct.toFixed(1) + "%");
+    cache.opNum.textContent = opacity.toFixed(2);
+  }
+
+  let activeDrag = null; // { i, cache }
+  function opacityFromEvent(cache, e) {
+    const r = cache.row.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  }
+  function onDragMove(e) {
+    if (!activeDrag) return;
+    const v = opacityFromEvent(activeDrag.cache, e);
+    setRowOpacity(activeDrag.cache, v);
+    queueOpacity(activeDrag.i, v);
+  }
+  function onDragEnd() {
+    if (!activeDrag) return;
+    activeDrag.cache.row.classList.remove("dragging");
+    activeDrag = null;
+    window.removeEventListener("mousemove", onDragMove);
+    window.removeEventListener("mouseup", onDragEnd);
+  }
+  function startDrag(i, cache, e) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    activeDrag = { i, cache };
+    cache.row.classList.add("dragging");
+    window.addEventListener("mousemove", onDragMove);
+    window.addEventListener("mouseup", onDragEnd);
+    // Initial click already sets opacity at the click point.
+    onDragMove(e);
+  }
+
   function renderLayers(layers) {
     layers = layers || [];
+    // Structural signature only — exclude opacity so a slider drag isn't
+    // wiped out by the WS state echo.
     const sig = JSON.stringify(
-      layers.map((l) => [l.effect || "?", l.blend || "normal", l.opacity ?? 1])
+      layers.map((l) => [l.effect || "?", l.blend || "normal"])
     );
-    if (sig === lastLayersSig) return;
+    const structuralChanged = sig !== lastLayersSig;
     lastLayersSig = sig;
 
     const host = els.layersList;
     if (!layers.length) {
-      host.replaceChildren();
-      const empty = document.createElement("div");
-      empty.className = "dim";
-      empty.textContent = "— no layers —";
-      host.appendChild(empty);
-      layerRowCache.length = 0;
+      if (structuralChanged) {
+        host.replaceChildren();
+        const empty = document.createElement("div");
+        empty.className = "dim";
+        empty.textContent = "— no layers —";
+        host.appendChild(empty);
+        layerRowCache.length = 0;
+      }
       return;
     }
-    // Drop the "no layers" placeholder (or stale rows) if present.
-    if (layerRowCache.length !== layers.length || !layerRowCache.length) {
+
+    if (structuralChanged || layerRowCache.length !== layers.length) {
       host.replaceChildren();
       layerRowCache.length = 0;
       layers.forEach((_, i) => {
         const row = document.createElement("div");
         row.className = "layer-row";
+        row.title = "drag to set opacity";
         const head = document.createElement("div");
+        head.className = "head";
         const idx = document.createElement("span");
         idx.className = "dim";
         idx.textContent = `#${i}`;
         const name = document.createElement("span");
         name.className = "name";
+        const opNum = document.createElement("span");
+        opNum.className = "op-num";
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "remove";
+        remove.textContent = "×";
+        remove.title = "remove layer";
+        // Don't let the click bubble into the row's drag handler.
+        remove.addEventListener("mousedown", (e) => e.stopPropagation());
+        remove.addEventListener("click", (e) => {
+          e.stopPropagation();
+          fetch(`/layers/${i}`, { method: "DELETE" })
+            .catch(() => { /* WS will resync */ });
+        });
         head.appendChild(idx);
         head.appendChild(document.createTextNode(" "));
         head.appendChild(name);
+        head.appendChild(opNum);
+        head.appendChild(remove);
         const blend = document.createElement("div");
         blend.className = "blend";
         row.appendChild(head);
         row.appendChild(blend);
         host.appendChild(row);
-        layerRowCache.push({ row, name, blend });
+        const cache = { row, name, blend, opNum, idx: i };
+        row.addEventListener("mousedown", (e) => startDrag(i, cache, e));
+        layerRowCache.push(cache);
       });
     }
     layers.forEach((l, i) => {
       const cache = layerRowCache[i];
-      const opacity = (typeof l.opacity === "number") ? l.opacity.toFixed(2) : "1.00";
       cache.name.textContent = l.effect || "?";
-      cache.blend.textContent = `blend ${l.blend || "normal"} · opacity ${opacity}`;
+      cache.blend.textContent = `blend ${l.blend || "normal"}`;
+      // Skip opacity sync if user just edited this row.
+      if (performance.now() - (lastLayerEdit.get(i) || 0) < 400) return;
+      const opacity = (typeof l.opacity === "number") ? l.opacity : 1;
+      setRowOpacity(cache, opacity);
     });
+  }
+
+  // ---- masters: sliders + freeze toggle ----
+  // Local edits PATCH /masters; incoming /ws/state echoes back and would
+  // fight a dragging slider, so suppress sync for ~400ms after user input.
+  const MASTER_FIELDS = [
+    { id: "m-brightness",       field: "brightness" },
+    { id: "m-speed",            field: "speed" },
+    { id: "m-audio-reactivity", field: "audio_reactivity" },
+    { id: "m-saturation",       field: "saturation" },
+  ];
+  const lastMasterEdit = new Map();
+  const pendingMasters = {};
+  let mastersSendTimer = null;
+
+  function flushMasters() {
+    mastersSendTimer = null;
+    const body = pendingMasters;
+    if (!Object.keys(body).length) return;
+    const payload = JSON.stringify(body);
+    for (const k in body) delete body[k];
+    fetch("/masters", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: payload,
+    }).catch(() => { /* WS will resync */ });
+  }
+  function queueMaster(field, value) {
+    pendingMasters[field] = value;
+    lastMasterEdit.set(field, performance.now());
+    if (mastersSendTimer) return;
+    mastersSendTimer = setTimeout(flushMasters, 33);
+  }
+
+  for (const m of MASTER_FIELDS) {
+    const slider = $(m.id);
+    const valEl = $(m.id + "-v");
+    slider.addEventListener("input", () => {
+      const v = parseFloat(slider.value);
+      valEl.textContent = v.toFixed(2);
+      queueMaster(m.field, v);
+    });
+  }
+  els.freezeBtn.addEventListener("click", () => {
+    const next = !els.freezeBtn.classList.contains("on");
+    els.freezeBtn.classList.toggle("on", next);
+    els.freezeBtn.textContent = next ? "freeze on" : "freeze";
+    queueMaster("freeze", next);
+  });
+
+  function applyMasters(m) {
+    if (!m) return;
+    const now = performance.now();
+    for (const cfg of MASTER_FIELDS) {
+      if (now - (lastMasterEdit.get(cfg.field) || 0) < 400) continue;
+      const v = m[cfg.field];
+      if (typeof v !== "number") continue;
+      const slider = $(cfg.id);
+      const valEl = $(cfg.id + "-v");
+      const current = parseFloat(slider.value);
+      if (Math.abs(current - v) > 1e-4) slider.value = String(v);
+      const text = v.toFixed(2);
+      if (valEl.textContent !== text) valEl.textContent = text;
+    }
+    if (now - (lastMasterEdit.get("freeze") || 0) >= 400) {
+      const on = !!m.freeze;
+      if (els.freezeBtn.classList.contains("on") !== on) {
+        els.freezeBtn.classList.toggle("on", on);
+        els.freezeBtn.textContent = on ? "freeze on" : "freeze";
+      }
+    }
   }
 
   // Apply a /state snapshot to the cached DOM nodes. Called from the WS
@@ -515,14 +749,13 @@
     setText(els.gamma, fmtNum(s.gamma, 2));
 
     const bo = !!s.blackout;
-    setText(els.blackoutState, bo ? "true" : "false");
-    setClass(els.blackoutState, bo ? "v warn" : "v dim");
-
-    const cf = !!s.crossfading;
-    setText(els.crossfadingState, cf ? "true" : "false");
-    setClass(els.crossfadingState, cf ? "v ok" : "v dim");
+    if (els.blackoutBtn.classList.contains("on") !== bo) {
+      els.blackoutBtn.classList.toggle("on", bo);
+      els.blackoutBtn.textContent = bo ? "blackout on" : "blackout";
+    }
 
     renderLayers(s.layers);
+    applyMasters(s.masters);
 
     const a = s.audio || {};
     setText(els.audioDevice, a.device || (a.enabled === false ? "(disabled)" : "—"));
@@ -591,8 +824,6 @@
     bboxMin = topo.bbox_min;
     bboxMax = topo.bbox_max;
     $("leds").textContent = topo.pixel_count;
-    $("bbox").textContent = `x[${bboxMin[0].toFixed(1)}, ${bboxMax[0].toFixed(1)}] ` +
-                            `y[${bboxMin[1].toFixed(1)}, ${bboxMax[1].toFixed(1)}]`;
     reproject();
   }
 
@@ -674,34 +905,43 @@
 
     const hasText = !!(turn.assistant_text && turn.assistant_text.trim());
     const hasTool = !!turn.tool_call;
-    let bubbleText;
-    if (hasText) bubbleText = turn.assistant_text;
-    else if (hasTool) bubbleText = "(tool call — see below)";
-    else bubbleText = `(no response${turn.finish_reason ? ` · finish_reason=${turn.finish_reason}` : ""})`;
+
+    let bubbleHtml = "";
+    if (hasText) {
+      bubbleHtml = `<div class="bubble">${escapeHtml(turn.assistant_text)}</div>`;
+    } else if (!hasTool) {
+      const fallback = `(no response${turn.finish_reason ? ` · finish_reason=${turn.finish_reason}` : ""})`;
+      bubbleHtml = `<div class="bubble dim">${escapeHtml(fallback)}</div>`;
+    }
 
     let toolHtml = "";
     if (hasTool) {
       const okClass = turn.tool_result && turn.tool_result.ok ? "ok" : (turn.tool_result ? "bad" : "dim");
-      const summary = turn.tool_result
+      const baseSummary = turn.tool_result
         ? (turn.tool_result.ok
            ? `tool: ${turn.tool_call.name} ✓ (${turn.tool_result.applied || "applied"}, crossfade ${turn.tool_result.crossfade_seconds ?? "?"}s)`
            : `tool: ${turn.tool_call.name} ✗ ${escapeHtml(turn.tool_result.error || "error")}`)
         : `tool: ${turn.tool_call.name}`;
+      const u = turn.usage || null;
+      const usageHtml = u
+        ? ` <span class="dim">· ${u.input_tokens ?? "?"} in / ${u.output_tokens ?? "?"} out`
+          + (u.total_tokens != null ? ` (${u.total_tokens} tot)` : "")
+          + `</span>`
+        : "";
       // Open by default when there's no text — the operator needs to see what happened.
       const openAttr = hasText ? "" : " open";
       toolHtml = `
         <details class="toolblock"${openAttr}>
-          <summary class="${okClass}">${summary}</summary>
+          <summary class="${okClass}">${baseSummary}${usageHtml}</summary>
           <pre>arguments: ${escapeHtml(JSON.stringify(turn.tool_call.arguments, null, 2))}
 result: ${escapeHtml(JSON.stringify(turn.tool_result, null, 2))}</pre>
         </details>`;
     }
-    const bubbleClass = hasText ? "bubble" : "bubble dim";
     const errHtml = turn.error
       ? `<div class="meta bad">error: ${escapeHtml(turn.error)}</div>` : "";
     row.innerHTML = `
       <div>
-        <div class="${bubbleClass}">${escapeHtml(bubbleText)}</div>
+        ${bubbleHtml}
         ${toolHtml}
         ${errHtml}
       </div>`;
@@ -723,6 +963,11 @@ result: ${escapeHtml(JSON.stringify(turn.tool_result, null, 2))}</pre>
         cfgDefaultModel = cfg.model;
         modelInput.placeholder = cfg.model;
         if (!cfg.enabled) setChatStatus("agent disabled in config", "bad");
+        if (typeof cfg.default_crossfade_seconds === "number"
+            && performance.now() - crossfadeUserEditAt > 400) {
+          els.crossfadeSlider.value = String(cfg.default_crossfade_seconds);
+          els.crossfadeVal.textContent = cfg.default_crossfade_seconds.toFixed(2) + "s";
+        }
       }
     } catch (e) { /* ignore */ }
   }
@@ -756,6 +1001,7 @@ result: ${escapeHtml(JSON.stringify(turn.tool_result, null, 2))}</pre>
         tool_call: data.tool_call,
         tool_result: data.tool_result,
         finish_reason: data.finish_reason,
+        usage: data.usage,
       });
       setChatStatus(`ok · history ${data.history_size} · finish ${data.finish_reason || "—"}`);
       // /ws/state pushes the new layer stack on the next tick (~16ms),
@@ -795,16 +1041,36 @@ result: ${escapeHtml(JSON.stringify(turn.tool_result, null, 2))}</pre>
     input.focus();
   });
 
-  // Bottom-nav blackout toggle.
-  $("blackout-toggle").addEventListener("click", async (ev) => {
-    ev.preventDefault();
+  // Blackout toggle (in masters row).
+  els.blackoutBtn.addEventListener("click", async () => {
+    const next = !els.blackoutBtn.classList.contains("on");
+    // Optimistic update; /ws/state confirms within ~16ms.
+    els.blackoutBtn.classList.toggle("on", next);
+    els.blackoutBtn.textContent = next ? "blackout on" : "blackout";
     try {
-      const r = await fetch("/state");
-      const s = await r.json();
-      const path = s.blackout ? "/resume" : "/blackout";
-      await fetch(path, { method: "POST" });
-      // /ws/state will reflect the new blackout flag on the next tick.
-    } catch (e) { /* ignore */ }
+      await fetch(next ? "/blackout" : "/resume", { method: "POST" });
+    } catch (e) { /* WS will resync */ }
+  });
+
+  // Crossfade slider — controls agent.default_crossfade_seconds.
+  // The current LLM call already has its own crossfade_seconds in the tool
+  // args; this only affects future turns where the model omits the field.
+  let crossfadeUserEditAt = 0;
+  let crossfadeSendTimer = null;
+  function flushCrossfade() {
+    crossfadeSendTimer = null;
+    const v = parseFloat(els.crossfadeSlider.value);
+    fetch("/agent/config", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ default_crossfade_seconds: v }),
+    }).catch(() => { /* ignore */ });
+  }
+  els.crossfadeSlider.addEventListener("input", () => {
+    const v = parseFloat(els.crossfadeSlider.value);
+    els.crossfadeVal.textContent = v.toFixed(2) + "s";
+    crossfadeUserEditAt = performance.now();
+    if (!crossfadeSendTimer) crossfadeSendTimer = setTimeout(flushCrossfade, 150);
   });
 
   // Bootstrap.
