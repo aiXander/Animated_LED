@@ -177,40 +177,16 @@ def create_app(
     engine = Engine(cfg, topology, transport)
     presets_path = presets_dir or DEFAULT_PRESETS_DIR
 
-    # Default startup: a single `scroll` layer.
-    # — orange/yellow/red palette, scrolling stage-right (positive x speed)
-    # — top row leads the bottom row by 0.075 cycles via cross_phase
-    # — brightness bound to audio RMS, swinging in [0.5, 1.0]. The audio
-    #   source is auto-scaled by the rolling-window normalizer in capture,
-    #   so the natural dynamic range of the room maps to the full [0, 1]
-    #   binding input — no per-install gain tuning needed.
-    # The whole show is one API call; configure further over the API.
-    engine.push_layer(
-        "scroll",
-        {
-            "axis": "x",
-            "speed": 0.15,
-            "wavelength": 1.5,
-            "shape": "cosine",
-            "softness": 1.0,
-            "cross_phase": [0.0, 0.075, 0.0],
-            "palette": {
-                "stops": [
-                    {"pos": 0.0, "color": "#ff2000"},
-                    {"pos": 0.4, "color": "#ff8000"},
-                    {"pos": 0.7, "color": "#ffdd00"},
-                    {"pos": 1.0, "color": "#ffffff"},
-                ],
-            },
-            "bindings": {
-                "brightness": {
-                    "source": "audio.rms",
-                    "floor": 0.5,
-                    "ceiling": 1.0,
-                },
-            },
-        },
-    )
+    # Default startup: load the `default` preset from disk so the show is
+    # editable as YAML rather than buried in code.
+    _default_preset = load_preset("default", presets_path)
+    for _layer in _default_preset.layers:
+        engine.push_layer(
+            _layer.effect,
+            _layer.params,
+            blend=_layer.blend,
+            opacity=_layer.opacity,
+        )
 
     audio: AudioCapture = _build_capture(cfg.audio)
     if cfg.audio.enabled:
@@ -276,6 +252,10 @@ def create_app(
     async def audio_page() -> FileResponse:
         return FileResponse(WEB_DIR / "audio.html")
 
+    @app.get("/audio-meter.js")
+    async def audio_meter_js() -> FileResponse:
+        return FileResponse(WEB_DIR / "audio-meter.js", media_type="application/javascript")
+
     def _audio_state_payload() -> dict[str, Any]:
         cap: AudioCapture | None = app.state.audio
         if cap is None:
@@ -296,6 +276,11 @@ def create_app(
             "low": round(s.low, 5),
             "mid": round(s.mid, 5),
             "high": round(s.high, 5),
+            "rms_norm": round(s.rms_norm, 5),
+            "peak_norm": round(s.peak_norm, 5),
+            "low_norm": round(s.low_norm, 5),
+            "mid_norm": round(s.mid_norm, 5),
+            "high_norm": round(s.high_norm, 5),
         }
 
     def _full_state_payload() -> dict:

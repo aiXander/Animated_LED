@@ -35,21 +35,6 @@
     .pill.ok  { color: #4ade80; border-color: #166534; background: rgba(20, 83, 45, 0.25); }
     .pill.bad { color: #f87171; border-color: #7f1d1d; background: rgba(127, 29, 29, 0.25); }
     .pill.dim { color: #888; }
-    .meter {
-      display: grid; grid-template-columns: 60px 1fr 60px; gap: 8px 12px;
-      align-items: center; font-size: 11px;
-    }
-    .meter-label { opacity: 0.7; }
-    .bar { position: relative; height: 14px; background: #111; border: 1px solid #222; border-radius: 3px; overflow: hidden; }
-    /* Transition shorter than the 50ms poll interval, otherwise the bar
-       lags the data and transients look damped. */
-    .fill { height: 100%; transition: width 30ms linear; }
-    .fill.rms  { background: linear-gradient(90deg, #22c55e, #facc15, #f87171); }
-    .fill.peak { background: #93c5fd; opacity: 0.7; }
-    .fill.low  { background: #ef4444; }
-    .fill.mid  { background: #facc15; }
-    .fill.high { background: #38bdf8; }
-    .num { text-align: right; font-variant-numeric: tabular-nums; opacity: 0.8; }
     .help { font-size: 11px; color: #888; line-height: 1.5; }
     .help code { color: #ddd; background: #0a0a0a; padding: 1px 4px; border-radius: 3px; }
     #msg { font-size: 11px; }
@@ -95,43 +80,25 @@
 
   <div class="panel">
     <h2 style="margin-top:0">live levels</h2>
-    <div class="meter" id="meter">
-      <span class="meter-label">RMS</span>
-      <div class="bar"><div class="fill rms" id="bar-rms" style="width:0%"></div></div>
-      <span class="num" id="num-rms">0.000</span>
-
-      <span class="meter-label">peak</span>
-      <div class="bar"><div class="fill peak" id="bar-peak" style="width:0%"></div></div>
-      <span class="num" id="num-peak">0.000</span>
-
-      <span class="meter-label">low</span>
-      <div class="bar"><div class="fill low" id="bar-low" style="width:0%"></div></div>
-      <span class="num" id="num-low">0.000</span>
-
-      <span class="meter-label">mid</span>
-      <div class="bar"><div class="fill mid" id="bar-mid" style="width:0%"></div></div>
-      <span class="num" id="num-mid">0.000</span>
-
-      <span class="meter-label">high</span>
-      <div class="bar"><div class="fill high" id="bar-high" style="width:0%"></div></div>
-      <span class="num" id="num-high">0.000</span>
-    </div>
+    <div id="audio-meter"></div>
     <p class="help" style="margin-top:14px">
-      Polled at ~20 fps. All values are <b>raw</b> — the analyser does no EMA and no
-      peak hold. Temporal smoothing for LED output happens per-binding in the
-      modulator envelopes (effects/modulator.py), so each control picks its own
-      attack/release. The three band rows are FFT-summed magnitudes over the
-      configured <code>fft_window</code> for low (20–250 Hz), mid (250 Hz–2 kHz),
-      and high (2–12 kHz) ranges.
+      Polled at ~20 fps. Bars show the rolling-window-<b>normalised</b> values
+      (<code>*_norm</code>) — same numbers the modulator envelopes consume, so
+      what you see here is what each effect binding reacts to before its own
+      attack/release smoothing. The three band rows cover low (20–250 Hz),
+      mid (250 Hz–2 kHz), and high (2–12 kHz) ranges over the configured
+      <code>fft_window</code>.
     </p>
   </div>
 
+<script src="/audio-meter.js"></script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
   const POLL_MS = 50; // ~20 fps
   let devices = [];
   let configuredDevice = null;
+  const audioMeter = window.AudioMeter.mount($("audio-meter"));
 
   function setMsg(text, kind) {
     const el = $("msg");
@@ -225,18 +192,7 @@
       $("configured").textContent =
         s.configured_device == null ? "(system default)" : String(s.configured_device);
 
-      const pct = (v) => Math.max(0, Math.min(100, v * 100)).toFixed(1) + "%";
-      const fmt = (v) => (v == null ? "—" : Number(v).toFixed(3));
-      $("bar-rms").style.width  = pct(s.rms);
-      $("bar-peak").style.width = pct(s.peak);
-      $("bar-low").style.width  = pct(s.low);
-      $("bar-mid").style.width  = pct(s.mid);
-      $("bar-high").style.width = pct(s.high);
-      $("num-rms").textContent  = fmt(s.rms);
-      $("num-peak").textContent = fmt(s.peak);
-      $("num-low").textContent  = fmt(s.low);
-      $("num-mid").textContent  = fmt(s.mid);
-      $("num-high").textContent = fmt(s.high);
+      audioMeter.update(s);
     } catch (e) {
       // Network blip; keep polling.
     }

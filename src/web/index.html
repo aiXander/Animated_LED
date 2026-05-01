@@ -113,24 +113,7 @@
     .stat { display: flex; gap: 8px; padding: 2px 0; line-height: 1.4; }
     .stat .k { opacity: 0.6; min-width: 84px; }
     .stat .v { font-variant-numeric: tabular-nums; word-break: break-word; flex: 1; }
-    .meter {
-      display: grid; grid-template-columns: 38px 1fr 42px;
-      gap: 4px 6px; align-items: center; font-size: 11px;
-      margin-top: 4px;
-    }
-    .meter-label { opacity: 0.6; }
-    .bar { position: relative; height: 8px; background: #111;
-           border: 1px solid #1f1f1f; border-radius: 2px; overflow: hidden; }
-    /* No CSS transition: /ws/state pushes at engine target_fps (~60Hz, ~16ms),
-       so a transition longer than the update interval just lags the bar
-       behind the data and visually flattens transients. */
-    .fill { height: 100%; }
-    .fill.rms  { background: linear-gradient(90deg, #22c55e, #facc15, #f87171); }
-    .fill.peak { background: #93c5fd; opacity: 0.7; }
-    .fill.low  { background: #ef4444; }
-    .fill.mid  { background: #facc15; }
-    .fill.high { background: #38bdf8; }
-    .num { text-align: right; font-variant-numeric: tabular-nums; opacity: 0.8; }
+    #audio-meter { margin-top: 4px; }
     .layer-row {
       padding: 4px 6px; margin: 3px 0; border-radius: 4px;
       background: rgba(20, 20, 20, 0.7); border: 1px solid #1a1a1a;
@@ -212,23 +195,7 @@
 
         <h3>audio</h3>
         <div class="stat"><span class="k">device</span><span class="v dim" id="audio-device">—</span></div>
-        <div class="meter">
-          <span class="meter-label">RMS</span>
-          <div class="bar"><div class="fill rms" id="bar-rms" style="width:0%"></div></div>
-          <span class="num" id="num-rms">0.000</span>
-          <span class="meter-label">peak</span>
-          <div class="bar"><div class="fill peak" id="bar-peak" style="width:0%"></div></div>
-          <span class="num" id="num-peak">0.000</span>
-          <span class="meter-label">low</span>
-          <div class="bar"><div class="fill low" id="bar-low" style="width:0%"></div></div>
-          <span class="num" id="num-low">0.000</span>
-          <span class="meter-label">mid</span>
-          <div class="bar"><div class="fill mid" id="bar-mid" style="width:0%"></div></div>
-          <span class="num" id="num-mid">0.000</span>
-          <span class="meter-label">high</span>
-          <div class="bar"><div class="fill high" id="bar-high" style="width:0%"></div></div>
-          <span class="num" id="num-high">0.000</span>
-        </div>
+        <div id="audio-meter"></div>
 
         <h3>layers</h3>
         <div id="layers-list"><div class="dim">—</div></div>
@@ -246,6 +213,7 @@
     </nav>
   </div>
 
+<script src="/audio-meter.js"></script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -452,12 +420,9 @@
     transport: $("transport"), simClients: $("sim-clients"), gamma: $("gamma"),
     blackoutState: $("blackout-state"), crossfadingState: $("crossfading-state"),
     audioDevice: $("audio-device"),
-    barRms: $("bar-rms"), barPeak: $("bar-peak"),
-    barLow: $("bar-low"), barMid: $("bar-mid"), barHigh: $("bar-high"),
-    numRms: $("num-rms"), numPeak: $("num-peak"),
-    numLow: $("num-low"), numMid: $("num-mid"), numHigh: $("num-high"),
     layersList: $("layers-list"),
   };
+  const audioMeter = window.AudioMeter.mount($("audio-meter"));
 
   function fmtNum(v, digits = 3) { return v == null ? "—" : Number(v).toFixed(digits); }
   function pct(v) { return Math.max(0, Math.min(100, (v || 0) * 100)).toFixed(1) + "%"; }
@@ -561,16 +526,7 @@
 
     const a = s.audio || {};
     setText(els.audioDevice, a.device || (a.enabled === false ? "(disabled)" : "—"));
-    setWidth(els.barRms,  pct(a.rms));
-    setWidth(els.barPeak, pct(a.peak));
-    setWidth(els.barLow,  pct(a.low));
-    setWidth(els.barMid,  pct(a.mid));
-    setWidth(els.barHigh, pct(a.high));
-    setText(els.numRms,  fmtNum(a.rms));
-    setText(els.numPeak, fmtNum(a.peak));
-    setText(els.numLow,  fmtNum(a.low));
-    setText(els.numMid,  fmtNum(a.mid));
-    setText(els.numHigh, fmtNum(a.high));
+    audioMeter.update(a);
 
     // Calibration banner — text rarely changes; setText guards it.
     const cal = s.calibration;

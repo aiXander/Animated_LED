@@ -14,7 +14,7 @@ layers:
       bindings:
         brightness:
           source: audio.rms
-          floor: 0.3
-          ceiling: 0.7
+          floor: 0.6
+          ceiling: 1.0
           gain: 2.0
           release_ms: 1200

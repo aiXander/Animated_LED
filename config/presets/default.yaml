@@ -1,0 +1,23 @@
+crossfade_seconds: 0.0
+layers:
+  - effect: scroll
+    blend: normal
+    opacity: 1.0
+    params:
+      axis: x
+      speed: 0.15
+      wavelength: 1.5
+      shape: cosine
+      softness: 1.0
+      cross_phase: [0.0, 0.075, 0.0]
+      palette:
+        stops:
+          - {pos: 0.0, color: "#ff2000"}
+          - {pos: 0.4, color: "#ff8000"}
+          - {pos: 0.7, color: "#ffdd00"}
+          - {pos: 1.0, color: "#ffffff"}
+      bindings:
+        brightness:
+          source: audio.rms
+          floor: 0.65
+          ceiling: 1.0

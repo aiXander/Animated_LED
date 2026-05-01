@@ -18,8 +18,9 @@ class AudioState:
 
     `*_norm` counterparts are the raw values divided by a rolling-window
     ceiling estimate, so they always span ~[0, 1] across the recent dynamic
-    range of the room. Modulators consume the `_norm` values; the level meter
-    UI keeps showing raw so the user can see the actual mic input.
+    range of the room. Modulators consume the `_norm` values, and the level
+    meter UI shows them too — the raw fields stay close to zero on quiet
+    inputs and made the bars unreadable.
     """
 
     samplerate: int = 48000
