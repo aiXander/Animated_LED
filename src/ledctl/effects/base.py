@@ -2,13 +2,18 @@ from abc import ABC, abstractmethod
 from typing import ClassVar
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..topology import Topology
 
 
 class EffectParams(BaseModel):
     """Base for effect parameters. Subclasses are surfaced through the API/MCP layer."""
+
+    # Strict: unknown keys raise. The LLM-driven `update_leds` path depends on
+    # this — silent drops let the model think hallucinated params (`scroll_phase`,
+    # `width` on noise, etc.) "worked" when they were quietly ignored.
+    model_config = ConfigDict(extra="forbid")
 
 
 class Effect(ABC):

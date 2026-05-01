@@ -46,7 +46,7 @@ def test_state_reports_default_layer(client: TestClient):
     layer = body["layers"][0]
     assert layer["params"]["axis"] == "x"
     assert layer["params"]["speed"] == 0.15
-    assert layer["params"]["cross_phase"] == [0.0, 0.15, 0.0]
+    assert layer["params"]["cross_phase"] == [0.0, 0.075, 0.0]
     binding = layer["params"]["bindings"]["brightness"]
     assert binding["source"] == "audio.rms"
     assert binding["floor"] == 0.5

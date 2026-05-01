@@ -41,7 +41,9 @@
     }
     .meter-label { opacity: 0.7; }
     .bar { position: relative; height: 14px; background: #111; border: 1px solid #222; border-radius: 3px; overflow: hidden; }
-    .fill { height: 100%; transition: width 60ms linear; }
+    /* Transition shorter than the 50ms poll interval, otherwise the bar
+       lags the data and transients look damped. */
+    .fill { height: 100%; transition: width 30ms linear; }
     .fill.rms  { background: linear-gradient(90deg, #22c55e, #facc15, #f87171); }
     .fill.peak { background: #93c5fd; opacity: 0.7; }
     .fill.low  { background: #ef4444; }
@@ -115,9 +117,12 @@
       <span class="num" id="num-high">0.000</span>
     </div>
     <p class="help" style="margin-top:14px">
-      Polled at ~20 fps. RMS is the smoothed loudness; <b>peak</b> uses a slow-decay hold
-      so transients stay visible. The three band rows are FFT-summed magnitudes for
-      low (20–250 Hz), mid (250 Hz–2 kHz), and high (2–12 kHz) ranges.
+      Polled at ~20 fps. All values are <b>raw</b> — the analyser does no EMA and no
+      peak hold. Temporal smoothing for LED output happens per-binding in the
+      modulator envelopes (effects/modulator.py), so each control picks its own
+      attack/release. The three band rows are FFT-summed magnitudes over the
+      configured <code>fft_window</code> for low (20–250 Hz), mid (250 Hz–2 kHz),
+      and high (2–12 kHz) ranges.
     </p>
   </div>
 
@@ -213,6 +218,7 @@
       if (s.device) meta.push(s.device);
       if (s.samplerate) meta.push(`${s.samplerate} Hz`);
       if (s.blocksize) meta.push(`block ${s.blocksize}`);
+      if (s.fft_window) meta.push(`fft ${s.fft_window}`);
       if (s.error) meta.push("· " + s.error);
       $("device-info").textContent = meta.join(" · ");
 

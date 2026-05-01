@@ -21,7 +21,7 @@ strips:
     type: line
     start:
     - 0.0
-    - 1.25
+    - 0.5
     - 0.0
     end:
     - -15.0
@@ -41,8 +41,8 @@ strips:
     - 0.5
     - 0.0
     end:
-    - 14.25
-    - 1.45
+    - 15.0
+    - 0.5
     - 0.0
   reversed: false
 - id: bottom_left
@@ -71,11 +71,11 @@ strips:
   geometry:
     type: line
     start:
-    - -0.05
+    - 0.0
     - -0.5
     - 0.0
     end:
-    - 14.95
+    - 15.0
     - -0.5
     - 0.0
   reversed: false
@@ -89,7 +89,17 @@ audio:
   enabled: true
   device: null
   samplerate: 48000
-  blocksize: 512
+  blocksize: 128
+  fft_window: 512
   channels: 1
   gain: 1.0
-  smoothing: 0.4
+agent:
+  enabled: true
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  model: google/gemini-2.5-flash-lite
+  history_max_messages: 5
+  request_timeout_seconds: 20.0
+  rate_limit_per_minute: 10
+  default_crossfade_seconds: 5.0
+  api_key_env: OPENROUTER_API_KEY

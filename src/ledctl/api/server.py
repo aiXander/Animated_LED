@@ -1,3 +1,8 @@
+import asyncio
+import contextlib
+import json
+import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -7,7 +12,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ..audio.capture import AudioCapture, list_input_devices
+from ..audio import AudioCapture, list_input_devices
 from ..config import AppConfig, AudioConfig, StripConfig
 from ..effects.registry import list_effects
 from ..engine import Engine
@@ -18,6 +23,8 @@ from ..transports.base import Transport
 from ..transports.ddp import DDPTransport
 from ..transports.multi import MultiTransport
 from ..transports.simulator import SimulatorTransport
+
+log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 DEFAULT_PRESETS_DIR = Path(__file__).resolve().parents[3] / "config" / "presets"
@@ -144,6 +151,7 @@ def _config_to_yaml_dict(cfg: AppConfig) -> dict[str, Any]:
         "transport": cfg.transport.model_dump(),
         "output": cfg.output.model_dump(),
         "audio": cfg.audio.model_dump(),
+        "agent": cfg.agent.model_dump(),
     }
 
 
@@ -152,9 +160,9 @@ def _build_capture(audio_cfg: AudioConfig) -> AudioCapture:
         device=audio_cfg.device,
         samplerate=audio_cfg.samplerate,
         blocksize=audio_cfg.blocksize,
+        fft_window=audio_cfg.fft_window,
         channels=audio_cfg.channels,
         gain=audio_cfg.gain,
-        smoothing=audio_cfg.smoothing,
     )
 
 
@@ -209,12 +217,23 @@ def create_app(
         audio.start()
     engine.attach_audio(audio.state)
 
+    # State websocket clients. Mutated only from the event loop, so a plain
+    # set + lock-free copy is fine.
+    state_clients: set[WebSocket] = set()
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         await engine.start()
+        broadcaster = asyncio.create_task(
+            _state_broadcaster(state_clients, _full_state_payload, engine.target_fps),
+            name="ledctl-state-broadcaster",
+        )
         try:
             yield
         finally:
+            broadcaster.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await broadcaster
             await engine.stop()
             cap: AudioCapture | None = app.state.audio
             if cap is not None:
@@ -231,6 +250,13 @@ def create_app(
     app.state.presets_dir = presets_path
     app.state.config_path = config_path
     app.state.audio = audio
+
+    # Phase 6 — language-driven control panel. Always installed (state +
+    # routes), but `/agent/chat` no-ops with 503 if `agent.enabled` is false
+    # or the API key env is unset. Render loop is unaffected either way.
+    from .agent import install_agent_routes
+
+    install_agent_routes(app, cfg.agent, presets_path)
 
     def current_topology() -> Topology:
         # Topology can be hot-swapped via PUT /config; always read it off the engine.
@@ -261,6 +287,7 @@ def create_app(
             "configured_device": app.state.config.audio.device,
             "samplerate": s.samplerate,
             "blocksize": s.blocksize,
+            "fft_window": s.fft_window,
             "channels": s.channels,
             "block_count": s.block_count,
             "error": s.error,
@@ -271,8 +298,7 @@ def create_app(
             "high": round(s.high, 5),
         }
 
-    @app.get("/state")
-    async def state() -> dict:
+    def _full_state_payload() -> dict:
         return {
             "fps": round(engine.fps, 2),
             "target_fps": engine.target_fps,
@@ -288,6 +314,10 @@ def create_app(
             "gamma": engine.gamma,
             "audio": _audio_state_payload(),
         }
+
+    @app.get("/state")
+    async def state() -> dict:
+        return _full_state_payload()
 
     @app.get("/topology")
     async def get_topology() -> dict:
@@ -483,9 +513,9 @@ def create_app(
             device=body.device,
             samplerate=app.state.config.audio.samplerate,
             blocksize=app.state.config.audio.blocksize,
+            fft_window=app.state.config.audio.fft_window,
             channels=app.state.config.audio.channels,
             gain=app.state.config.audio.gain,
-            smoothing=app.state.config.audio.smoothing,
         )
         new_cap.start()
         if not new_cap.state.enabled:
@@ -604,4 +634,61 @@ def create_app(
         finally:
             await sim.remove_client(websocket)
 
+    @app.websocket("/ws/state")
+    async def ws_state(websocket: WebSocket) -> None:
+        # Server-push stream of /state at engine.target_fps. Lets the landing
+        # page update the engine + audio panel at 60fps without an HTTP poll
+        # storm or rebuilding the chat / layer DOM.
+        await websocket.accept()
+        state_clients.add(websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            state_clients.discard(websocket)
+
     return app
+
+
+async def _state_broadcaster(
+    clients: set[WebSocket],
+    payload_fn,
+    target_fps: float,
+) -> None:
+    """Push a fresh state JSON to every connected client at `target_fps`.
+
+    Skips serialisation entirely when nobody is listening so the engine isn't
+    paying for a payload no one reads. Drops clients on send error.
+
+    Deadline-based scheduling — same pattern as `Engine._loop` — so payload
+    serialisation and per-client sends don't drift the rate below target. A
+    flat `await asyncio.sleep(period)` per cycle would have the audio meter
+    visibly lag the LED viz on a loaded event loop.
+    """
+    period = 1.0 / max(1.0, float(target_fps))
+    next_tick = time.perf_counter()
+    while True:
+        next_tick += period
+        sleep = next_tick - time.perf_counter()
+        if sleep > 0:
+            await asyncio.sleep(sleep)
+        else:
+            # Fell behind — resync to "now" so we don't burst-send a backlog.
+            next_tick = time.perf_counter()
+        if not clients:
+            continue
+        try:
+            text = json.dumps(payload_fn(), separators=(",", ":"))
+        except Exception:
+            log.exception("state broadcaster payload failed")
+            continue
+        dead: list[WebSocket] = []
+        for ws in list(clients):
+            try:
+                await ws.send_text(text)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            clients.discard(ws)

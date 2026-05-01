@@ -149,7 +149,9 @@ def test_config_yaml_includes_audio_block(audio_off_client: TestClient):
 def test_audio_config_defaults_when_missing():
     """A YAML without an `audio:` block should still load (defaults applied)."""
     cfg = load_config(DEV)
-    # The dev config now has an audio block — verify defaults persist anyway.
+    # The dev config has an explicit audio block — verify the new defaults
+    # (blocksize=128, fft_window=512) survive the round-trip.
     assert cfg.audio.samplerate == 48000
-    assert cfg.audio.blocksize == 512
+    assert cfg.audio.blocksize == 128
+    assert cfg.audio.fft_window == 512
     assert cfg.audio.enabled is True

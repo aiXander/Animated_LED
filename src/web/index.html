@@ -3,72 +3,302 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ledctl simulator</title>
+  <title>ledctl</title>
   <style>
     :root { color-scheme: dark; }
     html, body { margin: 0; height: 100%; background: #050505; color: #ddd;
-                  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; }
-    #hud {
-      position: fixed; top: 12px; left: 12px; padding: 10px 14px;
-      background: rgba(0,0,0,0.55); border: 1px solid #222; border-radius: 8px;
-      font-size: 12px; line-height: 1.5; user-select: none;
-      max-width: 360px;
-    }
-    #hud .row { display: flex; gap: 8px; }
-    #hud .k { opacity: 0.6; min-width: 88px; }
-    #hud a { color: #93c5fd; }
+                  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                  overflow: hidden; }
+    #app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
     .ok  { color: #4ade80; }
     .bad { color: #f87171; }
     .warn { color: #fbbf24; }
     .dim { color: #888; }
+    a { color: #93c5fd; }
+
+    /* ---- top: LED viz ---- */
+    #viz {
+      position: relative; width: 100%; height: 220px;
+      border-bottom: 1px solid #1a1a1a; background: #050505;
+    }
+    #canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
     #cal-banner {
-      position: fixed; top: 12px; right: 12px; padding: 8px 12px;
-      background: rgba(127, 29, 29, 0.85); border: 1px solid #b91c1c; border-radius: 8px;
-      color: #fee2e2; font-size: 12px; display: none;
+      position: absolute; top: 10px; right: 12px; padding: 6px 10px;
+      background: rgba(127, 29, 29, 0.85); border: 1px solid #b91c1c;
+      border-radius: 6px; color: #fee2e2; font-size: 11px; display: none;
     }
     #cal-banner button {
-      margin-left: 10px; background: #b91c1c; color: #fee2e2; border: 0;
-      padding: 4px 8px; border-radius: 4px; font-family: inherit; cursor: pointer;
+      margin-left: 8px; background: #b91c1c; color: #fee2e2; border: 0;
+      padding: 3px 6px; border-radius: 3px; font-family: inherit; cursor: pointer;
     }
     #tooltip {
       position: fixed; pointer-events: none; padding: 6px 8px;
-      background: rgba(10, 10, 10, 0.92); border: 1px solid #333; border-radius: 6px;
-      font-size: 11px; line-height: 1.4; display: none; z-index: 10;
+      background: rgba(10, 10, 10, 0.92); border: 1px solid #333;
+      border-radius: 6px; font-size: 11px; line-height: 1.4;
+      display: none; z-index: 20;
     }
     #tooltip .gid { color: #93c5fd; }
-    canvas { display: block; cursor: crosshair; }
+    #ws-pill {
+      position: absolute; top: 10px; left: 12px; font-size: 11px;
+      padding: 4px 8px; border-radius: 999px; border: 1px solid #333;
+      background: rgba(0, 0, 0, 0.5);
+    }
+
+    /* ---- middle: chat | splitter | status ---- */
+    #middle { display: flex; min-height: 0; overflow: hidden; }
+    #chat {
+      display: flex; flex-direction: column; min-width: 280px;
+      border-right: 0; min-height: 0;
+    }
+    #chat header {
+      display: flex; gap: 10px; align-items: center; padding: 8px 14px;
+      border-bottom: 1px solid #1a1a1a; font-size: 12px;
+    }
+    #chat header .title { color: #93c5fd; font-weight: 600; }
+    #chat header .spacer { flex: 1; }
+    #chat header label { opacity: 0.6; }
+    #chat header input, #chat header button {
+      background: #111; color: #ddd; border: 1px solid #333; border-radius: 6px;
+      padding: 4px 8px; font-family: inherit; font-size: 12px;
+    }
+    #chat header button { cursor: pointer; }
+    #log { flex: 1; overflow-y: auto; padding: 14px; min-height: 0; }
+    .turn { margin-bottom: 14px; }
+    .bubble { padding: 8px 12px; border-radius: 10px; max-width: 92%;
+              white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
+    .user .bubble { background: #1e3a8a; color: #dbeafe; margin-left: auto; }
+    .asst .bubble { background: #161616; border: 1px solid #2a2a2a; color: #ddd; }
+    .row { display: flex; }
+    .user.row { justify-content: flex-end; }
+    .asst.row { justify-content: flex-start; }
+    .meta { font-size: 10px; opacity: 0.55; margin-top: 4px; }
+    .toolblock { margin-top: 6px; font-size: 11px; }
+    .toolblock summary { cursor: pointer; opacity: 0.75; }
+    .toolblock pre { background: #0c0c0c; border: 1px solid #222; border-radius: 6px;
+                     padding: 8px; overflow-x: auto; max-height: 280px; }
+    #chat footer { border-top: 1px solid #1a1a1a; padding: 10px 14px; }
+    #chat footer .composer { display: flex; gap: 8px; }
+    #input { flex: 1; background: #0a0a0a; color: #eee; border: 1px solid #333;
+             border-radius: 8px; padding: 10px 12px; font-family: inherit;
+             font-size: 14px; resize: none; }
+    #send { background: #1e40af; color: white; border: 0; border-radius: 8px;
+            padding: 10px 14px; font-family: inherit; font-weight: 600; cursor: pointer; }
+    #send:disabled { opacity: 0.5; cursor: not-allowed; }
+    #chat-status { font-size: 11px; opacity: 0.7; margin-top: 6px; }
+
+    /* ---- splitter ---- */
+    #splitter {
+      flex: 0 0 6px; background: #1a1a1a; cursor: col-resize;
+      position: relative; transition: background 0.15s;
+    }
+    #splitter:hover, #splitter.dragging { background: #2a2a2a; }
+    #splitter::after {
+      content: ""; position: absolute; top: 50%; left: 50%;
+      width: 2px; height: 32px; background: #444;
+      transform: translate(-50%, -50%); border-radius: 2px;
+    }
+    body.dragging { cursor: col-resize; user-select: none; }
+
+    /* ---- status panel ---- */
+    #status-panel {
+      min-width: 200px; overflow-y: auto; padding: 14px;
+      font-size: 12px; background: #080808;
+    }
+    #status-panel h3 {
+      font-size: 11px; margin: 16px 0 6px; color: #fbbf24;
+      text-transform: uppercase; letter-spacing: 0.06em;
+      border-bottom: 1px solid #1a1a1a; padding-bottom: 4px;
+    }
+    #status-panel h3:first-child { margin-top: 0; }
+    .stat { display: flex; gap: 8px; padding: 2px 0; line-height: 1.4; }
+    .stat .k { opacity: 0.6; min-width: 84px; }
+    .stat .v { font-variant-numeric: tabular-nums; word-break: break-word; flex: 1; }
+    .meter {
+      display: grid; grid-template-columns: 38px 1fr 42px;
+      gap: 4px 6px; align-items: center; font-size: 11px;
+      margin-top: 4px;
+    }
+    .meter-label { opacity: 0.6; }
+    .bar { position: relative; height: 8px; background: #111;
+           border: 1px solid #1f1f1f; border-radius: 2px; overflow: hidden; }
+    /* No CSS transition: /ws/state pushes at engine target_fps (~60Hz, ~16ms),
+       so a transition longer than the update interval just lags the bar
+       behind the data and visually flattens transients. */
+    .fill { height: 100%; }
+    .fill.rms  { background: linear-gradient(90deg, #22c55e, #facc15, #f87171); }
+    .fill.peak { background: #93c5fd; opacity: 0.7; }
+    .fill.low  { background: #ef4444; }
+    .fill.mid  { background: #facc15; }
+    .fill.high { background: #38bdf8; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; opacity: 0.8; }
+    .layer-row {
+      padding: 4px 6px; margin: 3px 0; border-radius: 4px;
+      background: rgba(20, 20, 20, 0.7); border: 1px solid #1a1a1a;
+      font-size: 11px; line-height: 1.3;
+    }
+    .layer-row .name { color: #93c5fd; font-weight: 600; }
+    .layer-row .blend { opacity: 0.55; }
+
+    /* ---- bottom nav ---- */
+    #nav {
+      display: flex; gap: 8px; padding: 10px 14px;
+      border-top: 1px solid #1a1a1a; background: #080808;
+      flex-wrap: wrap; align-items: center;
+    }
+    #nav .label { font-size: 11px; opacity: 0.5; margin-right: 6px; }
+    #nav a {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 12px; background: #111; border: 1px solid #2a2a2a;
+      border-radius: 6px; color: #ddd; text-decoration: none;
+      font-size: 12px; transition: background 0.15s, border-color 0.15s;
+    }
+    #nav a:hover { background: #1a1a1a; border-color: #3a3a3a; color: #93c5fd; }
+    #nav .spacer { flex: 1; }
   </style>
 </head>
 <body>
-  <div id="hud">
-    <div class="row"><span class="k">status</span><span id="status" class="bad">connecting…</span></div>
-    <div class="row"><span class="k">render fps</span><span id="fps">—</span></div>
-    <div class="row"><span class="k">frames</span><span id="frames">0</span></div>
-    <div class="row"><span class="k">leds</span><span id="leds">0</span></div>
-    <div class="row"><span class="k">bbox</span><span id="bbox" class="dim">—</span></div>
-    <div class="row"><span class="k">tip</span><span class="dim">click an LED to solo it • <a href="/editor">/editor</a> • <a href="/audio">/audio</a></span></div>
+  <div id="app">
+    <!-- ===== top: LED viz ===== -->
+    <div id="viz">
+      <span id="ws-pill" class="dim">connecting…</span>
+      <canvas id="canvas"></canvas>
+      <div id="cal-banner">
+        <span id="cal-text">calibration active</span>
+        <button id="cal-clear">clear</button>
+      </div>
+    </div>
+    <div id="tooltip"></div>
+
+    <!-- ===== middle: chat | splitter | status ===== -->
+    <div id="middle">
+      <section id="chat">
+        <header>
+          <span class="title">chat</span>
+          <span class="dim" id="session-id">—</span>
+          <span class="spacer"></span>
+          <label for="model">model</label>
+          <input id="model" placeholder="(default)" size="24" />
+          <button id="new">new session</button>
+        </header>
+        <div id="log"></div>
+        <footer>
+          <form class="composer" id="form">
+            <textarea id="input" rows="2" placeholder="warm slow ambient drift, top row leading…" autofocus></textarea>
+            <button id="send" type="submit">send</button>
+          </form>
+          <div id="chat-status" class="dim">ready</div>
+        </footer>
+      </section>
+
+      <div id="splitter" title="drag to resize"></div>
+
+      <aside id="status-panel">
+        <h3>engine</h3>
+        <div class="stat"><span class="k">status</span><span class="v"><span id="status-engine" class="bad">connecting…</span></span></div>
+        <div class="stat"><span class="k">render fps</span><span class="v" id="fps">—</span></div>
+        <div class="stat"><span class="k">target fps</span><span class="v dim" id="target-fps">—</span></div>
+        <div class="stat"><span class="k">frames</span><span class="v" id="frames">0</span></div>
+        <div class="stat"><span class="k">dropped</span><span class="v" id="dropped">0</span></div>
+        <div class="stat"><span class="k">elapsed</span><span class="v" id="elapsed">0s</span></div>
+
+        <h3>output</h3>
+        <div class="stat"><span class="k">leds</span><span class="v" id="leds">0</span></div>
+        <div class="stat"><span class="k">bbox</span><span class="v dim" id="bbox">—</span></div>
+        <div class="stat"><span class="k">transport</span><span class="v" id="transport">—</span></div>
+        <div class="stat"><span class="k">sim clients</span><span class="v" id="sim-clients">0</span></div>
+        <div class="stat"><span class="k">gamma</span><span class="v dim" id="gamma">—</span></div>
+        <div class="stat"><span class="k">blackout</span><span class="v" id="blackout-state">false</span></div>
+        <div class="stat"><span class="k">crossfading</span><span class="v" id="crossfading-state">false</span></div>
+
+        <h3>audio</h3>
+        <div class="stat"><span class="k">device</span><span class="v dim" id="audio-device">—</span></div>
+        <div class="meter">
+          <span class="meter-label">RMS</span>
+          <div class="bar"><div class="fill rms" id="bar-rms" style="width:0%"></div></div>
+          <span class="num" id="num-rms">0.000</span>
+          <span class="meter-label">peak</span>
+          <div class="bar"><div class="fill peak" id="bar-peak" style="width:0%"></div></div>
+          <span class="num" id="num-peak">0.000</span>
+          <span class="meter-label">low</span>
+          <div class="bar"><div class="fill low" id="bar-low" style="width:0%"></div></div>
+          <span class="num" id="num-low">0.000</span>
+          <span class="meter-label">mid</span>
+          <div class="bar"><div class="fill mid" id="bar-mid" style="width:0%"></div></div>
+          <span class="num" id="num-mid">0.000</span>
+          <span class="meter-label">high</span>
+          <div class="bar"><div class="fill high" id="bar-high" style="width:0%"></div></div>
+          <span class="num" id="num-high">0.000</span>
+        </div>
+
+        <h3>layers</h3>
+        <div id="layers-list"><div class="dim">—</div></div>
+      </aside>
+    </div>
+
+    <!-- ===== bottom: nav ===== -->
+    <nav id="nav">
+      <span class="label">go to</span>
+      <a href="/editor">layout editor</a>
+      <a href="/audio">audio</a>
+      <a href="/docs">api docs</a>
+      <span class="spacer"></span>
+      <a href="#" id="blackout-toggle">blackout</a>
+    </nav>
   </div>
-  <div id="cal-banner">
-    <span id="cal-text">calibration active</span>
-    <button id="cal-clear">clear</button>
-  </div>
-  <div id="tooltip"></div>
-  <canvas id="canvas"></canvas>
+
 <script>
 (() => {
-  const canvas = document.getElementById("canvas");
-  const ctx = canvas.getContext("2d", { alpha: false });
-  const tooltip = document.getElementById("tooltip");
-  const calBanner = document.getElementById("cal-banner");
-  const calText = document.getElementById("cal-text");
-  const calClear = document.getElementById("cal-clear");
   const $ = (id) => document.getElementById(id);
 
-  // Each LED renders as a single fixed-size square. No per-LED glow / halo —
-  // the simulator should reflect color and luminance only, never bleed onto
-  // neighbouring pixels, so what you see in the browser matches what the
-  // strip will do. Tweak LED_SIZE to taste; ~half of it is the visible gap to
-  // the next LED at the default zoom.
+  // =========================================================================
+  // splitter — drag the boundary between chat (left) and status (right).
+  // Default 75% / 25% via flex-basis on the two panes.
+  // =========================================================================
+  const middle = $("middle");
+  const chatPane = $("chat");
+  const statusPane = $("status-panel");
+  const splitter = $("splitter");
+
+  function setSplit(leftPct) {
+    const clamped = Math.max(35, Math.min(85, leftPct));
+    chatPane.style.flex = `0 0 calc(${clamped}% - 3px)`;
+    statusPane.style.flex = `0 0 calc(${100 - clamped}% - 3px)`;
+  }
+  setSplit(75);
+
+  let dragging = false;
+  splitter.addEventListener("mousedown", (e) => {
+    dragging = true;
+    document.body.classList.add("dragging");
+    splitter.classList.add("dragging");
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const rect = middle.getBoundingClientRect();
+    const pct = ((e.clientX - rect.left) / rect.width) * 100;
+    setSplit(pct);
+    requestReproject();
+  });
+  window.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove("dragging");
+    splitter.classList.remove("dragging");
+  });
+
+  // =========================================================================
+  // LED simulator — same logic as the previous index.html, but the canvas
+  // now lives in a fixed-height top section, so reproject() reads the
+  // canvas's container size instead of window.innerWidth/Height.
+  // =========================================================================
+  const canvas = $("canvas");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const tooltip = $("tooltip");
+  const calBanner = $("cal-banner");
+  const calText = $("cal-text");
+  const calClear = $("cal-clear");
+
   const LED_SIZE = 6;
   const LED_HALF = LED_SIZE / 2;
 
@@ -76,39 +306,46 @@
   let bboxMin = [0, 0, 0];
   let bboxMax = [1, 1, 1];
   let lastFrame = null;
-  let frameCount = 0;
-  let lastFpsT = performance.now();
-  let framesSinceFpsTick = 0;
-
-  // Cached projected (x,y) per LED, recomputed on resize / topology reload.
   let projected = null;
-  // Mouse state for hover lookup.
+  // mouseX/mouseY are canvas-local (used for hit-testing).
+  // mouseAbsX/Y are viewport coords (used to anchor the fixed-position tooltip).
   let mouseX = -1, mouseY = -1;
-  // Solo state we set ourselves; the truth is /state.calibration but we
-  // remember what we asked for to make click-to-toggle feel snappy.
+  let mouseAbsX = 0, mouseAbsY = 0;
   let mySolo = null;
+  let canvasW = 1, canvasH = 1;
 
-  function resize() {
+  function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.floor(window.innerWidth * dpr);
-    canvas.height = Math.floor(window.innerHeight * dpr);
-    canvas.style.width = window.innerWidth + "px";
-    canvas.style.height = window.innerHeight + "px";
+    const rect = canvas.getBoundingClientRect();
+    canvasW = Math.max(1, Math.floor(rect.width));
+    canvasH = Math.max(1, Math.floor(rect.height));
+    canvas.width = Math.floor(canvasW * dpr);
+    canvas.height = Math.floor(canvasH * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     reproject();
   }
-  window.addEventListener("resize", resize);
+
+  let reprojectScheduled = false;
+  function requestReproject() {
+    if (reprojectScheduled) return;
+    reprojectScheduled = true;
+    requestAnimationFrame(() => { reprojectScheduled = false; resizeCanvas(); });
+  }
+  window.addEventListener("resize", requestReproject);
+  if (window.ResizeObserver) {
+    new ResizeObserver(requestReproject).observe($("viz"));
+  }
 
   function reproject() {
     if (!leds.length) { projected = null; return; }
-    const margin = 60;
-    const ww = window.innerWidth - 2 * margin;
-    const hh = window.innerHeight - 2 * margin;
+    const margin = 24;
+    const ww = canvasW - 2 * margin;
+    const hh = canvasH - 2 * margin;
     const dx = bboxMax[0] - bboxMin[0] || 1;
     const dy = bboxMax[1] - bboxMin[1] || 1;
     const s = Math.min(ww / dx, hh / dy);
-    const cx = window.innerWidth / 2;
-    const cy = window.innerHeight / 2;
+    const cx = canvasW / 2;
+    const cy = canvasH / 2;
     const ox = (bboxMin[0] + bboxMax[0]) / 2;
     const oy = (bboxMin[1] + bboxMax[1]) / 2;
     projected = new Float32Array(leds.length * 2);
@@ -118,7 +355,6 @@
     }
   }
 
-  // Hit-test: closest LED within `radius` px of the mouse.
   function pickLED() {
     if (!projected || mouseX < 0) return -1;
     const radius = 10, r2 = radius * radius;
@@ -134,7 +370,7 @@
 
   function draw() {
     ctx.fillStyle = "#050505";
-    ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+    ctx.fillRect(0, 0, canvasW, canvasH);
     if (leds.length && lastFrame && projected) {
       for (let i = 0; i < leds.length; i++) {
         const r = lastFrame[i * 3];
@@ -156,8 +392,8 @@
         );
         const led = leds[hit];
         tooltip.style.display = "block";
-        tooltip.style.left = (mouseX + 12) + "px";
-        tooltip.style.top = (mouseY + 12) + "px";
+        tooltip.style.left = (mouseAbsX + 12) + "px";
+        tooltip.style.top = (mouseAbsY + 12) + "px";
         tooltip.innerHTML =
           `<div class="gid">global #${led.global_index}</div>` +
           `<div>${led.strip_id} · local ${led.local_index}</div>` +
@@ -169,7 +405,15 @@
     requestAnimationFrame(draw);
   }
 
-  canvas.addEventListener("mousemove", (e) => { mouseX = e.clientX; mouseY = e.clientY; });
+  // pickLED works in canvas-local coords; the tooltip is fixed-positioned so
+  // it needs viewport coords. Track both.
+  canvas.addEventListener("mousemove", (e) => {
+    const r = canvas.getBoundingClientRect();
+    mouseX = e.clientX - r.left;
+    mouseY = e.clientY - r.top;
+    mouseAbsX = e.clientX;
+    mouseAbsY = e.clientY;
+  });
   canvas.addEventListener("mouseleave", () => { mouseX = -1; tooltip.style.display = "none"; });
 
   canvas.addEventListener("click", async () => {
@@ -187,36 +431,203 @@
       });
       mySolo = gid;
     }
-    pollState();
+    // /ws/state will push the new calibration state within ~16ms.
   });
 
   calClear.addEventListener("click", async () => {
     await fetch("/calibration/stop", { method: "POST" });
     mySolo = null;
-    pollState();
   });
 
-  async function pollState() {
+  // =========================================================================
+  // Status panel — DOM nodes cached once; /ws/state pushes a fresh snapshot
+  // at engine.target_fps and we only mutate textContent / style.width here.
+  // No component re-rendering: the layer rows are only rebuilt when the
+  // layer stack actually changes (signature compare). The chat panel is
+  // untouched by this loop.
+  // =========================================================================
+  const els = {
+    fps: $("fps"), targetFps: $("target-fps"),
+    frames: $("frames"), dropped: $("dropped"), elapsed: $("elapsed"),
+    transport: $("transport"), simClients: $("sim-clients"), gamma: $("gamma"),
+    blackoutState: $("blackout-state"), crossfadingState: $("crossfading-state"),
+    audioDevice: $("audio-device"),
+    barRms: $("bar-rms"), barPeak: $("bar-peak"),
+    barLow: $("bar-low"), barMid: $("bar-mid"), barHigh: $("bar-high"),
+    numRms: $("num-rms"), numPeak: $("num-peak"),
+    numLow: $("num-low"), numMid: $("num-mid"), numHigh: $("num-high"),
+    layersList: $("layers-list"),
+  };
+
+  function fmtNum(v, digits = 3) { return v == null ? "—" : Number(v).toFixed(digits); }
+  function pct(v) { return Math.max(0, Math.min(100, (v || 0) * 100)).toFixed(1) + "%"; }
+
+  // Last text written into each value node, so we can short-circuit DOM
+  // writes when nothing changed (cheap, but cuts layout/style invalidation
+  // when the value is identical frame to frame).
+  const lastText = new WeakMap();
+  function setText(node, text) {
+    if (lastText.get(node) === text) return;
+    lastText.set(node, text);
+    node.textContent = text;
+  }
+  function setWidth(node, width) {
+    if (lastText.get(node) === width) return;
+    lastText.set(node, width);
+    node.style.width = width;
+  }
+  function setClass(node, cls) {
+    if (node.className === cls) return;
+    node.className = cls;
+  }
+
+  // Layers are structural — keep one DOM row per layer and only rebuild when
+  // the count or per-row signature changes. This protects the chat / log
+  // scroll position and avoids ~5 element churns per second.
+  let lastLayersSig = null;
+  const layerRowCache = []; // [{row, name, blend}]
+  function renderLayers(layers) {
+    layers = layers || [];
+    const sig = JSON.stringify(
+      layers.map((l) => [l.effect || "?", l.blend || "normal", l.opacity ?? 1])
+    );
+    if (sig === lastLayersSig) return;
+    lastLayersSig = sig;
+
+    const host = els.layersList;
+    if (!layers.length) {
+      host.replaceChildren();
+      const empty = document.createElement("div");
+      empty.className = "dim";
+      empty.textContent = "— no layers —";
+      host.appendChild(empty);
+      layerRowCache.length = 0;
+      return;
+    }
+    // Drop the "no layers" placeholder (or stale rows) if present.
+    if (layerRowCache.length !== layers.length || !layerRowCache.length) {
+      host.replaceChildren();
+      layerRowCache.length = 0;
+      layers.forEach((_, i) => {
+        const row = document.createElement("div");
+        row.className = "layer-row";
+        const head = document.createElement("div");
+        const idx = document.createElement("span");
+        idx.className = "dim";
+        idx.textContent = `#${i}`;
+        const name = document.createElement("span");
+        name.className = "name";
+        head.appendChild(idx);
+        head.appendChild(document.createTextNode(" "));
+        head.appendChild(name);
+        const blend = document.createElement("div");
+        blend.className = "blend";
+        row.appendChild(head);
+        row.appendChild(blend);
+        host.appendChild(row);
+        layerRowCache.push({ row, name, blend });
+      });
+    }
+    layers.forEach((l, i) => {
+      const cache = layerRowCache[i];
+      const opacity = (typeof l.opacity === "number") ? l.opacity.toFixed(2) : "1.00";
+      cache.name.textContent = l.effect || "?";
+      cache.blend.textContent = `blend ${l.blend || "normal"} · opacity ${opacity}`;
+    });
+  }
+
+  // Apply a /state snapshot to the cached DOM nodes. Called from the WS
+  // handler (target_fps) and from the initial /state fetch.
+  function applyState(s) {
+    if (!s) return;
+    setText(els.fps, fmtNum(s.fps, 1));
+    setText(els.targetFps, s.target_fps ?? "—");
+    setText(els.frames, String(s.frame_count ?? 0));
+    setText(els.dropped, String(s.dropped_frames ?? 0));
+    setText(els.elapsed, (s.elapsed != null) ? `${s.elapsed.toFixed(1)}s` : "—");
+    setText(els.transport, s.transport_mode || "—");
+    setText(els.simClients, String(s.sim_clients ?? 0));
+    setText(els.gamma, fmtNum(s.gamma, 2));
+
+    const bo = !!s.blackout;
+    setText(els.blackoutState, bo ? "true" : "false");
+    setClass(els.blackoutState, bo ? "v warn" : "v dim");
+
+    const cf = !!s.crossfading;
+    setText(els.crossfadingState, cf ? "true" : "false");
+    setClass(els.crossfadingState, cf ? "v ok" : "v dim");
+
+    renderLayers(s.layers);
+
+    const a = s.audio || {};
+    setText(els.audioDevice, a.device || (a.enabled === false ? "(disabled)" : "—"));
+    setWidth(els.barRms,  pct(a.rms));
+    setWidth(els.barPeak, pct(a.peak));
+    setWidth(els.barLow,  pct(a.low));
+    setWidth(els.barMid,  pct(a.mid));
+    setWidth(els.barHigh, pct(a.high));
+    setText(els.numRms,  fmtNum(a.rms));
+    setText(els.numPeak, fmtNum(a.peak));
+    setText(els.numLow,  fmtNum(a.low));
+    setText(els.numMid,  fmtNum(a.mid));
+    setText(els.numHigh, fmtNum(a.high));
+
+    // Calibration banner — text rarely changes; setText guards it.
+    const cal = s.calibration;
+    if (cal) {
+      calBanner.style.display = "block";
+      const txt = (cal.mode === "solo")
+        ? `solo lit: #${cal.indices.join(", #")}`
+        : `walk · step ${cal.step} · ${cal.interval}s · current #${cal.current}`;
+      setText(calText, txt);
+    } else {
+      if (calBanner.style.display !== "none") calBanner.style.display = "none";
+      mySolo = null;
+    }
+  }
+
+  // One-shot initial fetch — paints the panel before the first WS message
+  // arrives, and serves as the fallback when the WS is unavailable.
+  async function fetchStateOnce() {
     try {
       const r = await fetch("/state");
-      const s = await r.json();
-      const cal = s.calibration;
-      if (cal) {
-        calBanner.style.display = "block";
-        if (cal.mode === "solo") {
-          calText.textContent = `solo lit: #${cal.indices.join(", #")}`;
-        } else {
-          calText.textContent =
-            `walk · step ${cal.step} · ${cal.interval}s · current #${cal.current}`;
-        }
-      } else {
-        calBanner.style.display = "none";
-        mySolo = null;
-      }
-    } catch (e) { /* ignore */ }
+      applyState(await r.json());
+    } catch (e) { /* WS will catch up */ }
   }
-  setInterval(pollState, 1000);
 
+  // /ws/state — server pushes the same payload as GET /state at target_fps.
+  // Auto-reconnects with backoff. Falls back to a 1s poll while disconnected
+  // so the panel never freezes if the WS is down.
+  let stateWsBackoff = 500;
+  let stateFallbackTimer = null;
+  function startStateFallback() {
+    if (stateFallbackTimer) return;
+    stateFallbackTimer = setInterval(fetchStateOnce, 1000);
+  }
+  function stopStateFallback() {
+    if (!stateFallbackTimer) return;
+    clearInterval(stateFallbackTimer);
+    stateFallbackTimer = null;
+  }
+  function connectStateWs() {
+    const url = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws/state";
+    const ws = new WebSocket(url);
+    ws.onopen = () => { stateWsBackoff = 500; stopStateFallback(); };
+    ws.onmessage = (ev) => {
+      try { applyState(JSON.parse(ev.data)); } catch (e) { /* ignore */ }
+    };
+    const reconnect = () => {
+      startStateFallback();
+      setTimeout(connectStateWs, stateWsBackoff);
+      stateWsBackoff = Math.min(stateWsBackoff * 2, 5000);
+    };
+    ws.onclose = reconnect;
+    ws.onerror = () => { try { ws.close(); } catch (e) { /* ignore */ } };
+  }
+
+  // =========================================================================
+  // Topology + WebSocket frames.
+  // =========================================================================
   async function loadTopology() {
     const r = await fetch("/topology");
     const topo = await r.json();
@@ -229,43 +640,222 @@
     reproject();
   }
 
-  async function init() {
+  async function initSimulator() {
     try {
       await loadTopology();
     } catch (e) {
-      $("status").textContent = "topology fetch failed";
-      $("status").className = "bad";
+      $("status-engine").textContent = "topology fetch failed";
+      $("status-engine").className = "bad";
       return;
     }
-    resize();
+    resizeCanvas();
 
     const wsUrl = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws/frames";
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
-    ws.onopen = () => { $("status").textContent = "connected"; $("status").className = "ok"; };
-    ws.onclose = () => { $("status").textContent = "disconnected"; $("status").className = "bad"; };
-    ws.onerror = () => { $("status").textContent = "error"; $("status").className = "bad"; };
+    const setWs = (txt, cls) => {
+      $("ws-pill").textContent = txt;
+      $("ws-pill").className = cls;
+      $("status-engine").textContent = txt;
+      $("status-engine").className = cls;
+    };
+    ws.onopen = () => setWs("connected", "ok");
+    ws.onclose = () => setWs("disconnected", "bad");
+    ws.onerror = () => setWs("error", "bad");
     ws.onmessage = (ev) => {
       const buf = new Uint8Array(ev.data);
-      // Topology can grow/shrink mid-session if the operator saves the editor;
-      // refetch when the frame size disagrees with the cached LED count.
       if (buf.length !== leds.length * 3) { loadTopology(); }
       lastFrame = buf;
-      frameCount++;
-      framesSinceFpsTick++;
-      $("frames").textContent = frameCount;
-      const now = performance.now();
-      if (now - lastFpsT >= 1000) {
-        $("fps").textContent = (framesSinceFpsTick * 1000 / (now - lastFpsT)).toFixed(1);
-        framesSinceFpsTick = 0;
-        lastFpsT = now;
-      }
     };
     requestAnimationFrame(draw);
-    pollState();
   }
 
-  init();
+  // =========================================================================
+  // Chat — same flow as the standalone /chat page, just hosted in #chat.
+  // =========================================================================
+  const log = $("log");
+  const input = $("input");
+  const sendBtn = $("send");
+  const chatStatus = $("chat-status");
+  const sidEl = $("session-id");
+  const modelInput = $("model");
+
+  let sessionId = null;
+  let inflight = false;
+  let cfgDefaultModel = "";
+
+  function setChatStatus(text, cls = "dim") {
+    chatStatus.textContent = text;
+    chatStatus.className = cls;
+  }
+
+  function escapeHtml(s) {
+    return (s || "").replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    })[c]);
+  }
+
+  function renderUserBubble(text) {
+    const row = document.createElement("div");
+    row.className = "turn user row";
+    row.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+    return row;
+  }
+
+  // Render an assistant bubble. `turn.pending=true` shows a spinner placeholder
+  // that send() later replaces in-place via the returned element.
+  function renderAsstBubble(turn) {
+    const row = document.createElement("div");
+    row.className = "turn asst row";
+    if (turn.pending) {
+      row.innerHTML = `<div><div class="bubble dim">…</div></div>`;
+      log.appendChild(row);
+      log.scrollTop = log.scrollHeight;
+      return row;
+    }
+
+    const hasText = !!(turn.assistant_text && turn.assistant_text.trim());
+    const hasTool = !!turn.tool_call;
+    let bubbleText;
+    if (hasText) bubbleText = turn.assistant_text;
+    else if (hasTool) bubbleText = "(tool call — see below)";
+    else bubbleText = `(no response${turn.finish_reason ? ` · finish_reason=${turn.finish_reason}` : ""})`;
+
+    let toolHtml = "";
+    if (hasTool) {
+      const okClass = turn.tool_result && turn.tool_result.ok ? "ok" : (turn.tool_result ? "bad" : "dim");
+      const summary = turn.tool_result
+        ? (turn.tool_result.ok
+           ? `tool: ${turn.tool_call.name} ✓ (${turn.tool_result.applied || "applied"}, crossfade ${turn.tool_result.crossfade_seconds ?? "?"}s)`
+           : `tool: ${turn.tool_call.name} ✗ ${escapeHtml(turn.tool_result.error || "error")}`)
+        : `tool: ${turn.tool_call.name}`;
+      // Open by default when there's no text — the operator needs to see what happened.
+      const openAttr = hasText ? "" : " open";
+      toolHtml = `
+        <details class="toolblock"${openAttr}>
+          <summary class="${okClass}">${summary}</summary>
+          <pre>arguments: ${escapeHtml(JSON.stringify(turn.tool_call.arguments, null, 2))}
+result: ${escapeHtml(JSON.stringify(turn.tool_result, null, 2))}</pre>
+        </details>`;
+    }
+    const bubbleClass = hasText ? "bubble" : "bubble dim";
+    const errHtml = turn.error
+      ? `<div class="meta bad">error: ${escapeHtml(turn.error)}</div>` : "";
+    row.innerHTML = `
+      <div>
+        <div class="${bubbleClass}">${escapeHtml(bubbleText)}</div>
+        ${toolHtml}
+        ${errHtml}
+      </div>`;
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+    return row;
+  }
+
+  function replaceAsstBubble(placeholder, turn) {
+    placeholder.remove();
+    return renderAsstBubble(turn);
+  }
+
+  async function loadAgentConfig() {
+    try {
+      const r = await fetch("/agent/config");
+      if (r.ok) {
+        const cfg = await r.json();
+        cfgDefaultModel = cfg.model;
+        modelInput.placeholder = cfg.model;
+        if (!cfg.enabled) setChatStatus("agent disabled in config", "bad");
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  async function send(text) {
+    if (inflight) return;
+    inflight = true;
+    sendBtn.disabled = true;
+    setChatStatus("thinking…");
+    renderUserBubble(text);
+    let placeholder = renderAsstBubble({ pending: true });
+    try {
+      const body = { message: text };
+      if (sessionId) body.session_id = sessionId;
+      const overrideModel = modelInput.value.trim();
+      if (overrideModel && overrideModel !== cfgDefaultModel) body.model = overrideModel;
+      const r = await fetch("/agent/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      sessionId = data.session_id;
+      sidEl.textContent = "session " + sessionId.slice(0, 8);
+      replaceAsstBubble(placeholder, {
+        assistant_text: data.assistant_text || "",
+        tool_call: data.tool_call,
+        tool_result: data.tool_result,
+        finish_reason: data.finish_reason,
+      });
+      setChatStatus(`ok · history ${data.history_size} · finish ${data.finish_reason || "—"}`);
+      // /ws/state pushes the new layer stack on the next tick (~16ms),
+      // so no manual poll needed.
+    } catch (e) {
+      setChatStatus("error: " + e.message, "bad");
+      replaceAsstBubble(placeholder, {
+        assistant_text: "(request failed)",
+        error: e.message,
+      });
+    } finally {
+      inflight = false;
+      sendBtn.disabled = false;
+    }
+  }
+
+  $("form").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    send(text);
+  });
+
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey) {
+      ev.preventDefault();
+      $("form").requestSubmit();
+    }
+  });
+
+  $("new").addEventListener("click", () => {
+    sessionId = null;
+    sidEl.textContent = "—";
+    log.innerHTML = "";
+    setChatStatus("new session");
+    input.focus();
+  });
+
+  // Bottom-nav blackout toggle.
+  $("blackout-toggle").addEventListener("click", async (ev) => {
+    ev.preventDefault();
+    try {
+      const r = await fetch("/state");
+      const s = await r.json();
+      const path = s.blackout ? "/resume" : "/blackout";
+      await fetch(path, { method: "POST" });
+      // /ws/state will reflect the new blackout flag on the next tick.
+    } catch (e) { /* ignore */ }
+  });
+
+  // Bootstrap.
+  loadAgentConfig();
+  initSimulator();
+  fetchStateOnce();
+  connectStateWs();
 })();
 </script>
 </body>

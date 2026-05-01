@@ -16,6 +16,7 @@ uv venv --python 3.11
 uv pip install -e ".[dev]"
 
 # run
+cd /Users/xandersteenbrugge/Documents/Projects/animated_LED
 .venv/bin/ledctl run --config config/config.dev.yaml
 # open http://127.0.0.1:8000  →  see the wave at ~60 FPS
 
@@ -63,11 +64,14 @@ animated_LED/
 │   │   ├── presets.py       # YAML preset loader
 │   │   ├── transports/      # base / ddp / simulator / multi
 │   │   ├── audio/           # capture / features / shared AudioState (Phase 5)
+│   │   ├── agent/           # Phase 6: client / session / tool / system_prompt
 │   │   ├── engine.py        # fixed-timestep async render loop, layer mutation API
-│   │   ├── api/server.py    # FastAPI: /state, /topology, /effects, /layer/{i}, /presets, /blackout, /audio*, /ws/frames
+│   │   ├── api/
+│   │   │   ├── server.py    # FastAPI: /state, /topology, /effects, /layer/{i}, /presets, /blackout, /audio*, /ws/frames, / (landing)
+│   │   │   └── agent.py     # /agent/chat, /agent/sessions/*, /agent/config (Phase 6)
 │   │   └── cli.py           # `ledctl run` / `ledctl show-config`
 │   └── web/
-│       ├── index.html       # Canvas2D simulator viewer
+│       ├── index.html       # landing: LED viz + chat + status panel + nav (Phase 6/7)
 │       ├── editor.html      # spatial layout editor (Phase 4)
 │       └── audio.html       # audio device picker + live meter (Phase 5)
 └── tests/
@@ -137,33 +141,134 @@ curl -s -X POST localhost:8000/blackout && curl -s -X POST localhost:8000/resume
 
 ---
 
+## Switching effect modes on the fly
+
+All commands below talk to a running `ledctl run` instance. Each block wipes the current layer stack and crossfades to something new.
+
+### Jump to a preset (recommended)
+
+```bash
+# Slow ocean scroll + sparkle, audio-reactive brightness — good for ambient/early set
+curl -s -X POST localhost:8000/presets/chill | jq .
+
+# Fast fire scroll + white sparkle, kick-drum reactive — peak hour
+curl -s -X POST localhost:8000/presets/peak | jq .
+
+# Slow sunset scroll, gently breathing down — after the last track
+curl -s -X POST localhost:8000/presets/cooldown | jq .
+
+# Override crossfade duration on any preset call:
+curl -s -X POST localhost:8000/presets/chill \
+  -H 'content-type: application/json' \
+  -d '{"crossfade_seconds": 5.0}' | jq .
+```
+
+### Switch to a single solid colour
+
+```bash
+# Deep purple — everything off except a flat wash
+curl -s -X POST localhost:8000/effects/solid \
+  -H 'content-type: application/json' \
+  -d '{"params":{"color":"#4b0082"}}'
+```
+
+### Slow colour-wave (wave effect)
+
+```bash
+# Slow blue↔teal wave travelling left→right
+curl -s -X POST localhost:8000/effects/wave \
+  -H 'content-type: application/json' \
+  -d '{"params":{"color_a":"#0033ff","color_b":"#00ffe7","wavelength":1.2,"speed":0.3,"direction":"x","softness":0.5}}'
+```
+
+### Scrolling gradient
+
+```bash
+# Rainbow gradient wrapping slowly left→right
+curl -s -X POST localhost:8000/effects/gradient \
+  -H 'content-type: application/json' \
+  -d '{"params":{"stops":[{"pos":0,"color":"#ff0000"},{"pos":0.33,"color":"#00ff00"},{"pos":0.66,"color":"#0000ff"},{"pos":1,"color":"#ff0000"}],"direction":"x","speed":0.15}}'
+```
+
+### Sparkle only
+
+```bash
+# Sparse silver sparkle on black
+curl -s -X POST localhost:8000/effects/sparkle \
+  -H 'content-type: application/json' \
+  -d '{"params":{"density":0.04,"color":"#ffffff","decay":1.5}}'
+
+# Dense gold rain
+curl -s -X POST localhost:8000/effects/sparkle \
+  -H 'content-type: application/json' \
+  -d '{"params":{"density":0.3,"color":"#ffd700","decay":0.6}}'
+```
+
+### Chase
+
+```bash
+# Single white comet chasing left→right
+curl -s -X POST localhost:8000/effects/chase \
+  -H 'content-type: application/json' \
+  -d '{"params":{"color":"#ffffff","length":0.05,"speed":1.0,"direction":"x"}}'
+
+# Wide slow green chase going right→left
+curl -s -X POST localhost:8000/effects/chase \
+  -H 'content-type: application/json' \
+  -d '{"params":{"color":"#00ff88","length":0.25,"speed":0.4,"direction":"-x"}}'
+```
+
+### Emergency blackout / resume
+
+```bash
+curl -s -X POST localhost:8000/blackout   # instant black
+curl -s -X POST localhost:8000/resume     # restore previous stack
+```
+
+### Inspect what's running
+
+```bash
+curl -s localhost:8000/state | jq '{fps:.fps,layers:.layers}'
+curl -s localhost:8000/effects | jq 'keys'   # list all registered effect names
+```
+
+---
+
 ## Audio (Phase 5)
 
-`audio.capture` wraps `sounddevice.InputStream`; the PortAudio callback computes RMS, peak, and three FFT band energies (low 20–250 Hz, mid 250 Hz–2 kHz, high 2–12 kHz) into a shared `AudioState`. The render loop reads scalar fields from it without locking, and `Topology.audio_state` exposes it to effects (`audio_pulse` is the seed effect — sample any band, scale brightness with `floor` / `ceiling` / `sensitivity`).
+The audio path is split into three pieces so the input source can change without rewriting the analysis:
 
-The microphone is hardcoded in `config.yaml` under `audio:`:
+- **`audio/source.py`** — `AudioSource` ABC + `SoundDeviceSource` (PortAudio via `sounddevice`). New sources (e.g. a DJ booth tap over RTP/AES67/NDI, or a file-based replay for tests) plug in here without touching the analyser. For now, anything macOS exposes as an input device — built-in mic, USB audio interface, or a Pioneer DJM mixer's USB-out — appears in `/audio/devices` and is selectable at runtime.
+- **`audio/analyser.py`** — `AudioAnalyser` consumes blocks from a source, maintains an FFT ring buffer of the most recent `fft_window` samples, computes RMS, peak, and three band energies (low 20–250 Hz, mid 250 Hz–2 kHz, high 2–12 kHz), and stamps a shared `AudioState` every callback. `blocksize` and `fft_window` are independent: `blocksize` sets the PortAudio HW capture latency floor, `fft_window` sets frequency resolution.
+- **`audio/state.py`** — `AudioState` fields are **raw and instantaneous**. No EMA, no peak-hold. The rolling-window normalizer auto-scales the `*_norm` companions to room loudness so bindings always see ~[0, 1]. All temporal smoothing for LED output is the per-binding job of `effects/modulator.Envelope` (asymmetric attack/release). This means audio measurements stay as fast as the source delivers, and each LED control picks its own time constants without inheriting a hidden global lag.
+
+The render loop reads scalar fields from `AudioState` without locking; `Topology.audio_state` exposes it to effects.
+
+Audio settings in `config.yaml`:
 
 ```yaml
 audio:
   enabled: true
   device: null            # null = system default; or a name fragment, or an index
   samplerate: 48000
-  blocksize: 512
+  blocksize: 128          # PortAudio chunk size; sets HW capture latency (~2.67 ms @ 48 kHz)
+  fft_window: 512         # FFT length over the most-recent samples; sets freq resolution
   channels: 1
   gain: 1.0
-  smoothing: 0.4
 ```
 
+> **Possible future improvement — biquad IIR filter bank.** Today's analyser does block-rate FFT band detection. A per-band biquad band-pass filter running sample-by-sample (with a short sliding RMS envelope) would track transients faster on mid/high bands — roughly 3–8 ms tighter on hi-hats and snare; bass is physics-bound either way. Trade-off: more moving parts and per-band coefficient design (`scipy.signal.butter`). Worth revisiting if reactivity ever feels sluggish on real DJ audio.
+
 Open `http://127.0.0.1:8000/audio` to:
-- list every input device the OS sees (works on mac built-in mic and Pi I²S/ALSA),
-- watch a live amplitude meter polled at ~20 fps (RMS, peak hold, low/mid/high bars),
+- list every input device the OS sees (works on mac built-in mic, USB audio interfaces, and Pi I²S/ALSA),
+- watch a live amplitude meter polled at ~20 fps (RMS, peak, low/mid/high bars — all raw),
 - pick a device and click **apply & save** — the chosen name is written back into `audio.device` (a `.bak` of the previous config is kept alongside).
 
 | method  | path             | what it does                                                      |
 | ------- | ---------------- | ------------------------------------------------------------------ |
 | GET     | `/audio`         | the audio config / live meter page                                |
 | GET     | `/audio/devices` | enumerate input devices (`{index, name, hostapi, …}`)             |
-| GET     | `/audio/state`   | current `{enabled, device, samplerate, rms, peak, low, mid, high}` |
+| GET     | `/audio/state`   | current `{enabled, device, samplerate, blocksize, fft_window, rms, peak, low, mid, high}` |
 | POST    | `/audio/select`  | switch device live; body `{device: str|int|null, persist?: bool}` |
 
 `/state` also includes an `audio` block so a single poll covers everything.
@@ -177,6 +282,87 @@ The `audio_pulse` effect joins the registry next to `wave`/`solid`/`gradient`/`s
 Stack it under another effect with `blend: multiply` for "fades to dark on quiet" or with `blend: add` for "punches up on the kick."
 
 The default boot stack now layers a fire-coloured (orange / amber / red) `gradient` scrolling left → right (with a small `cross_phase` so the top row leads the bottom by ~0.1 cycles) under an `audio_pulse` with `blend: multiply`, `floor=0.5`, `ceiling=1.0`, and `decay_seconds=0.5` — the whole frame breathes between 50–100% brightness on the room's RMS, and a kick-drum spike lingers for ~half a second instead of snapping back. Tweak any of it via `PATCH /layer/{i}` or replace it with `POST /presets/{name}`.
+
+---
+
+## Language-driven control panel (Phase 6)
+
+A thin language layer over the engine: type a request, the LLM emits **one** `update_leds` tool call describing the *complete* desired layer stack, the engine crossfades to it. No multi-tool agent loop. Follow-ups like *"more red, slower"* work because the system prompt is regenerated freshly **every turn** with the current LED state, the install topology, the live audio reading, and the full effect catalogue — the model never has to call `get_*` to discover anything.
+
+```bash
+# 1. drop your OpenRouter key into the repo root (not committed)
+echo 'OPENROUTER_API_KEY=sk-or-...' > .env
+
+# 2. start the server as usual; .env is auto-loaded
+.venv/bin/ledctl run --config config/config.dev.yaml
+
+# 3. open http://127.0.0.1:8000  →  the chat panel sits beside the LED viz
+```
+
+Without a key, `/agent/chat` returns 503 with a clear "missing OPENROUTER_API_KEY" message. The render loop, simulator, presets, and REST API are unaffected.
+
+| method  | path                          | what it does                                                                       |
+| ------- | ----------------------------- | ---------------------------------------------------------------------------------- |
+| GET     | `/`                           | the landing page — LED viz on top, chat (left) + status panel (right) below, nav buttons at the bottom; the boundary between chat and status is drag-resizable |
+| POST    | `/agent/chat`                 | body `{message, session_id?, model?}` → `{assistant_text, tool_call, tool_result, session_id, ...}` |
+| GET     | `/agent/sessions/{id}`        | full transcript for UI rehydration                                                |
+| DELETE  | `/agent/sessions/{id}`        | wipe a session                                                                    |
+| GET     | `/agent/config`               | read-only view of `agent.*` (model id, history cap, …) — **never** the API key   |
+
+Sessions live in memory only (v1) — server restart wipes them. Per-session rate limit (`agent.rate_limit_per_minute`, default 30) protects against runaway loops.
+
+The single tool the model has access to is `update_leds`:
+
+```python
+update_leds(
+    layers: list[Layer],            # ordered, layer 0 renders onto black
+    crossfade_seconds: float = 1.0, # how fast to morph from old → new
+    blackout: bool = False,         # convenience: kill output, ignore layers
+)
+# Layer = { effect, params, blend?, opacity? } — same shape as preset YAML.
+```
+
+It's the *complete* new state, never a diff. *"More red"* re-emits the full stack with redder colour stops. Per-effect param clamps come from the existing pydantic schemas, so a bad palette / unknown effect / out-of-range field comes back as a structured error in the tool result — the next turn sees the error in the rolling buffer and self-corrects.
+
+`agent.*` settings in `config.yaml`:
+
+```yaml
+agent:
+  enabled: true
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  model: anthropic/claude-sonnet-4-6     # any OpenRouter model id
+  history_max_messages: 20                # rolling buffer (excl. system prompt)
+  request_timeout_seconds: 60
+  rate_limit_per_minute: 30
+  default_crossfade_seconds: 1.0
+  api_key_env: OPENROUTER_API_KEY         # never a literal key in YAML
+```
+
+> **Where the dominant token cost lives.** The system prompt — install summary + current layer stack + audio snapshot + effect catalogue + bindings rubric + examples — is regenerated every turn and is roughly 1.5–3k tokens depending on stack depth. The rolling buffer is the secondary lever; the cap is `history_max_messages` (each turn = `user` + `assistant` + `tool` ≈ 3 messages).
+
+Smoke test from a second terminal:
+
+```bash
+# kick off a session and capture its id
+SID=$(curl -s -X POST localhost:8000/agent/chat \
+  -H 'content-type: application/json' \
+  -d '{"message": "warm slow ambient drift, top row leading"}' | jq -r .session_id)
+
+# follow up; the rolling buffer + freshly regenerated current-state
+# carry the prior turn into context
+curl -s -X POST localhost:8000/agent/chat \
+  -H 'content-type: application/json' \
+  -d "{\"message\": \"more red, slower\", \"session_id\": \"$SID\"}" | jq
+
+# blackout (no model in the loop — it just emits the tool call)
+curl -s -X POST localhost:8000/agent/chat \
+  -H 'content-type: application/json' \
+  -d "{\"message\": \"go dark\", \"session_id\": \"$SID\"}" | jq .tool_call
+
+# inspect the full transcript
+curl -s localhost:8000/agent/sessions/$SID | jq
+```
 
 ---
 
@@ -246,6 +432,7 @@ For centre-feed all 4 chain heads sit at `x=0`, so the dev/pi configs use `start
 - `tests/test_audio_features.py` — RMS / peak / band split (sine-tone isolation in low / mid / high bins)
 - `tests/test_audio_pulse.py` — `audio_pulse` reads `topology.audio_state`, honours floor / ceiling / sensitivity
 - `tests/test_audio_api.py` — `/audio` endpoints with `AudioCapture.start` monkeypatched: `/state` audio block, device list, persisted YAML write on `/audio/select` (and the previous YAML survives a failed device switch)
+- `tests/test_agent.py` — Phase 6: system-prompt assembly (install + catalogue + audio snapshot), `update_leds` tool round-trip + structured errors, rolling buffer cap + dangling-`tool` heal, per-session rate limit, `/agent/chat` with `AgentClient.complete` mocked (engine actually morphs), 503 on missing API key, 503 when `agent.enabled = false`
 
 ---
 
@@ -268,7 +455,7 @@ These are project-level reminders to apply when relevant; not everything is wire
 - [x] Phase 3 — REST API
 - [x] Phase 4 — spatial GUI / layout editor
 - [x] Phase 5 — audio analysis (capture, RMS / band features, `/audio` UI, `audio_pulse` effect)
-- [ ] Phase 6 — MCP server for LLM control
+- [x] Phase 6 — language-driven control panel via OpenRouter (single `update_leds` tool, fresh system prompt with current state + catalogue + audio every turn, rolling buffer, chat panel folded into the landing page)
 - [ ] Phase 7 — operator mobile UI
 - [ ] Phase 8 — Pi cutover
 - [ ] Phase 9 — on-site reliability

@@ -381,3 +381,46 @@ def test_noise_static_when_speed_zero(topo: Topology):
 def test_invalid_hex_in_palette_rejected():
     with pytest.raises(ValueError):
         PaletteStop(pos=0.5, color="not-hex")
+
+
+# ---- strict validation (LLM-facing contract) ----
+#
+# `EffectParams` is `extra="forbid"` so every Params subclass rejects unknown
+# keys. The LLM-driven `update_leds` flow depends on this — silent drops let
+# the model think hallucinated keys "worked" and the operator gets a no-op.
+
+
+def test_scroll_params_rejects_unknown_key():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as ei:
+        ScrollParams(scroll_phase=[0, 0, 0])  # hallucinated; real key is cross_phase
+    msg = str(ei.value)
+    assert "scroll_phase" in msg
+    assert "Extra inputs" in msg or "extra_forbidden" in msg
+
+
+def test_noise_params_rejects_scroll_only_keys():
+    from pydantic import ValidationError
+
+    # `softness` belongs to scroll, not noise.
+    with pytest.raises(ValidationError):
+        NoiseParams(softness=0.5)
+
+
+def test_radial_params_accepts_documented_keys_only():
+    from pydantic import ValidationError
+
+    RadialParams(center=(0.0, 0.0, 0.0), wavelength=0.5, shape="cosine")
+    with pytest.raises(ValidationError):
+        RadialParams(axis="x")  # axis is scroll-only
+
+
+def test_sparkle_params_rejects_speed_param():
+    from pydantic import ValidationError
+
+    # Sparkle has no notion of speed; users should bind via `bindings.speed`
+    # (which it ignores). A literal `speed` key should fail loudly so we don't
+    # mislead the LLM into thinking it works.
+    with pytest.raises(ValidationError):
+        SparkleParams(speed=0.5)

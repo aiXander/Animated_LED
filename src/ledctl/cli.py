@@ -37,6 +37,21 @@ def main(argv: list[str] | None = None) -> int:
             level=args.log_level.upper(),
             format="%(asctime)s %(levelname)-5s %(name)s: %(message)s",
         )
+        # Load .env (if present) before anything else so OPENROUTER_API_KEY
+        # — and any other secrets the agent reads — are visible. Load the
+        # repo-root .env first so its keys win, then ~/.env to fill in any
+        # missing keys (load_dotenv defaults to override=False).
+        try:
+            from dotenv import load_dotenv
+
+            repo_env = Path(__file__).resolve().parents[2] / ".env"
+            home_env = Path.home() / ".env"
+            if repo_env.is_file():
+                load_dotenv(repo_env)
+            if home_env.is_file():
+                load_dotenv(home_env)
+        except ImportError:  # pragma: no cover — defensive; dep is required
+            pass
         cfg = load_config(args.config)
         host = args.host or cfg.server.host
         port = args.port or cfg.server.port

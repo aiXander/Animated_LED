@@ -1,6 +1,6 @@
 project:
   name: festival_scaffold_dev
-  target_fps: 60
+  target_fps: 40
 server:
   host: 127.0.0.1
   port: 8000
@@ -20,7 +20,7 @@ strips:
   geometry:
     type: line
     start:
-    - 0.05
+    - 0.0
     - 0.5
     - 0.0
     end:
@@ -71,11 +71,11 @@ strips:
   geometry:
     type: line
     start:
-    - -0.05
+    - 0.0
     - -0.5
     - 0.0
     end:
-    - 14.95
+    - 15.0
     - -0.5
     - 0.0
   reversed: false
@@ -89,7 +89,18 @@ audio:
   enabled: true
   device: null
   samplerate: 48000
-  blocksize: 512
+  blocksize: 128
+  fft_window: 512
   channels: 1
   gain: 1.0
-  smoothing: 0.4
+agent:
+  enabled: true
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  model: google/gemini-3.1-flash-lite-preview
+  history_max_messages: 5
+  request_timeout_seconds: 20.0
+  rate_limit_per_minute: 10
+  default_crossfade_seconds: 5.0
+  api_key_env: OPENROUTER_API_KEY
+  debug_logging: true

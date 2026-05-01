@@ -87,14 +87,105 @@ class AudioConfig(BaseModel):
     )
     samplerate: int = Field(48000, gt=0, description="Capture sample rate in Hz")
     blocksize: int = Field(
+        128, gt=0,
+        description=(
+            "Frames per PortAudio callback. Sets the HW capture latency floor; "
+            "smaller = lower latency, slightly more callbacks/sec. 128 @ 48 kHz "
+            "≈ 2.67 ms is comfortable on M-series Macs."
+        ),
+    )
+    fft_window: int = Field(
         512, gt=0,
-        description="Frames per callback block; smaller = lower latency, higher CPU",
+        description=(
+            "FFT length over the most-recent samples; sets frequency resolution. "
+            "Must be >= blocksize. Larger windows give finer bins but slower "
+            "transient response (a kick ramps in over multiple updates)."
+        ),
     )
     channels: int = Field(1, ge=1, le=8, description="Capture channel count (mono = 1)")
     gain: float = Field(1.0, ge=0.0, description="Linear gain applied before features")
-    smoothing: float = Field(
-        0.4, ge=0.0, le=0.99,
-        description="EMA factor on RMS/band energies; 0 = no smoothing, ~0.9 = sluggish",
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_fields(cls, data: object) -> object:
+        # `smoothing` was a callback-side EMA factor in the original Phase-5
+        # implementation. After splitting source/analyser, all temporal smoothing
+        # moved into the per-binding modulator envelopes (effects/modulator.py),
+        # so a global EMA on the audio state is no longer wanted. Silently drop
+        # it on read so existing YAMLs keep loading; `extra="forbid"` would
+        # otherwise reject the unknown key.
+        if isinstance(data, dict) and "smoothing" in data:
+            data = {k: v for k, v in data.items() if k != "smoothing"}
+        return data
+
+    @model_validator(mode="after")
+    def _check_window_vs_block(self) -> "AudioConfig":
+        if self.fft_window < self.blocksize:
+            raise ValueError(
+                f"audio.fft_window ({self.fft_window}) must be >= "
+                f"audio.blocksize ({self.blocksize})"
+            )
+        return self
+
+
+class AgentConfig(BaseModel):
+    """Language-driven control panel (Phase 6).
+
+    A thin layer over OpenRouter (OpenAI-compatible). The render loop is
+    independent — even with `enabled: true`, `/agent/chat` returning a 503 on
+    a missing API key never affects what the LEDs are doing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = Field(
+        True, description="Mount /agent/* and /chat. The render loop is unaffected either way."
+    )
+    provider: Literal["openrouter"] = Field(
+        "openrouter", description="LLM provider; only OpenRouter for v1"
+    )
+    base_url: str = Field(
+        "https://openrouter.ai/api/v1",
+        description="OpenAI-compatible chat-completions endpoint",
+    )
+    model: str = Field(
+        "anthropic/claude-sonnet-4-6",
+        description="OpenRouter model id (e.g. 'anthropic/claude-sonnet-4-6')",
+    )
+    history_max_messages: int = Field(
+        20,
+        ge=2,
+        le=200,
+        description=(
+            "Rolling buffer size, excluding the system prompt. Each user turn "
+            "produces 3 messages (user / assistant tool-call / tool result), so "
+            "20 covers ~6 turns of context."
+        ),
+    )
+    request_timeout_seconds: float = Field(
+        60.0, gt=0.0, description="Hard timeout on a single OpenRouter request"
+    )
+    rate_limit_per_minute: int = Field(
+        30,
+        ge=0,
+        description="Per-session limit on /agent/chat (0 disables)",
+    )
+    default_crossfade_seconds: float = Field(
+        1.0,
+        ge=0.0,
+        description="Used if the model omits `crossfade_seconds` in its tool call",
+    )
+    api_key_env: str = Field(
+        "OPENROUTER_API_KEY",
+        description="Env var the server reads the API key from (never YAML)",
+    )
+    debug_logging: bool = Field(
+        False,
+        description=(
+            "Verbose per-turn logging of the OpenRouter request + response "
+            "(model, message previews, tool args, raw response). Off by "
+            "default; flip to True when diagnosing tool-call failures. "
+            "Errors are always logged regardless of this flag."
+        ),
     )
 
 
@@ -107,6 +198,7 @@ class AppConfig(BaseModel):
     transport: TransportConfig = TransportConfig()
     output: OutputConfig = OutputConfig()
     audio: AudioConfig = AudioConfig()
+    agent: AgentConfig = AgentConfig()
 
     @model_validator(mode="after")
     def _check_strip_layout(self) -> "AppConfig":
