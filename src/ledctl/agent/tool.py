@@ -1,126 +1,69 @@
 """The single `update_leds` tool.
 
 Argument shape mirrors a preset YAML — the LLM emits the *complete* new layer
-stack every turn, never a diff. The handler validates each layer through the
-effect's pydantic Params schema (so per-effect param clamps come for free) and
-calls `Engine.crossfade_to`, the same code path that powers `POST /presets/{name}`.
+stack every turn, never a diff. The argument is `surface.UpdateLedsSpec`: a
+list of `LayerSpec`s, each carrying a tree of `{kind, params}` nodes.
 
-If validation fails, we surface the structured pydantic error in the tool
-result. The next turn sees that error in the rolling buffer and can correct.
+The handler validates and compiles each layer against the surface registry,
+then calls `Engine.crossfade_to`, the same code path that powers
+`POST /presets/{name}`. If validation/compilation fails, we surface a
+structured error in the tool result. The next turn sees that error in the
+rolling buffer and can correct.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import ValidationError
 
-from ..effects.registry import list_effects
 from ..mixer import BLEND_MODES
+from ..surface import (
+    REGISTRY,
+    CompileError,
+    Compiler,
+    UpdateLedsSpec,
+)
 
 UPDATE_LEDS_TOOL_NAME = "update_leds"
 
-
-class UpdateLedsLayer(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    effect: str = Field(..., description="Effect name (see /effects for the catalogue)")
-    # Free-form per-effect params. Advertised to the LLM as a proper JSON
-    # object (`type: object, additionalProperties: true`) — the OpenRouter tool
-    # contract. The validator below also accepts a JSON-encoded string as a
-    # safety net, in case a provider ever falls back to that shape.
-    params: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Per-effect parameters; see the EFFECTS section of the system prompt.",
-    )
-    blend: Literal["normal", "add", "screen", "multiply"] = Field(
-        "normal",
-        description="How this layer composites onto the layers below.",
-    )
-    opacity: float = Field(1.0, ge=0.0, le=1.0)
-
-    @field_validator("params", mode="before")
-    @classmethod
-    def _parse_params(cls, v: Any) -> Any:
-        if isinstance(v, str):
-            if not v.strip():
-                return {}
-            try:
-                parsed = json.loads(v)
-            except json.JSONDecodeError as e:
-                raise ValueError(
-                    f"params must be a JSON object; parse error: {e}"
-                ) from e
-            if not isinstance(parsed, dict):
-                raise ValueError(
-                    f"params must decode to an object, got "
-                    f"{type(parsed).__name__}"
-                )
-            return parsed
-        return v
-
-
-class UpdateLedsInput(BaseModel):
-    """Tool argument: the complete new state of the install."""
-
-    model_config = ConfigDict(extra="forbid")
-    layers: list[UpdateLedsLayer] = Field(
-        default_factory=list,
-        description=(
-            "Ordered layer stack; layer 0 renders onto black. Empty list with "
-            "blackout=False means 'all dark' but blackout=True is preferred."
-        ),
-    )
-    crossfade_seconds: float | None = Field(
-        None,
-        ge=0.0,
-        description=(
-            "How long to morph from old → new. Pick to fit: snappy ~0.3 s, "
-            "smooth ~1.5 s, slow drift ~5 s."
-        ),
-    )
-    blackout: bool = Field(
-        False,
-        description="Convenience: kill output. When true, `layers` is ignored.",
-    )
+# Re-export so callers (api/agent.py) don't import from surface directly.
+UpdateLedsInput = UpdateLedsSpec
 
 
 def update_leds_tool_schema() -> dict[str, Any]:
     """OpenAI/OpenRouter-compatible tool schema.
 
-    Standard JSON Schema as documented at
-    https://openrouter.ai/docs/guides/features/tool-calling — `type: object`
-    with `properties` and `required` per OpenAI's function-calling format.
-
-    `params` is per-effect, so its schema can't be a single fixed object. We
-    describe the *valid* effects as an enum and pin per-effect param shapes in
-    the layer description, but keep the JSON-Schema shape of `params` open
-    (`additionalProperties: true`) so providers like Gemini that don't fully
-    support discriminated unions still accept the spec. Authoritative shape
-    is in the system prompt's EFFECTS section, and the server-side validator
-    rejects unknown keys with a structured error so the LLM can self-correct.
+    The recursive `node: {kind, params}` shape can't fit a single closed
+    JSON Schema (the `params` object is per-primitive). We pin `kind` to the
+    registered primitives via `enum` and leave `params` open
+    (`additionalProperties: true`) — the system prompt's CONTROL SURFACE
+    block carries the per-primitive param schemas, and the server-side
+    compiler rejects unknown keys with structured errors.
     """
-    parameters = _flatten_schema(UpdateLedsInput.model_json_schema())
+    parameters = _flatten_schema(UpdateLedsSpec.model_json_schema())
     layer_props = parameters["properties"]["layers"]["items"]["properties"]
-    known_effects = sorted(list_effects().keys())
-    # Pin `effect` to the actual catalogue so the LLM can't invent names.
-    layer_props["effect"] = {
+    # Layer.node is a NodeSpec; pin its `kind` enum and keep `params` open.
+    node_schema = layer_props.get("node", {})
+    node_props = node_schema.setdefault("properties", {})
+    node_props["kind"] = {
         "type": "string",
-        "enum": known_effects,
+        "enum": sorted(REGISTRY.keys()),
         "description": (
-            "Which generator to render. See EFFECTS in the system prompt for "
-            "the full per-effect param schema."
+            "Primitive name. The leaf of every layer tree must be a primitive "
+            "with output_kind=rgb_field (palette_lookup or solid). See the "
+            "CONTROL SURFACE section of the system prompt for the catalogue."
         ),
     }
-    layer_props["params"] = {
+    node_props["params"] = {
         "type": "object",
         "additionalProperties": True,
         "description": (
-            "Per-effect parameters. Authoritative schema for each effect "
-            "(including nested `palette` and `bindings`) is in the EFFECTS "
-            "section of the system prompt. Validation is strict server-side: "
-            "unknown keys, wrong nesting, or unknown enum values fail the "
-            "tool call with a structured error you can read on the next turn."
+            "Per-primitive parameters. Authoritative schema for each primitive "
+            "is in the CONTROL SURFACE section of the system prompt. "
+            "Validation is strict server-side: unknown keys, wrong nesting, "
+            "or unknown enum values fail with a structured error you can read "
+            "on the next turn."
         ),
     }
     return {
@@ -140,19 +83,8 @@ def update_leds_tool_schema() -> dict[str, Any]:
 
 
 def _flatten_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Inline a Pydantic JSON Schema into the OpenRouter-canonical shape.
-
-    Two normalisations, both required for broad provider compatibility:
-      - Resolve `$ref` against `$defs` (Pydantic emits these for nested models;
-        Gemini's OpenAPI 3.0 subset rejects refs — OpenRouter's docs show
-        inlined schemas).
-      - Collapse `anyOf: [X, {type: "null"}]` to `X` (Gemini conveys
-        nullability via `nullable: true`, not a `null` type member).
-
-    Everything else — `title`, `default`, `description`, `enum`,
-    `additionalProperties`, etc. — is standard JSON Schema and goes through
-    untouched.
-    """
+    """Inline `$ref`s and collapse `anyOf: [X, null]` for OpenRouter
+    compatibility (Gemini's OpenAPI 3.0 subset rejects refs)."""
     defs = schema.get("$defs", {})
 
     def walk(node: Any) -> Any:
@@ -197,7 +129,7 @@ def apply_update_leds(
     test-friendly without importing the full render loop.
     """
     try:
-        args = UpdateLedsInput.model_validate(raw_args)
+        args = UpdateLedsSpec.model_validate(raw_args)
     except ValidationError as e:
         return {
             "ok": False,
@@ -214,8 +146,6 @@ def apply_update_leds(
             "layers": engine.layer_state(),
             "crossfade_seconds": 0.0,
         }
-    # Coming out of blackout: clear the flag before crossfading so the new
-    # stack actually renders.
     engine.mixer.blackout = False
 
     duration = (
@@ -224,26 +154,12 @@ def apply_update_leds(
         else float(default_crossfade_seconds)
     )
 
-    # Pre-flight: structured validation of every layer against its effect
-    # schema, before mutating engine state. The engine itself would catch
-    # these too, but doing it here keeps the failure mode "no change applied"
-    # — partial crossfades would be confusing.
-    known = list_effects()
-    specs: list[dict[str, Any]] = []
+    # Pre-flight: structured compile of every layer against the registry,
+    # before mutating engine state. The engine itself would catch these too,
+    # but doing it here keeps the failure mode "no change applied" — partial
+    # crossfades would be confusing.
     layer_errors: list[dict[str, Any]] = []
     for i, layer in enumerate(args.layers):
-        if layer.effect not in known:
-            layer_errors.append(
-                {
-                    "layer": i,
-                    "field": "effect",
-                    "msg": (
-                        f"unknown effect {layer.effect!r}; "
-                        f"choose one of {sorted(known)}"
-                    ),
-                }
-            )
-            continue
         if layer.blend not in BLEND_MODES:
             layer_errors.append(
                 {
@@ -256,31 +172,20 @@ def apply_update_leds(
                 }
             )
             continue
-        cls = known[layer.effect]
         try:
-            cls.Params(**(layer.params or {}))
+            Compiler(engine.topology).compile_layer(layer)
+        except CompileError as e:
+            layer_errors.append(
+                {
+                    "layer": i,
+                    "path": e.path,
+                    "msg": e.raw_message,
+                    "valid_kinds": sorted(REGISTRY.keys()),
+                }
+            )
         except ValidationError as e:
-            allowed = sorted(cls.Params.model_fields.keys())
             for err in e.errors(include_url=False, include_context=False):
-                # Pydantic 'extra_forbidden' errors mean an unknown key snuck in.
-                # Annotate with the allowed key list so the LLM can self-correct
-                # in one turn instead of guessing.
-                entry: dict[str, Any] = {"layer": i, **err}
-                if err.get("type") == "extra_forbidden":
-                    entry["hint"] = (
-                        f"unknown key for effect={layer.effect!r}; "
-                        f"valid keys: {allowed}"
-                    )
-                layer_errors.append(entry)
-            continue
-        specs.append(
-            {
-                "effect": layer.effect,
-                "params": layer.params,
-                "blend": layer.blend,
-                "opacity": layer.opacity,
-            }
-        )
+                layer_errors.append({"layer": i, **err})
 
     if layer_errors:
         return {
@@ -291,7 +196,7 @@ def apply_update_leds(
         }
 
     try:
-        engine.crossfade_to(specs, duration)
+        engine.crossfade_to(args.layers, duration)
     except (ValidationError, TypeError, ValueError, KeyError) as e:
         return {
             "ok": False,
@@ -307,3 +212,11 @@ def apply_update_leds(
         "crossfade_seconds": duration,
         "layers": engine.layer_state(),
     }
+
+
+__all__ = [
+    "UPDATE_LEDS_TOOL_NAME",
+    "UpdateLedsInput",
+    "apply_update_leds",
+    "update_leds_tool_schema",
+]

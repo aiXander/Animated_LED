@@ -72,3 +72,4 @@ agent:
   rate_limit_per_minute: 10
   default_crossfade_seconds: 5.0
   api_key_env: OPENROUTER_API_KEY
+  retry_on_tool_error: 1

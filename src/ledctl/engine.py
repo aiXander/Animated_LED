@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass
@@ -7,10 +8,15 @@ from typing import Any, Literal
 
 from .audio.state import AudioState
 from .config import AppConfig
-from .effects.base import Effect, EffectParams
-from .effects.registry import get_effect_class
+from .masters import MasterControls, RenderContext
 from .mixer import BLEND_MODES, Layer, Mixer
 from .pixelbuffer import PixelBuffer
+from .surface import (
+    Compiler,
+    LayerSpec,
+    NodeSpec,
+    UpdateLedsSpec,
+)
 from .topology import Topology
 from .transports.base import Transport
 
@@ -26,8 +32,7 @@ class CalibrationState:
     """Active calibration override.
 
     `solo` lights a fixed set of indices; `walk` advances through the strip,
-    one index every `interval` seconds, useful during physical install to
-    confirm wiring matches `config.yaml`. Either mode bypasses the mixer.
+    one index every `interval` seconds. Either mode bypasses the mixer.
     """
 
     mode: Literal["solo", "walk"]
@@ -39,16 +44,24 @@ class CalibrationState:
     current: int = 0                        # walk: index lit right now
 
 
-def _build_effect(name: str, params: dict[str, Any], topology: Topology) -> Effect:
-    cls = get_effect_class(name)
-    params_obj: EffectParams = cls.Params(**(params or {}))
-    return cls(params_obj, topology)
-
-
 def _validate_blend(blend: str) -> str:
     if blend not in BLEND_MODES:
         raise ValueError(f"unknown blend mode {blend!r}; must be one of {BLEND_MODES}")
     return blend
+
+
+def _layer_from_spec(
+    spec: dict[str, Any] | LayerSpec, topology: Topology
+) -> Layer:
+    """Validate + compile a single LayerSpec dict into a runtime Layer."""
+    layer_spec = spec if isinstance(spec, LayerSpec) else LayerSpec.model_validate(spec)
+    compiled = Compiler(topology).compile_layer(layer_spec)
+    return Layer(
+        node=compiled.node,
+        spec_node=layer_spec.node.model_dump(),
+        blend=_validate_blend(compiled.blend),
+        opacity=float(compiled.opacity),
+    )
 
 
 class Engine:
@@ -57,6 +70,11 @@ class Engine:
     Targets `target_fps` using `time.perf_counter`. If the encode/transport
     falls behind, drop the schedule forward rather than spiral-of-death
     catching up — better to skip a frame than queue them.
+
+    `effective_t` is master-speed-scaled monotonic time; primitives read
+    `ctx.t` (which is effective_t). Crossfade alpha and `envelope` smoothing
+    use `ctx.wall_t` (raw monotonic) so operator direction never gets slowed
+    by `masters.speed` and a frozen pattern still breathes with the room.
     """
 
     def __init__(
@@ -64,6 +82,7 @@ class Engine:
         cfg: AppConfig,
         topology: Topology,
         transport: Transport,
+        masters: MasterControls | None = None,
     ):
         self.cfg = cfg
         self.topology = topology
@@ -75,20 +94,23 @@ class Engine:
         self.fps: float = 0.0
         self.frame_count: int = 0
         self.dropped_frames: int = 0
-        self.elapsed: float = 0.0
+        self.elapsed: float = 0.0          # wall-clock since start
+        self.effective_t: float = 0.0      # master-speed-scaled time
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self.calibration: CalibrationState | None = None
         self.audio_state: AudioState | None = None
+        self.masters: MasterControls = masters or MasterControls()
 
     def attach_audio(self, state: AudioState | None) -> None:
-        """Make an AudioState visible to audio-reactive effects via topology.
-
-        Stored on the engine so it survives `swap_topology` (the new topology
-        inherits the same reference).
-        """
+        """Make an AudioState visible to audio_band primitives via ctx."""
         self.audio_state = state
         self.topology.audio_state = state
+
+    def set_masters(self, **patch: object) -> MasterControls:
+        """Apply a partial master update; returns the post-clamp result."""
+        self.masters = self.masters.merge(**patch)
+        return self.masters
 
     async def start(self) -> None:
         if self._task is not None:
@@ -108,58 +130,63 @@ class Engine:
 
     def push_layer(
         self,
-        name: str,
-        params: dict[str, Any] | None = None,
+        node: dict[str, Any] | NodeSpec,
         blend: str = "normal",
         opacity: float = 1.0,
     ) -> int:
-        _validate_blend(blend)
-        effect = _build_effect(name, params or {}, self.topology)
-        self.mixer.layers.append(Layer(effect=effect, blend=blend, opacity=float(opacity)))
+        """Append a new compiled layer to the stack and return its index."""
+        spec_dict = {
+            "node": node.model_dump() if isinstance(node, NodeSpec) else node,
+            "blend": blend,
+            "opacity": float(opacity),
+        }
+        self.mixer.layers.append(_layer_from_spec(spec_dict, self.topology))
         return len(self.mixer.layers) - 1
 
     def update_layer(
         self,
         i: int,
-        params: dict[str, Any] | None = None,
+        node: dict[str, Any] | NodeSpec | None = None,
         blend: str | None = None,
         opacity: float | None = None,
     ) -> None:
+        """Patch a layer in place. `node` recompiles the tree (resets state)."""
         layer = self.mixer.layers[i]
         if blend is not None:
             layer.blend = _validate_blend(blend)
         if opacity is not None:
             layer.opacity = float(opacity)
-        if params is not None:
-            cls = type(layer.effect)
-            current = layer.effect.params.model_dump()
-            merged = {**current, **params}
-            new_params = cls.Params(**merged)
-            layer.effect = cls(new_params, self.topology)
+        if node is not None:
+            new_node = (
+                node.model_dump() if isinstance(node, NodeSpec) else node
+            )
+            spec_dict = {
+                "node": new_node,
+                "blend": layer.blend,
+                "opacity": layer.opacity,
+            }
+            new_layer = _layer_from_spec(spec_dict, self.topology)
+            layer.node = new_layer.node
+            layer.spec_node = new_layer.spec_node
 
     def remove_layer(self, i: int) -> None:
         self.mixer.layers.pop(i)
 
     def crossfade_to(
         self,
-        specs: list[dict[str, Any]],
+        layer_specs: list[dict[str, Any]] | list[LayerSpec],
         duration: float,
     ) -> None:
-        new_layers: list[Layer] = []
-        for spec in specs:
-            effect = _build_effect(spec["effect"], spec.get("params") or {}, self.topology)
-            blend = _validate_blend(spec.get("blend", "normal"))
-            opacity = float(spec.get("opacity", 1.0))
-            new_layers.append(Layer(effect=effect, blend=blend, opacity=opacity))
+        """Replace the layer stack and crossfade from the previous one."""
+        new_layers = [_layer_from_spec(spec, self.topology) for spec in layer_specs]
         self.mixer.crossfade_to(new_layers, duration, self.elapsed)
 
     def layer_state(self) -> list[dict[str, Any]]:
         return [
             {
-                "effect": layer.effect.name,
+                "node": dict(layer.spec_node),
                 "blend": layer.blend,
                 "opacity": layer.opacity,
-                "params": layer.effect.params.model_dump(),
             }
             for layer in self.mixer.layers
         ]
@@ -209,26 +236,21 @@ class Engine:
     def swap_topology(self, new_topology: Topology) -> None:
         """Replace topology and rebuild dependent state, preserving the layer stack.
 
-        Effects close over per-LED arrays (e.g. normalised positions), so they
-        must be re-instantiated against the new topology — even if pixel_count
-        is unchanged. Layer specs (effect name, params, blend, opacity) survive.
+        Layer trees close over per-LED arrays (e.g. normalised positions), so
+        they must be recompiled against the new topology — even if pixel_count
+        is unchanged. Layer specs (node tree, blend, opacity) survive.
         """
         specs = self.layer_state()
         n_old = self.topology.pixel_count
         self.topology = new_topology
-        # Carry the live audio reference across swaps so audio-reactive effects
-        # don't go silent after a layout edit.
         self.topology.audio_state = self.audio_state
         if new_topology.pixel_count != n_old:
             self.buffer = PixelBuffer(new_topology.pixel_count)
             self.mixer = Mixer(new_topology.pixel_count)
         else:
-            # Keep the mixer (its scratch buffers are still the right size) but
-            # drop layers — they're bound to the old topology.
             self.mixer.layers.clear()
         for spec in specs:
-            self.push_layer(spec["effect"], spec["params"], spec["blend"], spec["opacity"])
-        # Calibration state references global indices; clear if any are now out of range.
+            self.push_layer(spec["node"], blend=spec["blend"], opacity=spec["opacity"])
         cal = self.calibration
         if cal is not None and cal.mode == "solo":
             valid = tuple(i for i in cal.indices if i < new_topology.pixel_count)
@@ -250,11 +272,36 @@ class Engine:
             for i in cal.indices:
                 rgb[i] = cal.color
             return
-        # walk: one index lit, advancing every `interval` seconds.
         steps = int(max(0.0, t - cal.start_t) / cal.interval)
         idx = (steps * cal.step) % n
         cal.current = idx
         rgb[idx] = cal.color
+
+    # ---- per-frame audio scaling ----
+
+    def _build_audio_view(self) -> AudioState | None:
+        """Apply masters.audio_reactivity to the *_norm fields once per tick.
+
+        Raw fields are passed through unchanged. The doc behind this
+        (refactor §7.2 audio stage) is that the master applies uniformly
+        regardless of how many `audio_band` references the tree holds, and a
+        future second audio primitive doesn't have to re-implement the
+        multiply.
+        """
+        s = self.audio_state
+        if s is None:
+            return None
+        gain = max(0.0, float(self.masters.audio_reactivity))
+        if gain == 1.0:
+            return s
+        return dataclasses.replace(
+            s,
+            rms_norm=s.rms_norm * gain,
+            peak_norm=s.peak_norm * gain,
+            low_norm=s.low_norm * gain,
+            mid_norm=s.mid_norm * gain,
+            high_norm=s.high_norm * gain,
+        )
 
     # ---- main loop ----
 
@@ -264,19 +311,31 @@ class Engine:
         next_tick = t0
         fps_window_start = t0
         fps_window_frames = 0
+        last_wall = t0
 
         try:
             while not self._stop.is_set():
                 now = time.perf_counter()
-                t = now - t0
-                self.elapsed = t
+                wall_t = now - t0
+                dt_wall = wall_t - last_wall
+                last_wall = wall_t
+                self.elapsed = wall_t
+
+                # Advance effective_t by dt × speed; freeze short-circuits to 0.
+                speed = 0.0 if self.masters.freeze else float(self.masters.speed)
+                self.effective_t += dt_wall * speed
+
+                ctx = RenderContext(
+                    t=self.effective_t,
+                    wall_t=wall_t,
+                    audio=self._build_audio_view(),
+                    masters=self.masters,
+                )
 
                 self.buffer.clear()
-                self.mixer.render(t, self.buffer.rgb)
-                # Calibration override (if active) replaces the rendered frame
-                # with a single-LED-red pattern. Applied after mixer so it wins.
+                self.mixer.render(ctx, self.buffer.rgb)
                 if self.calibration is not None:
-                    self._apply_calibration(t)
+                    self._apply_calibration(wall_t)
                 await self.transport.send_frame(self.buffer.to_uint8(self.gamma))
 
                 self.frame_count += 1
@@ -295,11 +354,13 @@ class Engine:
                     except TimeoutError:
                         pass
                 else:
-                    # Fell behind; resync schedule and count it.
                     self.dropped_frames += 1
                     next_tick = time.perf_counter()
-                    # Yield so we don't starve other tasks during a long stall.
                     await asyncio.sleep(0)
         except Exception:
             log.exception("engine loop crashed")
             raise
+
+
+# Re-export so callers keep `from ledctl.engine import UpdateLedsSpec` ergonomic.
+__all__ = ["CalibrationState", "Engine", "UpdateLedsSpec"]

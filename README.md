@@ -7,7 +7,15 @@ Design docs in repo root:
 - `implementation_roadmap.md` — software roadmap, phases 0–9
 - `refactor_LED_control_surface.md` — in-progress refactor that collapses the effect / palette / modulator layer into a single compositional surface (`src/ledctl/surface.py`) plus an operator-owned `MasterControls` set; lands before Phase 7 (mobile UI)
 
-> **Refactor in progress.** The "Effects, layers, and presets" and "Switching effect modes on the fly" sections below describe today's `field × palette × bindings` shape (effects: `scroll`, `radial`, `sparkle`, `noise`). They will be rewritten to a tree-shaped `{kind, params}` spec with composable primitives once the surface refactor lands. See the design doc above for the new shape. Layer endpoints rename: `POST /effects/{name}` → `POST /layers`, `PATCH /layer/{i}` → `PATCH /layers/{i}`, `DELETE /layer/{i}` → `DELETE /layers/{i}`, `GET /effects` → `GET /surface/primitives`. `POST /presets/{name}` keeps its path. The curl examples below (and the matching endpoint table) will be rewritten in commit 2 of the refactor.
+> **Refactor landed.** The effect / palette / modulator vocabulary now lives in
+> a single file (`src/ledctl/surface.py`) and the `update_leds` shape is a tree
+> of `{kind, params}` primitives. There are no more named effects — `scroll`
+> becomes `palette_lookup(scalar=wave, palette=…)`, audio binding becomes a
+> nested `envelope(audio_band(…))` node. Layer endpoints renamed accordingly
+> (`POST /layers`, `PATCH/DELETE /layers/{i}`, `GET /surface/primitives`);
+> `POST /presets/{name}` keeps its path. Operator-owned `MasterControls`
+> (brightness / speed / audio_reactivity / saturation / freeze) are now
+> exposed via `GET/PATCH /masters`.
 
 ---
 
@@ -62,15 +70,16 @@ animated_LED/
 │   │   ├── config.py        # pydantic schema + load_config()
 │   │   ├── topology.py      # per-LED (strip_id, local_index, global_index, x,y,z)
 │   │   ├── pixelbuffer.py   # float32 working buffer, uint8 + gamma at the boundary
-│   │   ├── effects/         # Effect ABC + registry + field generators (scroll/radial/sparkle/noise) + palette + modulator/bindings
-│   │   ├── mixer.py         # layer stack, blend modes, crossfade, blackout
-│   │   ├── presets.py       # YAML preset loader
+│   │   ├── surface.py       # primitives + compiler + generate_docs() (the single control surface)
+│   │   ├── masters.py       # MasterControls + RenderContext
+│   │   ├── mixer.py         # layer stack, blend modes, crossfade, master output stage
+│   │   ├── presets.py       # YAML preset loader (tree form)
 │   │   ├── transports/      # base / ddp / simulator / multi
 │   │   ├── audio/           # capture / features / shared AudioState (Phase 5)
 │   │   ├── agent/           # Phase 6: client / session / tool / system_prompt
 │   │   ├── engine.py        # fixed-timestep async render loop, layer mutation API
 │   │   ├── api/
-│   │   │   ├── server.py    # FastAPI: /state, /topology, /effects, /layer/{i}, /presets, /blackout, /audio*, /ws/frames, / (landing)
+│   │   │   ├── server.py    # FastAPI: /state, /topology, /surface/primitives, /layers, /masters, /presets, /blackout, /audio*, /ws/frames, / (landing)
 │   │   │   └── agent.py     # /agent/chat, /agent/sessions/*, /agent/config (Phase 6)
 │   │   └── cli.py           # `ledctl run` / `ledctl show-config`
 │   └── web/
@@ -84,28 +93,57 @@ animated_LED/
 
 ## Architecture in one paragraph
 
-`Engine` ticks at `target_fps` using `time.perf_counter`. Each tick: clear the `PixelBuffer` (float32 RGB ∈ [0,1]) → `Mixer.render(t, out)` walks the layer stack (each `Effect.render` writes into a scratch buffer, the mixer blends it onto the accumulator with the layer's `blend` + `opacity`) → `to_uint8(gamma)` at the transport boundary → `Transport.send_frame`. Transports are pluggable (`SimulatorTransport` broadcasts to all WS clients, `DDPTransport` chunks to UDP packets with PUSH on the last only, `MultiTransport` fans out). Effects are deliberately blind to LED count and strip layout — they only see `topology.normalised_positions` (each axis in [-1, 1]), so "left → right" is unambiguous regardless of how strips are split or reversed.
+`Engine` ticks at `target_fps` using `time.perf_counter`. Each tick: build a `RenderContext` (effective_t = wall_t × `masters.speed`, audio_band's `*_norm` view pre-scaled by `masters.audio_reactivity`) → clear the `PixelBuffer` (float32 RGB ∈ [0,1]) → `Mixer.render(ctx, out)` walks the compiled layer trees, blends each into the accumulator, then applies the master output stage (saturation pull → brightness gain) → `to_uint8(gamma)` → `Transport.send_frame`. Transports are pluggable (`SimulatorTransport` broadcasts to all WS clients, `DDPTransport` chunks to UDP packets with PUSH on the last only, `MultiTransport` fans out). Primitives in `surface.py` are blind to LED count and strip layout — they only see `topology.normalised_positions` (each axis in [-1, 1]), so "left → right" is unambiguous regardless of how strips are split or reversed.
 
 ---
 
-## Effects, layers, and presets (Phase 2)
+## The control surface
 
-Four field-generator effects ship in `src/ledctl/effects/fields/`, each with a pydantic `Params` class whose field `description=`s feed both the `/effects` REST schema and the LLM (Phase 6) / operator UI (Phase 7). Every field generator pairs a *scalar field over the topology* with a `palette` (named or stops list) and optional `bindings` driving `brightness` / `speed` / `hue_shift` from audio bands or LFOs.
+Every visual primitive — fields, palettes, modulators, combinators, and the
+`update_leds` argument schema — lives in one file: `src/ledctl/surface.py`.
+There are no more named effects; a layer is a tree of `{kind, params}` nodes,
+each one validated by its own pydantic Params model. The full catalogue,
+with the JSON schema for every primitive, is served live at
+`GET /surface/primitives` and embedded into the LLM system prompt every turn.
 
-| name      | params (highlights)                                                                                |
-| --------- | -------------------------------------------------------------------------------------------------- |
-| `scroll`  | `axis`, `wavelength`, `speed`, `shape` (`cosine`/`sawtooth`/`pulse`/`gauss`), `softness`, `width`, `cross_phase`, `palette`, `bindings` |
-| `radial`  | `center`, `frequency`, `shape`, `softness`, `palette`, `bindings`                                  |
-| `sparkle` | `density`, `decay`, `seed`, `palette`, `bindings`                                                  |
-| `noise`   | `scale`, `speed`, `palette`, `bindings`                                                            |
+The four output kinds the compiler enforces:
 
-`palette` is either a name (`rainbow`, `fire`, `ice`, `sunset`, `ocean`, `warm`, `white`, `mono_<hex>`) or `{stops: [{pos, color}, …]}`. `bindings` slots take a `ModulatorSpec` of the form `{source, floor?, ceiling?, gain?, attack_ms?, release_ms?}` where `source ∈ {const, audio.rms|low|mid|high|peak, lfo.sin|saw|triangle|pulse}`. Audio bindings consume rolling-normalised `*_norm` values so they auto-scale to room loudness.
+| kind            | what it produces                       | typical primitives                                |
+| --------------- | -------------------------------------- | ------------------------------------------------- |
+| `scalar_field`  | per-LED scalar in [0, 1]               | `wave`, `radial`, `noise2d`, `sparkles`, `position`, `gradient` |
+| `scalar_t`      | one scalar per frame                   | `lfo`, `audio_band`, `envelope`, `constant`        |
+| `palette`       | 256-entry RGB LUT                      | `palette_named`, `palette_stops`                  |
+| `rgb_field`     | per-LED RGB (the layer leaf)           | `palette_lookup`, `solid`                         |
 
-The `Mixer` holds an ordered layer stack; layer 0 renders onto black, each subsequent layer blends with `blend ∈ {normal, add, screen, multiply}` and `opacity ∈ [0, 1]`. `crossfade_to(new_layers, duration)` renders both stacks for `duration` seconds and lerps between them — no hard cuts.
+Polymorphic combinators (`mix`, `mul`, `add`, `screen`, `max`, `min`, `remap`,
+`threshold`, `clamp`, `range_map`, `trail`) resolve their output kind from
+their inputs at compile time and broadcast where it makes sense
+(`rgb_field × scalar_t → rgb_field`, `palette × palette → palette` for `mix`).
 
-Gamma 2.2 is applied once, in `PixelBuffer.to_uint8(gamma)`, configurable via `output.gamma` in YAML. Set it to `1.0` if WLED is also gamma-correcting (don't double up).
+Two pieces of sugar keep specs readable: a bare number anywhere a node is
+expected becomes a `constant` (so `"speed": 0.3` is fine), and a bare palette
+string becomes a `palette_named` (so `"palette": "fire"` is fine).
+Modulation lives directly on the parameter: instead of a `bindings.brightness`
+slot, you pass an `envelope(audio_band(...))` node into
+`palette_lookup.brightness`. The doc generator surfaces example trees and
+anti-patterns to the LLM; the operator UI builds form sections from the same
+JSON Schemas.
 
-Presets live in `config/presets/<name>.yaml` (sibling of the active config file). Each preset is `{ crossfade_seconds, layers: [{ effect, params, blend, opacity }, ...] }`. Four seed presets ship: `default` (the boot stack), `chill`, `peak`, `cooldown`.
+Named palettes: `rainbow`, `fire`, `ice`, `sunset`, `ocean`, `warm`, `white`,
+`black`, `mono_<hex>`. Custom palettes are `{stops: [{pos, color}, …]}`.
+Blend modes (layer-level): `normal`, `add`, `screen`, `multiply`.
+
+The `Mixer` walks the layer stack, blends each into an accumulator, applies
+the `MasterControls` output stage (saturation pull → brightness gain), and
+hands off to `PixelBuffer.to_uint8(gamma)`. Crossfades run on wall-clock
+time, so operator direction (`POST /presets/peak`) is not slowed by
+`masters.speed` or stopped by `masters.freeze`.
+
+Presets live in `config/presets/<name>.yaml` (sibling of the active config
+file). Each preset is
+`{ crossfade_seconds, layers: [{ node: {kind, params}, blend, opacity }, …] }`.
+Four seed presets ship: `default` (the boot stack), `chill`, `peak`,
+`cooldown`.
 
 ---
 
@@ -123,10 +161,12 @@ OpenAPI docs at `http://127.0.0.1:8000/docs`. All JSON.
 | POST    | `/calibration/solo` | light only the listed `indices` in red — body `{indices: [int]}` |
 | POST    | `/calibration/walk` | sweep the chain, one LED at a time — body `{step?, interval?}` |
 | POST    | `/calibration/stop` | clear any active calibration override                     |
-| GET     | `/effects`          | `{name: {params_schema: <pydantic JSON schema>}}`         |
-| POST    | `/effects/{name}`   | push a layer; body `{params, blend, opacity}` (all optional) |
-| PATCH   | `/layer/{i}`        | partial update; body `{params?, blend?, opacity?}`        |
-| DELETE  | `/layer/{i}`        | drop the layer at index `i`                               |
+| GET     | `/surface/primitives` | `{kind: {output_kind, summary, params_schema}}` for every primitive |
+| POST    | `/layers`           | append a layer; body `{node: {kind, params}, blend?, opacity?}` |
+| PATCH   | `/layers/{i}`       | partial update; body `{node?, blend?, opacity?}`          |
+| DELETE  | `/layers/{i}`       | drop the layer at index `i`                               |
+| GET     | `/masters`          | current `MasterControls` (brightness / speed / audio_reactivity / saturation / freeze) |
+| PATCH   | `/masters`          | partial update; body `{brightness?, speed?, audio_reactivity?, saturation?, freeze?, persist?}` |
 | POST    | `/blackout`         | force black until `/resume`                               |
 | POST    | `/resume`           | leave blackout mode                                       |
 | GET     | `/presets`          | list of preset names found in the presets dir             |
@@ -136,29 +176,33 @@ Quick smoke test from a second terminal while `ledctl run` is up:
 
 ```bash
 curl -s localhost:8000/state | jq .layers
-curl -s -X POST localhost:8000/effects/sparkle \
+curl -s -X POST localhost:8000/layers \
   -H 'content-type: application/json' \
-  -d '{"params":{"density":0.2,"color":"#a8c0ff"},"blend":"add","opacity":0.6}'
+  -d '{"node":{"kind":"palette_lookup","params":{"scalar":{"kind":"sparkles","params":{"density":0.2}},"palette":"mono_a8c0ff"}},"blend":"add","opacity":0.6}'
 curl -s -X POST localhost:8000/presets/peak | jq .
+curl -s -X PATCH localhost:8000/masters \
+  -H 'content-type: application/json' \
+  -d '{"brightness":0.6,"speed":0.5}' | jq .
 curl -s -X POST localhost:8000/blackout && curl -s -X POST localhost:8000/resume
 ```
 
 ---
 
-## Switching effect modes on the fly
+## Switching looks on the fly
 
-All commands below talk to a running `ledctl run` instance. Each block wipes the current layer stack and crossfades to something new.
+All commands below talk to a running `ledctl run` instance. Each block wipes
+the current layer stack and crossfades to something new.
 
 ### Jump to a preset (recommended)
 
 ```bash
-# Slow ocean scroll + sparkle, audio-reactive brightness — good for ambient/early set
+# Slow ocean wave + sparkle tint, audio-reactive brightness — good for ambient
 curl -s -X POST localhost:8000/presets/chill | jq .
 
-# Fast fire scroll + white sparkle, kick-drum reactive — peak hour
+# Fast fire wave + white accent, kick-drum reactive — peak hour
 curl -s -X POST localhost:8000/presets/peak | jq .
 
-# Slow sunset scroll, gently breathing down — after the last track
+# Slow sunset wave, gently breathing down — after the last track
 curl -s -X POST localhost:8000/presets/cooldown | jq .
 
 # Override crossfade duration on any preset call:
@@ -171,50 +215,79 @@ curl -s -X POST localhost:8000/presets/chill \
 
 ```bash
 # Deep purple — flat wash, no animation
-curl -s -X POST localhost:8000/effects/scroll \
+curl -s -X POST localhost:8000/layers \
   -H 'content-type: application/json' \
-  -d '{"params":{"axis":"x","speed":0.0,"shape":"cosine","palette":"mono_4b0082"}}'
+  -d '{"node":{"kind":"palette_lookup","params":{"scalar":{"kind":"constant","params":{"value":0.5}},"palette":"mono_4b0082"}}}'
 ```
 
-### Slow colour scroll
+### Slow colour wave
 
 ```bash
 # Fire palette scrolling left→right at 0.3 cycles/sec
-curl -s -X POST localhost:8000/effects/scroll \
+curl -s -X POST localhost:8000/layers \
   -H 'content-type: application/json' \
-  -d '{"params":{"axis":"x","speed":0.3,"wavelength":1.2,"shape":"cosine","softness":0.5,"palette":"fire"}}'
+  -d '{"node":{"kind":"palette_lookup","params":{"scalar":{"kind":"wave","params":{"axis":"x","speed":0.3,"wavelength":1.2,"shape":"cosine","softness":0.5}},"palette":"fire"}}}'
 ```
 
 ### Scrolling gradient with custom stops
 
 ```bash
 # Rainbow gradient wrapping slowly left→right
-curl -s -X POST localhost:8000/effects/scroll \
+curl -s -X POST localhost:8000/layers \
   -H 'content-type: application/json' \
-  -d '{"params":{"axis":"x","speed":0.15,"wavelength":2.0,"shape":"sawtooth","palette":{"stops":[{"pos":0,"color":"#ff0000"},{"pos":0.33,"color":"#00ff00"},{"pos":0.66,"color":"#0000ff"},{"pos":1,"color":"#ff0000"}]}}}'
+  -d '{"node":{"kind":"palette_lookup","params":{"scalar":{"kind":"wave","params":{"axis":"x","speed":0.15,"wavelength":2.0,"shape":"sawtooth"}},"palette":{"kind":"palette_stops","params":{"stops":[{"pos":0,"color":"#ff0000"},{"pos":0.33,"color":"#00ff00"},{"pos":0.66,"color":"#0000ff"},{"pos":1,"color":"#ff0000"}]}}}}}'
 ```
 
 ### Sparkle only
 
 ```bash
-# Sparse silver sparkle on black
-curl -s -X POST localhost:8000/effects/sparkle \
+# Sparse silver sparkle on black (sparkles drives brightness, not palette index)
+curl -s -X POST localhost:8000/layers \
   -H 'content-type: application/json' \
-  -d '{"params":{"density":0.04,"decay":1.5,"palette":"mono_ffffff"}}'
+  -d '{"node":{"kind":"palette_lookup","params":{"scalar":{"kind":"constant","params":{"value":1.0}},"palette":"mono_ffffff","brightness":{"kind":"sparkles","params":{"density":0.04,"decay":1.5}}}}}'
 
 # Dense gold rain reactive to high-band audio
-curl -s -X POST localhost:8000/effects/sparkle \
+curl -s -X POST localhost:8000/layers \
   -H 'content-type: application/json' \
-  -d '{"params":{"density":0.3,"decay":0.6,"palette":"mono_ffd700","bindings":{"brightness":{"source":"audio.high","floor":0.0,"ceiling":1.0,"gain":4.0}}}}'
+  -d '{"node":{"kind":"palette_lookup","params":{"scalar":{"kind":"sparkles","params":{"density":0.3,"decay":0.6}},"palette":"mono_ffd700","brightness":{"kind":"envelope","params":{"input":{"kind":"audio_band","params":{"band":"high"}},"gain":4.0,"attack_ms":30,"release_ms":300}}}}}'
 ```
 
 ### Radial pulse from centre
 
 ```bash
 # Sunset palette radiating from origin, breathing on the kick
-curl -s -X POST localhost:8000/effects/radial \
+curl -s -X POST localhost:8000/layers \
   -H 'content-type: application/json' \
-  -d '{"params":{"center":[0,0,0],"frequency":1.5,"shape":"gauss","palette":"sunset","bindings":{"brightness":{"source":"audio.low","floor":0.4,"ceiling":1.0,"release_ms":300}}}}'
+  -d '{"node":{"kind":"palette_lookup","params":{"scalar":{"kind":"radial","params":{"center":[0,0,0],"wavelength":0.6,"shape":"gauss"}},"palette":"sunset","brightness":{"kind":"envelope","params":{"input":{"kind":"audio_band","params":{"band":"low"}},"floor":0.4,"ceiling":1.0,"release_ms":300}}}}}'
+```
+
+### Operator master controls
+
+`MasterControls` are room-level knobs that survive every spec change and are
+invisible to the LLM. The values clamp to `[0, 1]` (brightness, saturation),
+`[0, 3]` (speed, audio_reactivity), and `bool` (freeze). `persist: true`
+writes them into the `masters:` block of `config.yaml`.
+
+```bash
+# Pull the room down for a speech
+curl -s -X PATCH localhost:8000/masters \
+  -H 'content-type: application/json' \
+  -d '{"brightness": 0.4}'
+
+# Halve the wave speed; freeze the pattern (audio reactivity still works)
+curl -s -X PATCH localhost:8000/masters \
+  -H 'content-type: application/json' \
+  -d '{"speed": 0.5, "freeze": true}'
+
+# Greyscale fade for a moody moment
+curl -s -X PATCH localhost:8000/masters \
+  -H 'content-type: application/json' \
+  -d '{"saturation": 0.0}'
+
+# Save current values to YAML
+curl -s -X PATCH localhost:8000/masters \
+  -H 'content-type: application/json' \
+  -d '{"persist": true}'
 ```
 
 ### Emergency blackout / resume
@@ -227,8 +300,8 @@ curl -s -X POST localhost:8000/resume     # restore previous stack
 ### Inspect what's running
 
 ```bash
-curl -s localhost:8000/state | jq '{fps:.fps,layers:.layers}'
-curl -s localhost:8000/effects | jq 'keys'   # list all registered effect names
+curl -s localhost:8000/state | jq '{fps:.fps,layers:.layers,masters:.masters}'
+curl -s localhost:8000/surface/primitives | jq 'keys'   # all registered primitives
 ```
 
 ---
@@ -272,15 +345,25 @@ Open `http://127.0.0.1:8000/audio` to:
 
 `/state` also includes an `audio` block so a single poll covers everything.
 
-Audio reactivity is no longer a separate `audio_pulse` effect — it lives on every field generator's `bindings` slots (`brightness`, `speed`, `hue_shift`). A binding's `source` selects the band (`audio.rms` / `audio.low` / `audio.mid` / `audio.high` / `audio.peak`) and reads the rolling-normalised `*_norm` value, with per-binding `attack_ms` / `release_ms` smoothing via `effects/modulator.Envelope`.
+Audio reactivity is composable: `audio_band(band="rms"|"low"|"mid"|"high"|"peak")`
+returns a `scalar_t` that any modulatable param can consume. Wrap it in
+`envelope(input=audio_band(...), attack_ms, release_ms, gain, floor, ceiling)`
+for smooth attack/release; raw `audio_band` is jagged on purpose (peak-kick
+effects). `MasterControls.audio_reactivity` multiplies every audio_band's
+`*_norm` value once per tick at the engine, so the operator can damp the
+whole install without the LLM noticing.
 
-The default boot stack is a fire-coloured `scroll` (orange / amber / red palette stops) scrolling left → right with a small `cross_phase` so the top row leads the bottom, and a `bindings.brightness` driven by `audio.rms` between `floor=0.65` and `ceiling=1.0` — the whole frame breathes with the room. Tweak via `PATCH /layer/{i}` or replace with `POST /presets/{name}`.
+The default boot stack is a fire-coloured `palette_lookup(wave + custom
+stops)` scrolling left → right with a small `cross_phase` so the top row
+leads the bottom, and a `brightness=envelope(audio_band("rms"),
+floor=0.65, ceiling=1.0)` so the whole frame breathes with the room. Tweak
+via `PATCH /layers/{i}` or replace with `POST /presets/{name}`.
 
 ---
 
 ## Language-driven control panel (Phase 6)
 
-A thin language layer over the engine: type a request, the LLM emits **one** `update_leds` tool call describing the *complete* desired layer stack, the engine crossfades to it. No multi-tool agent loop. Follow-ups like *"more red, slower"* work because the system prompt is regenerated freshly **every turn** with the current LED state, the install topology, the live audio reading, and the full effect catalogue — the model never has to call `get_*` to discover anything.
+A thin language layer over the engine: type a request, the LLM emits **one** `update_leds` tool call describing the *complete* desired layer stack as a tree of `{kind, params}` primitives, the engine crossfades to it. No multi-tool agent loop. Follow-ups like *"more red, slower"* work because the system prompt is regenerated freshly **every turn** with the current LED state, the install topology, the live audio reading, the operator's master values (read-only), and `surface.generate_docs()` — the model never has to call `get_*` to discover anything.
 
 ```bash
 # 1. drop your OpenRouter key into the repo root (not committed)
@@ -312,10 +395,12 @@ update_leds(
     crossfade_seconds: float = 1.0, # how fast to morph from old → new
     blackout: bool = False,         # convenience: kill output, ignore layers
 )
-# Layer = { effect, params, blend?, opacity? } — same shape as preset YAML.
+# Layer = { node: {kind, params}, blend?, opacity? } — same shape as preset YAML.
+# `node` is recursive: numeric params accept either a literal or a nested
+# {kind, params} that returns scalar_t (audio_band, lfo, envelope, …).
 ```
 
-It's the *complete* new state, never a diff. *"More red"* re-emits the full stack with redder colour stops. Per-effect param clamps come from the existing pydantic schemas, so a bad palette / unknown effect / out-of-range field comes back as a structured error in the tool result — the next turn sees the error in the rolling buffer and self-corrects.
+It's the *complete* new state, never a diff. *"More red"* re-emits the full stack with redder colour stops. Per-primitive param clamps come from pydantic schemas, the surface compiler type-checks the tree (palette in a scalar slot is rejected, leaf must be rgb_field, etc.), and any compile error comes back as a structured `{path, msg, valid_kinds}` in the tool result — the next turn sees the error in the rolling buffer and self-corrects. Master controls are deliberately *not* part of `update_leds`: the agent sees them in a read-only block of the system prompt and tells the user which slider to move when a request can only be honoured that way.
 
 `agent.*` settings in `config.yaml`:
 
@@ -417,8 +502,8 @@ For centre-feed all 4 chain heads sit at `x=0`, so the dev/pi configs use `start
 - `tests/test_config.py` — dev/pi YAML loads, overlap/over-capacity rejection
 - `tests/test_topology.py` — 1800 LEDs total, bbox spans 30×1 m, normalised in [-1,1], `reversed` semantics
 - `tests/test_ddp.py` — packet count, PUSH-only-on-last, payload round-trip, single-packet frame still has PUSH
-- `tests/test_effects.py` — registry + each field generator's output bounded; palette LUT correctness; sparkle reproducible with a seed; bindings drive brightness/speed/hue_shift from audio + LFO sources
-- `tests/test_mixer.py` — blend modes (normal, add, screen, multiply), opacity lerp, blackout zeros output, crossfade transitions and snaps to target after `duration`
+- `tests/test_surface_primitives.py` — registry + every primitive (wave, radial, noise2d, sparkles, lfo, audio_band, envelope, palette_*, palette_lookup, solid, mix, mul, add, screen, max, min, remap, threshold, trail, clamp, range_map, position, gradient, constant); palette LUT correctness; sparkle reproducible with a seed; envelope attack/release; type checking (palette in scalar slot, leaf must be rgb_field, unknown kind / extra param)
+- `tests/test_mixer.py` — blend modes (normal, add, screen, multiply), opacity lerp, blackout zeros output, crossfade transitions on wall_t (not effective_t), master output stage (saturation pull + brightness gain)
 - `tests/test_pixelbuffer.py` — clip + rounding in `to_uint8`, gamma 2.2 darkens midtones
 - `tests/test_api.py` — driven via FastAPI `TestClient` (exercises engine lifespan): `/state`, `/effects` schemas, push/patch/delete layer, blackout/resume, preset application + 404/422 paths
 - `tests/test_audio_features.py` — RMS / peak / band split (sine-tone isolation in low / mid / high bins)

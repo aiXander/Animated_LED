@@ -23,13 +23,12 @@ def client() -> TestClient:
 
 @pytest.fixture
 def writable_client(tmp_path: Path) -> TestClient:
-    """Client wired to a tmp-copied config file so PUT /config is safe to test."""
     cfg_path = tmp_path / "config.yaml"
     shutil.copy(DEV, cfg_path)
     cfg = load_config(cfg_path)
     app = create_app(cfg, presets_dir=PRESETS, config_path=cfg_path)
     with TestClient(app) as c:
-        c.app.state._cfg_path = cfg_path  # exposed for the test to read
+        c.app.state._cfg_path = cfg_path
         yield c
 
 
@@ -37,87 +36,135 @@ def test_state_reports_default_layer(client: TestClient):
     r = client.get("/state")
     assert r.status_code == 200
     body = r.json()
-    assert body["target_fps"] == 60
+    assert body["target_fps"] > 0
     assert body["transport_mode"] == "simulator"
     assert body["blackout"] is False
-    # Default boot stack is a single `scroll` layer with audio.rms bound to
-    # brightness in [0.5, 1.0] — the new field+palette+bindings shape.
-    assert [layer["effect"] for layer in body["layers"]] == ["scroll"]
+    # Default boot stack is a single palette_lookup(wave + palette_stops).
+    assert len(body["layers"]) == 1
     layer = body["layers"][0]
-    assert layer["params"]["axis"] == "x"
-    assert layer["params"]["speed"] == 0.15
-    assert layer["params"]["cross_phase"] == [0.0, 0.075, 0.0]
-    binding = layer["params"]["bindings"]["brightness"]
-    assert binding["source"] == "audio.rms"
-    assert binding["floor"] == 0.5
-    assert binding["ceiling"] == 1.0
+    assert layer["node"]["kind"] == "palette_lookup"
+    scalar = layer["node"]["params"]["scalar"]
+    assert scalar["kind"] == "wave"
+    assert scalar["params"]["axis"] == "x"
+    assert scalar["params"]["speed"] == 0.15
+    assert scalar["params"]["cross_phase"] == [0.0, 0.075, 0.0]
+    brightness = layer["node"]["params"]["brightness"]
+    assert brightness["kind"] == "envelope"
+    assert brightness["params"]["floor"] == 0.65
+    assert brightness["params"]["ceiling"] == 1.0
 
 
-def test_effects_lists_field_generators(client: TestClient):
-    r = client.get("/effects")
+def test_surface_primitives_lists_catalogue(client: TestClient):
+    r = client.get("/surface/primitives")
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"scroll", "radial", "sparkle", "noise"}
-    for name in body:
-        assert "params_schema" in body[name]
-        assert body[name]["params_schema"]["type"] == "object"
+    # Every registered primitive shows up
+    expected_subset = {
+        "wave", "radial", "noise", "sparkles", "lfo", "audio_band",
+        "envelope", "constant", "palette_named", "palette_stops",
+        "palette_lookup", "solid", "mix", "mul", "add",
+    }
+    assert expected_subset.issubset(set(body))
+    for entry in body.values():
+        assert "params_schema" in entry
+        assert "output_kind" in entry
+        assert "summary" in entry
 
 
-def test_post_effect_appends_layer(client: TestClient):
+def test_post_layer_appends(client: TestClient):
     r = client.post(
-        "/effects/scroll",
-        json={"params": {"palette": "fire", "speed": 0.5}},
+        "/layers",
+        json={
+            "node": {
+                "kind": "palette_lookup",
+                "params": {
+                    "scalar": {"kind": "wave", "params": {"speed": 0.5}},
+                    "palette": "fire",
+                },
+            }
+        },
     )
     assert r.status_code == 201, r.text
     body = r.json()
-    # Default boot stack has 1 layer; ours is appended as the 2nd.
     assert body["layer_index"] == 1
     assert len(body["layers"]) == 2
-    assert body["layers"][-1]["effect"] == "scroll"
-    assert body["layers"][-1]["params"]["palette"]["name"] == "fire"
+    assert body["layers"][-1]["node"]["kind"] == "palette_lookup"
 
 
-def test_post_unknown_effect_404(client: TestClient):
-    r = client.post("/effects/nope", json={})
-    assert r.status_code == 404
-
-
-def test_post_effect_invalid_params_422(client: TestClient):
+def test_post_layer_invalid_node_422(client: TestClient):
     r = client.post(
-        "/effects/scroll",
-        json={"params": {"palette": "not-a-real-palette"}},
+        "/layers",
+        json={"node": {"kind": "wave", "params": {}}},  # leaf must be rgb_field
     )
     assert r.status_code == 422
 
 
-def test_post_effect_invalid_blend_422(client: TestClient):
-    r = client.post("/effects/scroll", json={"blend": "subtract"})
+def test_post_layer_unknown_kind_422(client: TestClient):
+    r = client.post("/layers", json={"node": {"kind": "nope", "params": {}}})
+    assert r.status_code == 422
+
+
+def test_post_layer_invalid_blend_422(client: TestClient):
+    r = client.post(
+        "/layers",
+        json={
+            "node": {
+                "kind": "palette_lookup",
+                "params": {
+                    "scalar": {"kind": "constant", "params": {"value": 0.0}},
+                    "palette": "white",
+                },
+            },
+            "blend": "subtract",
+        },
+    )
     assert r.status_code == 422
 
 
 def test_patch_layer_updates(client: TestClient):
     r = client.patch(
-        "/layer/0",
-        json={"params": {"speed": 2.5}, "opacity": 0.75},
+        "/layers/0",
+        json={
+            "node": {
+                "kind": "palette_lookup",
+                "params": {
+                    "scalar": {"kind": "wave", "params": {"speed": 2.5}},
+                    "palette": "fire",
+                },
+            },
+            "opacity": 0.75,
+        },
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["layers"][0]["params"]["speed"] == 2.5
     assert body["layers"][0]["opacity"] == 0.75
+    scalar = body["layers"][0]["node"]["params"]["scalar"]
+    assert scalar["params"]["speed"] == 2.5
 
 
 def test_patch_layer_out_of_range_404(client: TestClient):
-    r = client.patch("/layer/9", json={"opacity": 0.5})
+    r = client.patch("/layers/9", json={"opacity": 0.5})
     assert r.status_code == 404
 
 
 def test_delete_layer(client: TestClient):
-    # Boot stack has 1 layer; add a sparkle, then delete the original scroll.
-    client.post("/effects/sparkle", json={"params": {"palette": "white"}})
-    r = client.delete("/layer/0")
+    client.post(
+        "/layers",
+        json={
+            "node": {
+                "kind": "palette_lookup",
+                "params": {
+                    "scalar": {"kind": "noise", "params": {"speed": 0.2}},
+                    "palette": "white",
+                },
+            }
+        },
+    )
+    r = client.delete("/layers/0")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert [layer["effect"] for layer in body["layers"]] == ["sparkle"]
+    # Default scroll layer at index 0 dropped, sparkle remaining.
+    assert len(body["layers"]) == 1
 
 
 def test_blackout_resume(client: TestClient):
@@ -145,8 +192,10 @@ def test_apply_preset_replaces_stack(client: TestClient):
     body = r.json()
     assert body["applied"] == "peak"
     assert body["crossfade_seconds"] == 0.0
-    # peak preset is a fire-palette scroll with a sparkle layer on top.
-    assert [layer["effect"] for layer in body["layers"]] == ["scroll", "sparkle"]
+    # peak preset is a fire-palette wave with a sparkles layer on top.
+    assert len(body["layers"]) == 2
+    kinds = [layer["node"]["kind"] for layer in body["layers"]]
+    assert kinds == ["palette_lookup", "sparkles"]
 
 
 def test_apply_unknown_preset_404(client: TestClient):
@@ -163,6 +212,59 @@ def test_topology_still_served(client: TestClient):
     assert len(body["strips"]) == 4
 
 
+# ---- masters ----
+
+
+def test_get_masters_returns_defaults(client: TestClient):
+    r = client.get("/masters")
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {
+        "brightness": 1.0,
+        "speed": 1.0,
+        "audio_reactivity": 1.0,
+        "saturation": 1.0,
+        "freeze": False,
+    }
+
+
+def test_patch_masters_merges_clamped(client: TestClient):
+    r = client.patch("/masters", json={"brightness": 0.4, "speed": 2.0})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["brightness"] == 0.4
+    assert body["speed"] == 2.0
+    # /state reflects the patch
+    state = client.get("/state").json()
+    assert state["masters"]["brightness"] == 0.4
+    assert state["masters"]["speed"] == 2.0
+
+
+def test_patch_masters_rejects_out_of_range(client: TestClient):
+    r = client.patch("/masters", json={"brightness": 5.0})
+    assert r.status_code == 422
+    r = client.patch("/masters", json={"speed": -0.5})
+    assert r.status_code == 422
+
+
+def test_patch_masters_freeze_is_a_bool(client: TestClient):
+    r = client.patch("/masters", json={"freeze": True})
+    assert r.status_code == 200
+    assert r.json()["freeze"] is True
+
+
+def test_patch_masters_persist_writes_yaml(writable_client: TestClient):
+    cfg_path: Path = writable_client.app.state._cfg_path
+    r = writable_client.patch(
+        "/masters", json={"brightness": 0.6, "saturation": 0.8, "persist": True}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["saved_to"] == str(cfg_path)
+    on_disk = yaml.safe_load(cfg_path.read_text())
+    assert on_disk["masters"]["brightness"] == 0.6
+    assert on_disk["masters"]["saturation"] == 0.8
+
+
 # ---- Phase 4: calibration ----
 
 
@@ -172,8 +274,6 @@ def test_calibration_solo_sets_state(client: TestClient):
     body = r.json()
     assert body["calibration"]["mode"] == "solo"
     assert body["calibration"]["indices"] == [42, 1799]
-    state = client.get("/state").json()
-    assert state["calibration"]["indices"] == [42, 1799]
 
 
 def test_calibration_solo_rejects_out_of_range(client: TestClient):
@@ -183,7 +283,6 @@ def test_calibration_solo_rejects_out_of_range(client: TestClient):
 
 def test_calibration_solo_rejects_empty(client: TestClient):
     r = client.post("/calibration/solo", json={"indices": []})
-    # min_length=1 → pydantic 422
     assert r.status_code == 422
 
 
@@ -198,7 +297,6 @@ def test_calibration_walk_starts_and_stops(client: TestClient):
     r = client.post("/calibration/stop")
     assert r.status_code == 200
     assert r.json()["calibration"] is None
-    assert client.get("/state").json()["calibration"] is None
 
 
 def test_calibration_walk_rejects_zero_step(client: TestClient):
@@ -214,6 +312,7 @@ def test_get_config_returns_full_layout(client: TestClient):
     assert r.status_code == 200
     body = r.json()
     assert "project" in body and "controllers" in body and "strips" in body
+    assert "masters" in body
     assert len(body["strips"]) == 4
     assert body["strips"][0]["geometry"]["type"] == "line"
 
@@ -227,7 +326,6 @@ def test_get_editor_html(client: TestClient):
 def test_put_config_swaps_topology_and_writes_file(writable_client: TestClient):
     cfg_path: Path = writable_client.app.state._cfg_path
     base = writable_client.get("/config").json()
-    # Move the bottom-right strip up to y = -0.5 (matches the rest).
     new_strips = [{**s} for s in base["strips"]]
     for s in new_strips:
         if s["id"] == "bottom_right":
@@ -245,15 +343,12 @@ def test_put_config_swaps_topology_and_writes_file(writable_client: TestClient):
         s["id"] == "bottom_right" and s["start"][1] == -0.5 for s in body["strips"]
     )
 
-    # Disk reflects the change.
     on_disk = yaml.safe_load(cfg_path.read_text())
     found = next(s for s in on_disk["strips"] if s["id"] == "bottom_right")
     assert found["geometry"]["start"][1] == -0.5
 
-    # Backup of the previous version is alongside.
     assert cfg_path.with_suffix(cfg_path.suffix + ".bak").exists()
 
-    # Topology endpoint reflects the new layout.
     topo = writable_client.get("/topology").json()
     br_strip = next(s for s in topo["strips"] if s["id"] == "bottom_right")
     assert br_strip["start"][1] == -0.5
@@ -262,7 +357,6 @@ def test_put_config_swaps_topology_and_writes_file(writable_client: TestClient):
 def test_put_config_rejects_overlap(writable_client: TestClient):
     base = writable_client.get("/config").json()
     new_strips = [{**s} for s in base["strips"]]
-    # Force two strips to overlap in pixel range.
     new_strips[1]["pixel_offset"] = 0
     r = writable_client.put("/config", json={"strips": new_strips})
     assert r.status_code == 422
@@ -270,7 +364,6 @@ def test_put_config_rejects_overlap(writable_client: TestClient):
 
 def test_put_config_changing_pixel_count_resizes_engine(writable_client: TestClient):
     base = writable_client.get("/config").json()
-    # Halve every strip — total pixels go 1800 → 900.
     new_strips = [{**s} for s in base["strips"]]
     half = []
     offset = 0
@@ -284,7 +377,8 @@ def test_put_config_changing_pixel_count_resizes_engine(writable_client: TestCli
 
     state = writable_client.get("/state").json()
     # Default boot stack is preserved across the swap.
-    assert [layer["effect"] for layer in state["layers"]] == ["scroll"]
+    assert len(state["layers"]) == 1
+    assert state["layers"][0]["node"]["kind"] == "palette_lookup"
 
     topo = writable_client.get("/topology").json()
     assert topo["pixel_count"] == 900

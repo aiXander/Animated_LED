@@ -1,28 +1,35 @@
 crossfade_seconds: 2.0
 layers:
-  - effect: scroll
-    blend: normal
+  - blend: normal
     opacity: 1.0
-    params:
-      axis: x
-      speed: 0.05
-      wavelength: 2.0
-      shape: cosine
-      softness: 1.0
-      cross_phase: [0.0, 0.05, 0.0]
-      palette: ocean
-      bindings:
+    node:
+      kind: palette_lookup
+      params:
+        scalar:
+          kind: wave
+          params:
+            axis: x
+            speed: 0.05
+            wavelength: 2.0
+            shape: cosine
+            softness: 1.0
+            cross_phase: [0.0, 0.05, 0.0]
+        palette: ocean
         brightness:
-          source: audio.rms
-          floor: 0.6
-          ceiling: 1.0
-          gain: 3.0
-          release_ms: 700
-  - effect: sparkle
-    blend: add
+          kind: envelope
+          params:
+            input: {kind: audio_band, params: {band: rms}}
+            attack_ms: 30
+            release_ms: 700
+            gain: 3.0
+            floor: 0.6
+            ceiling: 1.0
+  - blend: add
     opacity: 0.5
-    params:
-      density: 0.05
-      decay: 1.2
-      seed: 7
-      palette: mono_a8c0ff
+    node:
+      kind: sparkles
+      params:
+        palette: mono_a8c0ff
+        density: 0.05
+        decay: 1.2
+        seed: 7

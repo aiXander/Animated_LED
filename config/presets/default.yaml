@@ -1,23 +1,32 @@
 crossfade_seconds: 0.0
 layers:
-  - effect: scroll
-    blend: normal
+  - blend: normal
     opacity: 1.0
-    params:
-      axis: x
-      speed: 0.15
-      wavelength: 1.5
-      shape: cosine
-      softness: 1.0
-      cross_phase: [0.0, 0.075, 0.0]
-      palette:
-        stops:
-          - {pos: 0.0, color: "#ff2000"}
-          - {pos: 0.4, color: "#ff8000"}
-          - {pos: 0.7, color: "#ffdd00"}
-          - {pos: 1.0, color: "#ffffff"}
-      bindings:
+    node:
+      kind: palette_lookup
+      params:
+        scalar:
+          kind: wave
+          params:
+            axis: x
+            speed: 0.15
+            wavelength: 1.5
+            shape: cosine
+            softness: 1.0
+            cross_phase: [0.0, 0.075, 0.0]
+        palette:
+          kind: palette_stops
+          params:
+            stops:
+              - {pos: 0.0, color: "#ff2000"}
+              - {pos: 0.4, color: "#ff8000"}
+              - {pos: 0.7, color: "#ffdd00"}
+              - {pos: 1.0, color: "#ffffff"}
         brightness:
-          source: audio.rms
-          floor: 0.65
-          ceiling: 1.0
+          kind: envelope
+          params:
+            input: {kind: audio_band, params: {band: rms}}
+            attack_ms: 30
+            release_ms: 500
+            floor: 0.65
+            ceiling: 1.0

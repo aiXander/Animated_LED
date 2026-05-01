@@ -7,6 +7,7 @@ slower" work because the system prompt is regenerated *every* turn from
 `Topology` + current layer stack + a fresh audio snapshot.
 """
 
+from ..surface import UpdateLedsSpec
 from .client import AgentClient, MissingApiKey
 from .session import AgentTurn, ChatSession, SessionStore
 from .system_prompt import build_system_prompt
@@ -25,6 +26,7 @@ __all__ = [
     "SessionStore",
     "UPDATE_LEDS_TOOL_NAME",
     "UpdateLedsInput",
+    "UpdateLedsSpec",
     "apply_update_leds",
     "build_system_prompt",
     "update_leds_tool_schema",

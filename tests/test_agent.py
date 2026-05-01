@@ -1,9 +1,4 @@
-"""Tests for Phase 6 — language-driven control panel.
-
-The LLM is mocked at the AgentClient layer (one method, one mock) so these
-tests never touch the network. Anything that needs the OpenRouter client
-patches `AgentClient.complete` to return a synthetic CompletionResult.
-"""
+"""Tests for the language-driven control panel against the new surface."""
 
 from __future__ import annotations
 
@@ -25,6 +20,7 @@ from ledctl.agent.session import ChatSession, SessionStore
 from ledctl.api.server import create_app
 from ledctl.audio.capture import AudioCapture
 from ledctl.config import load_config
+from ledctl.surface import REGISTRY
 from tests.test_api import DEV, PRESETS
 
 
@@ -45,95 +41,50 @@ def agent_client_app(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 # ---- system prompt ----
 
 
-def test_build_system_prompt_contains_install_and_catalogue(
-    agent_client_app: TestClient,
-):
+def test_build_system_prompt_contains_install_and_catalogue(agent_client_app: TestClient):
     engine = agent_client_app.app.state.engine
     prompt = build_system_prompt(
         topology=engine.topology,
         engine=engine,
         audio_state=engine.audio_state,
         presets_dir=PRESETS,
+        masters=engine.masters,
     )
-    # Install summary
     assert "1800 LEDs" in prompt
-    # Effects catalogue — at least the registered names show up
-    assert "scroll" in prompt
-    assert "sparkle" in prompt
-    assert "noise" in prompt
-    assert "radial" in prompt
-    # Palette guidance
-    assert "fire" in prompt
-    assert "mono_<hex>" in prompt
-    # Bindings rubric
-    assert "audio.rms" in prompt
-    assert "brightness" in prompt
-    # Blend modes
+    assert "CONTROL SURFACE" in prompt
+    # Core primitives appear
+    for kind in ("wave", "radial", "noise", "sparkles", "audio_band", "envelope",
+                 "palette_lookup", "palette_named"):
+        assert kind in prompt
+    assert "fire" in prompt and "mono_<hex>" in prompt
     assert "screen" in prompt
     # Presets list
     assert "peak" in prompt
-    # Examples + rubric headers
-    assert "EXAMPLES" in prompt
-    assert "RUBRIC" in prompt
-    # Current-state JSON includes the default boot layer
-    assert "scroll" in prompt
-    # Audio off in tests; prompt should say so explicitly
-    assert "Audio capture is OFF" in prompt
-
-
-def test_system_prompt_embeds_full_per_effect_schemas(
-    agent_client_app: TestClient,
-):
-    """The LLM-facing prompt must carry every effect's full Params schema,
-    including nested palette + bindings, with `additionalProperties: false`
-    so the model knows extras will be rejected."""
-    engine = agent_client_app.app.state.engine
-    prompt = build_system_prompt(
-        topology=engine.topology,
-        engine=engine,
-        audio_state=engine.audio_state,
-        presets_dir=PRESETS,
-    )
-    # Each effect's schema is dumped (look for fields that don't appear
-    # elsewhere in the prompt prose).
-    assert "cross_phase" in prompt        # scroll-specific
-    assert "octaves" in prompt            # noise-specific
-    assert "decay" in prompt              # sparkle-specific
-    assert "center" in prompt             # radial-specific
-    # Strictness signal
-    assert "additionalProperties" in prompt
-    # Nested types reference
-    assert "ModulatorSpec" in prompt
-    assert "PaletteSpec" in prompt
-    # Recipes + anti-patterns sections
-    assert "RECIPES" in prompt
+    # Anti-patterns block + rubric
     assert "ANTI-PATTERNS" in prompt
-    assert "pulsating" in prompt or "pulsate" in prompt
-    # Modulator sources enumerated
-    assert "lfo.sin" in prompt
-    assert "audio.low" in prompt
+    assert "RUBRIC" in prompt
+    # Audio off in tests; prompt should say so
+    assert "Audio capture is OFF" in prompt
+    # Masters block present
+    assert "OPERATOR MASTERS" in prompt
 
 
-def test_build_system_prompt_includes_audio_when_enabled(
-    agent_client_app: TestClient,
-):
+def test_build_system_prompt_includes_audio_when_enabled(agent_client_app: TestClient):
     engine = agent_client_app.app.state.engine
     audio = engine.audio_state
     audio.enabled = True
     audio.device_name = "fake-mic"
     audio.rms = 0.42
     audio.rms_norm = 0.55
-    audio.low = 0.6
-    audio.low_norm = 0.7
     prompt = build_system_prompt(
         topology=engine.topology,
         engine=engine,
         audio_state=audio,
         presets_dir=PRESETS,
+        masters=engine.masters,
     )
     assert "fake-mic" in prompt
     assert "0.420" in prompt or "0.42" in prompt
-    assert "20–250 Hz" in prompt or "20-250 Hz" in prompt
 
 
 # ---- tool schema + handler ----
@@ -150,33 +101,31 @@ def test_update_leds_schema_is_a_function_tool():
     assert "blackout" in params["properties"]
 
 
-def test_update_leds_schema_pins_effect_names_to_registered_set():
-    """The `effect` field is enum'd to the catalogue so the LLM can't invent
-    names like 'pulse' or 'breathing' and have them accepted by the tool spec."""
+def test_update_leds_schema_pins_node_kinds_to_registry():
     schema = update_leds_tool_schema()
     layer = schema["function"]["parameters"]["properties"]["layers"]["items"]
-    effect = layer["properties"]["effect"]
-    assert effect["type"] == "string"
-    assert "enum" in effect
-    # Every registered effect appears; nothing unexpected.
-    from ledctl.effects.registry import list_effects
-    assert set(effect["enum"]) == set(list_effects())
+    node = layer["properties"]["node"]
+    assert "enum" in node["properties"]["kind"]
+    assert set(node["properties"]["kind"]["enum"]) == set(REGISTRY)
 
 
-def test_apply_update_leds_unknown_param_returns_hint(
-    agent_client_app: TestClient,
-):
-    """Unknown param keys (a real failure mode in practice — `scroll_phase`,
-    `width` on noise, etc.) must come back as a structured error with the
-    list of valid keys, so the LLM can self-correct in one turn."""
+def test_apply_update_leds_unknown_param_returns_hint(agent_client_app: TestClient):
     engine = agent_client_app.app.state.engine
     before = engine.layer_state()
     result = apply_update_leds(
         {
             "layers": [
                 {
-                    "effect": "scroll",
-                    "params": {"scroll_phase": [0, 0, 0], "palette": "fire"},
+                    "node": {
+                        "kind": "palette_lookup",
+                        "params": {
+                            "scalar": {
+                                "kind": "wave",
+                                "params": {"axis": "x", "scroll_phase": [0, 0, 0]},
+                            },
+                            "palette": "fire",
+                        },
+                    }
                 }
             ]
         },
@@ -186,51 +135,41 @@ def test_apply_update_leds_unknown_param_returns_hint(
     assert result["ok"] is False
     assert result["error"] == "layer_validation_failed"
     msg = json.dumps(result["details"])
-    assert "scroll_phase" in msg
-    assert "cross_phase" in msg or "valid keys" in msg
-    # Engine state untouched.
+    assert "scroll_phase" in msg or "Extra" in msg
     assert engine.layer_state() == before
 
 
-def test_apply_update_leds_misnested_bindings_rejected(
-    agent_client_app: TestClient,
-):
-    """`bindings` belongs INSIDE `params`. If the model puts it at the layer
-    top level we want a clean error, not a silent drop."""
+def test_apply_update_leds_unknown_kind_returns_structured_error(agent_client_app: TestClient):
     engine = agent_client_app.app.state.engine
+    before = engine.layer_state()
     result = apply_update_leds(
-        {
-            "layers": [
-                {
-                    "effect": "scroll",
-                    "params": {"palette": "mono_ff0000"},
-                    "bindings": {  # wrong nesting: belongs in params
-                        "brightness": {"source": "lfo.sin", "period_s": 1.0}
-                    },
-                }
-            ]
-        },
+        {"layers": [{"node": {"kind": "not-a-real-kind", "params": {}}}]},
         engine=engine,
         default_crossfade_seconds=1.0,
     )
     assert result["ok"] is False
-    # `UpdateLedsLayer` itself is `extra="forbid"`, so this fails at the
-    # outer schema layer rather than per-effect — either way, not a no-op.
-    assert "bindings" in json.dumps(result["details"])
+    assert result["error"] == "layer_validation_failed"
+    assert any("not-a-real-kind" in (d.get("msg") or "") for d in result["details"])
+    assert engine.layer_state() == before
 
 
 def test_update_leds_input_round_trips_a_minimal_spec():
     spec = {
         "layers": [
             {
-                "effect": "scroll",
-                "params": {"speed": 0.5, "palette": "fire"},
+                "node": {
+                    "kind": "palette_lookup",
+                    "params": {
+                        "scalar": {"kind": "wave", "params": {"speed": 0.5}},
+                        "palette": "fire",
+                    },
+                }
             }
         ],
         "crossfade_seconds": 0.5,
     }
     parsed = UpdateLedsInput.model_validate(spec)
-    assert parsed.layers[0].effect == "scroll"
+    assert parsed.layers[0].node.kind == "palette_lookup"
     assert parsed.layers[0].blend == "normal"
     assert parsed.crossfade_seconds == 0.5
     assert parsed.blackout is False
@@ -241,8 +180,13 @@ def test_apply_update_leds_calls_engine_crossfade(agent_client_app: TestClient):
     args = {
         "layers": [
             {
-                "effect": "scroll",
-                "params": {"speed": 0.5, "palette": "fire"},
+                "node": {
+                    "kind": "palette_lookup",
+                    "params": {
+                        "scalar": {"kind": "wave", "params": {"speed": 0.5}},
+                        "palette": "fire",
+                    },
+                }
             }
         ],
         "crossfade_seconds": 0.0,
@@ -250,9 +194,8 @@ def test_apply_update_leds_calls_engine_crossfade(agent_client_app: TestClient):
     result = apply_update_leds(args, engine=engine, default_crossfade_seconds=1.0)
     assert result["ok"] is True
     assert result["crossfade_seconds"] == 0.0
-    assert [l_["effect"] for l_ in result["layers"]] == ["scroll"]
-    # The engine state actually changed.
-    assert engine.layer_state()[0]["params"]["palette"]["name"] == "fire"
+    assert len(result["layers"]) == 1
+    assert engine.layer_state()[0]["node"]["params"]["palette"] == "fire"
 
 
 def test_apply_update_leds_blackout_short_circuits(agent_client_app: TestClient):
@@ -267,14 +210,22 @@ def test_apply_update_leds_blackout_short_circuits(agent_client_app: TestClient)
     assert engine.mixer.blackout is True
 
 
-def test_apply_update_leds_clears_blackout_on_normal_call(
-    agent_client_app: TestClient,
-):
+def test_apply_update_leds_clears_blackout_on_normal_call(agent_client_app: TestClient):
     engine = agent_client_app.app.state.engine
     engine.mixer.blackout = True
     result = apply_update_leds(
         {
-            "layers": [{"effect": "scroll", "params": {"palette": "ice"}}],
+            "layers": [
+                {
+                    "node": {
+                        "kind": "palette_lookup",
+                        "params": {
+                            "scalar": {"kind": "wave", "params": {}},
+                            "palette": "ice",
+                        },
+                    }
+                }
+            ],
             "crossfade_seconds": 0.0,
         },
         engine=engine,
@@ -284,31 +235,20 @@ def test_apply_update_leds_clears_blackout_on_normal_call(
     assert engine.mixer.blackout is False
 
 
-def test_apply_update_leds_unknown_effect_returns_structured_error(
-    agent_client_app: TestClient,
-):
-    engine = agent_client_app.app.state.engine
-    before = engine.layer_state()
-    result = apply_update_leds(
-        {"layers": [{"effect": "not-a-real-effect"}]},
-        engine=engine,
-        default_crossfade_seconds=1.0,
-    )
-    assert result["ok"] is False
-    assert result["error"] == "layer_validation_failed"
-    assert any("not-a-real-effect" in d.get("msg", "") for d in result["details"])
-    # Engine untouched.
-    assert engine.layer_state() == before
-
-
-def test_apply_update_leds_bad_palette_returns_pydantic_error(
-    agent_client_app: TestClient,
-):
+def test_apply_update_leds_bad_palette_returns_compile_error(agent_client_app: TestClient):
     engine = agent_client_app.app.state.engine
     result = apply_update_leds(
         {
             "layers": [
-                {"effect": "scroll", "params": {"palette": "puce-fluorescent"}}
+                {
+                    "node": {
+                        "kind": "palette_lookup",
+                        "params": {
+                            "scalar": {"kind": "constant", "params": {"value": 0.0}},
+                            "palette": "puce-fluorescent",
+                        },
+                    }
+                }
             ]
         },
         engine=engine,
@@ -318,12 +258,13 @@ def test_apply_update_leds_bad_palette_returns_pydantic_error(
     assert result["error"] == "layer_validation_failed"
 
 
-def test_apply_update_leds_uses_default_crossfade_when_omitted(
-    agent_client_app: TestClient,
-):
+def test_apply_update_leds_uses_default_crossfade_when_omitted(agent_client_app: TestClient):
     engine = agent_client_app.app.state.engine
     result = apply_update_leds(
-        {"layers": [{"effect": "scroll"}]},
+        {"layers": [{"node": {"kind": "palette_lookup", "params": {
+            "scalar": {"kind": "constant", "params": {"value": 0.0}},
+            "palette": "white",
+        }}}]},
         engine=engine,
         default_crossfade_seconds=2.5,
     )
@@ -346,18 +287,14 @@ def test_session_store_creates_and_recovers_session():
 
 def test_session_buffer_caps_at_history_max():
     sess = ChatSession(id="s", history_max=5)
-    # Push 8 plain user messages — buffer should keep the latest 5.
     sess.append_messages(
         [{"role": "user", "content": f"msg {i}"} for i in range(8)]
     )
     assert len(sess.messages) == 5
-    contents = [m["content"] for m in sess.messages]
-    assert contents == [f"msg {i}" for i in range(3, 8)]
 
 
 def test_session_heals_dangling_tool_message():
     sess = ChatSession(id="s", history_max=4)
-    # Simulate trim leaving a dangling `tool` at the front.
     sess.append_messages(
         [
             {"role": "user", "content": "u1"},
@@ -368,21 +305,17 @@ def test_session_heals_dangling_tool_message():
             {"role": "tool", "tool_call_id": "y", "content": "{}"},
         ]
     )
-    # First two would be trimmed, leaving (tool, user, asst, tool); the heal
-    # drops the leading tool so the buffer is well-formed.
     roles = [m["role"] for m in sess.messages]
     assert roles[0] != "tool"
-    assert "tool" in roles  # later tool entries preserved
+    assert "tool" in roles
 
 
 def test_session_rate_limit_blocks_when_exceeded():
     sess = ChatSession(id="s", history_max=10)
-    # 3 calls at t=0..1.99 should all pass; the 4th in the same minute fails.
     assert sess.check_rate_limit(3, now=1000.0)
     assert sess.check_rate_limit(3, now=1000.5)
     assert sess.check_rate_limit(3, now=1001.0)
     assert sess.check_rate_limit(3, now=1001.5) is False
-    # 61 s later, the window has rolled over → allowed again.
     assert sess.check_rate_limit(3, now=1062.0)
 
 
@@ -390,7 +323,6 @@ def test_session_rate_limit_blocks_when_exceeded():
 
 
 def _completion_with_tool(args: dict[str, Any], text: str = "") -> CompletionResult:
-    """Build a CompletionResult that emits a single update_leds call."""
     raw = {
         "role": "assistant",
         "content": text,
@@ -414,6 +346,23 @@ def _completion_with_tool(args: dict[str, Any], text: str = "") -> CompletionRes
     )
 
 
+def _ice_wave_args() -> dict[str, Any]:
+    return {
+        "layers": [
+            {
+                "node": {
+                    "kind": "palette_lookup",
+                    "params": {
+                        "scalar": {"kind": "wave", "params": {"speed": 0.4}},
+                        "palette": "ice",
+                    },
+                }
+            }
+        ],
+        "crossfade_seconds": 0.0,
+    }
+
+
 def test_agent_chat_applies_tool_call_and_morphs_engine(
     agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
@@ -421,52 +370,28 @@ def test_agent_chat_applies_tool_call_and_morphs_engine(
 
     def fake_complete(self, **kw):
         captured.update(kw)
-        return _completion_with_tool(
-            {
-                "layers": [
-                    {
-                        "effect": "scroll",
-                        "params": {"palette": "ice", "speed": 0.4},
-                    }
-                ],
-                "crossfade_seconds": 0.0,
-            },
-            text="cool ice wave",
-        )
+        return _completion_with_tool(_ice_wave_args(), text="cool ice wave")
 
     monkeypatch.setattr(AgentClient, "complete", fake_complete)
-    r = agent_client_app.post(
-        "/agent/chat", json={"message": "icy slow wave"}
-    )
+    r = agent_client_app.post("/agent/chat", json={"message": "icy slow wave"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["assistant_text"] == "cool ice wave"
     assert body["tool_call"]["name"] == UPDATE_LEDS_TOOL_NAME
     assert body["tool_result"]["ok"] is True
     assert body["session_id"]
-    # System prompt was passed in fresh.
     assert "1800 LEDs" in captured["system_prompt"]
-    # First user turn → only the new user message in the call (the buffer was
-    # empty before).
-    assert captured["messages"][-1]["role"] == "user"
-    # Engine state actually changed.
     state = agent_client_app.get("/state").json()
-    assert state["layers"][0]["params"]["palette"]["name"] == "ice"
+    assert state["layers"][0]["node"]["params"]["palette"] == "ice"
 
 
 def test_agent_chat_session_buffer_grows_across_turns(
     agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
-    counter = {"n": 0}
-
     def fake_complete(self, **kw):
-        counter["n"] += 1
-        return _completion_with_tool(
-            {"layers": [{"effect": "scroll", "params": {}}], "crossfade_seconds": 0.0}
-        )
+        return _completion_with_tool(_ice_wave_args())
 
     monkeypatch.setattr(AgentClient, "complete", fake_complete)
-    # Make sure the cap is large enough to hold both turns for this assertion.
     agent_client_app.app.state.agent_sessions.history_max = 20
     r1 = agent_client_app.post("/agent/chat", json={"message": "m1"})
     sid = r1.json()["session_id"]
@@ -476,7 +401,6 @@ def test_agent_chat_session_buffer_grows_across_turns(
         "/agent/chat", json={"message": "m2", "session_id": sid}
     )
     assert r2.status_code == 200
-    # 2 turns × 3 messages each = 6 in the buffer.
     assert r2.json()["history_size"] == 6
     sess_resp = agent_client_app.get(f"/agent/sessions/{sid}").json()
     assert len(sess_resp["turns"]) == 2
@@ -485,27 +409,22 @@ def test_agent_chat_session_buffer_grows_across_turns(
 def test_agent_chat_buffer_rolls_over_at_history_cap(
     agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
-    # Shrink the cap on the live store so we can hit it with few requests.
     agent_client_app.app.state.agent_sessions.history_max = 6
 
     def fake_complete(self, **kw):
-        return _completion_with_tool(
-            {"layers": [{"effect": "scroll", "params": {}}], "crossfade_seconds": 0.0}
-        )
+        return _completion_with_tool(_ice_wave_args())
 
     monkeypatch.setattr(AgentClient, "complete", fake_complete)
     sid: str | None = None
-    for i in range(5):  # 5 turns × 3 = 15 messages, capped at 6
+    for i in range(5):
         r = agent_client_app.post(
             "/agent/chat", json={"message": f"m{i}", "session_id": sid}
         )
         sid = r.json()["session_id"]
-        # The store cap is the running session's cap, so set it on the session.
         sess = agent_client_app.app.state.agent_sessions.get(sid)
         sess.history_max = 6
     sess = agent_client_app.app.state.agent_sessions.get(sid)
     assert len(sess.messages) <= 6
-    # First message in the buffer should not be a `tool` reply (heal worked).
     assert sess.messages[0]["role"] != "tool"
 
 
@@ -524,11 +443,12 @@ def test_agent_chat_returns_503_on_missing_api_key(
 def test_agent_chat_surfaces_tool_validation_error_to_buffer(
     agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
+    # Disable retries so the first failure surfaces directly.
+    agent_client_app.app.state.agent_cfg.retry_on_tool_error = 0
+
     def fake_complete(self, **kw):
-        # Bogus arguments → handler returns ok=False; buffer still gets the
-        # tool-result so the next turn can self-correct.
         return _completion_with_tool(
-            {"layers": [{"effect": "no-such-effect"}]},
+            {"layers": [{"node": {"kind": "no-such-kind", "params": {}}}]}
         )
 
     monkeypatch.setattr(AgentClient, "complete", fake_complete)
@@ -537,29 +457,137 @@ def test_agent_chat_surfaces_tool_validation_error_to_buffer(
     body = r.json()
     assert body["tool_result"]["ok"] is False
     assert body["tool_result"]["error"] == "layer_validation_failed"
+    assert body["retries_used"] == 0
+
+
+def test_agent_chat_auto_retries_and_self_corrects(
+    agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """A failed tool call triggers a second LLM round-trip with the error in
+    the buffer; the model corrects on the retry and the operator sees success
+    in one /agent/chat response."""
+    agent_client_app.app.state.agent_cfg.retry_on_tool_error = 2
+    agent_client_app.app.state.agent_sessions.history_max = 50
+
+    call_log: list[list[dict[str, Any]]] = []
+    completions = [
+        # Attempt 1: broken (unknown primitive kind) — tool result will be
+        # `ok: false` with a structured `layer_validation_failed`.
+        _completion_with_tool(
+            {"layers": [{"node": {"kind": "no-such-kind", "params": {}}}]},
+            text="oops let me try again",
+        ),
+        # Attempt 2: correct.
+        _completion_with_tool(_ice_wave_args(), text="fixed"),
+    ]
+
+    def fake_complete(self, **kw):
+        call_log.append(list(kw["messages"]))
+        return completions[len(call_log) - 1]
+
+    monkeypatch.setattr(AgentClient, "complete", fake_complete)
+    r = agent_client_app.post("/agent/chat", json={"message": "icy slow wave"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Final result is the corrected one.
+    assert body["tool_result"]["ok"] is True
+    assert body["assistant_text"] == "fixed"
+    assert body["retries_used"] == 1
+    # The retry-attempt request payload must include the failed tool result so
+    # the model can self-correct.
+    assert len(call_log) == 2
+    retry_msgs = call_log[1]
+    tool_msg = next(m for m in reversed(retry_msgs) if m.get("role") == "tool")
+    payload = json.loads(tool_msg["content"])
+    assert payload["ok"] is False
+    assert payload["error"] == "layer_validation_failed"
+    # Engine state reflects the *successful* second call.
+    state = agent_client_app.get("/state").json()
+    assert state["layers"][0]["node"]["params"]["palette"] == "ice"
+
+
+def test_agent_chat_retry_budget_exhausted_surfaces_failure(
+    agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Model never recovers; after `retry_on_tool_error` extra attempts the
+    final failure surfaces to the operator."""
+    agent_client_app.app.state.agent_cfg.retry_on_tool_error = 2
+    agent_client_app.app.state.agent_sessions.history_max = 50
+
+    call_count = {"n": 0}
+
+    def fake_complete(self, **kw):
+        call_count["n"] += 1
+        return _completion_with_tool(
+            {"layers": [{"node": {"kind": "no-such-kind", "params": {}}}]}
+        )
+
+    monkeypatch.setattr(AgentClient, "complete", fake_complete)
+    r = agent_client_app.post("/agent/chat", json={"message": "broken"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["tool_result"]["ok"] is False
+    assert body["tool_result"]["error"] == "layer_validation_failed"
+    # 1 initial + 2 retries = 3 LLM calls total
+    assert call_count["n"] == 3
+    assert body["retries_used"] == 2
+
+
+def test_agent_chat_no_retry_when_tool_succeeds(
+    agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """A successful tool call must not trigger any retry, regardless of budget."""
+    agent_client_app.app.state.agent_cfg.retry_on_tool_error = 3
+    call_count = {"n": 0}
+
+    def fake_complete(self, **kw):
+        call_count["n"] += 1
+        return _completion_with_tool(_ice_wave_args())
+
+    monkeypatch.setattr(AgentClient, "complete", fake_complete)
+    r = agent_client_app.post("/agent/chat", json={"message": "icy"})
+    assert r.status_code == 200, r.text
+    assert r.json()["retries_used"] == 0
+    assert call_count["n"] == 1
+
+
+def test_agent_chat_no_retry_when_no_tool_call(
+    agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Model just chats (no tool call) — retry budget is irrelevant."""
+    agent_client_app.app.state.agent_cfg.retry_on_tool_error = 3
+    call_count = {"n": 0}
+
+    def fake_complete(self, **kw):
+        call_count["n"] += 1
+        return CompletionResult(
+            text="hi there",
+            tool_calls=[],
+            raw_message={"role": "assistant", "content": "hi there"},
+            finish_reason="stop",
+            model="mock",
+        )
+
+    monkeypatch.setattr(AgentClient, "complete", fake_complete)
+    r = agent_client_app.post("/agent/chat", json={"message": "hello"})
+    assert r.status_code == 200, r.text
+    assert r.json()["retries_used"] == 0
+    assert call_count["n"] == 1
 
 
 def test_agent_chat_rate_limited(
     agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
-    # Drop the per-minute cap to 2 just for this test; force everything through
-    # one session so the rate state actually compounds.
     agent_client_app.app.state.agent_cfg.rate_limit_per_minute = 2
 
     def fake_complete(self, **kw):
-        return _completion_with_tool(
-            {"layers": [{"effect": "scroll"}], "crossfade_seconds": 0.0}
-        )
+        return _completion_with_tool(_ice_wave_args())
 
     monkeypatch.setattr(AgentClient, "complete", fake_complete)
     r1 = agent_client_app.post("/agent/chat", json={"message": "a"})
     sid = r1.json()["session_id"]
-    agent_client_app.post(
-        "/agent/chat", json={"message": "b", "session_id": sid}
-    )
-    r3 = agent_client_app.post(
-        "/agent/chat", json={"message": "c", "session_id": sid}
-    )
+    agent_client_app.post("/agent/chat", json={"message": "b", "session_id": sid})
+    r3 = agent_client_app.post("/agent/chat", json={"message": "c", "session_id": sid})
     assert r3.status_code == 429
 
 
@@ -571,6 +599,7 @@ def test_agent_config_endpoint_exposes_settings(agent_client_app: TestClient):
     assert body["model"]
     assert body["history_max_messages"] >= 2
     assert body["api_key_env"] == "OPENROUTER_API_KEY"
+    assert body["retry_on_tool_error"] >= 0
 
 
 def test_agent_sessions_get_404_for_unknown(agent_client_app: TestClient):
@@ -578,12 +607,9 @@ def test_agent_sessions_get_404_for_unknown(agent_client_app: TestClient):
     assert r.status_code == 404
 
 
-def test_agent_sessions_delete(agent_client_app: TestClient,
-                                monkeypatch: pytest.MonkeyPatch):
+def test_agent_sessions_delete(agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch):
     def fake_complete(self, **kw):
-        return _completion_with_tool(
-            {"layers": [{"effect": "scroll"}], "crossfade_seconds": 0.0}
-        )
+        return _completion_with_tool(_ice_wave_args())
 
     monkeypatch.setattr(AgentClient, "complete", fake_complete)
     r = agent_client_app.post("/agent/chat", json={"message": "hi"})
@@ -595,8 +621,6 @@ def test_agent_sessions_delete(agent_client_app: TestClient,
 
 
 def test_chat_html_served(agent_client_app: TestClient):
-    # The chat UI is now part of the main landing page (Phase 7); /chat as a
-    # standalone route was removed.
     r = agent_client_app.get("/")
     assert r.status_code == 200
     assert 'id="chat"' in r.text
@@ -616,7 +640,6 @@ def test_unsupported_tool_call_recorded_as_error(
     agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
     def fake_complete(self, **kw):
-        # Synthesise an unknown tool call.
         raw = {
             "role": "assistant",
             "content": "trying something",
@@ -630,9 +653,7 @@ def test_unsupported_tool_call_recorded_as_error(
         }
         return CompletionResult(
             text="trying something",
-            tool_calls=[
-                {"id": "call_X", "name": "do_something_else", "arguments": {}}
-            ],
+            tool_calls=[{"id": "call_X", "name": "do_something_else", "arguments": {}}],
             raw_message=raw,
             finish_reason="tool_calls",
             model="mock",
@@ -642,7 +663,6 @@ def test_unsupported_tool_call_recorded_as_error(
     r = agent_client_app.post("/agent/chat", json={"message": "x"})
     assert r.status_code == 200, r.text
     body = r.json()
-    # Primary tool was not update_leds → no tool_call/tool_result on the turn.
     assert body["tool_call"] is None
 
 

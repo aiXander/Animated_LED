@@ -27,6 +27,9 @@ class AgentTurn:
     tool_call: dict[str, Any] | None = None  # {name, arguments}
     tool_result: dict[str, Any] | None = None
     error: str | None = None
+    # Number of automatic retries the agent ran on top of the initial attempt
+    # before the loop exited (success, no-tool, or budget-exhausted).
+    retries_used: int = 0
     created_at: float = field(default_factory=time.time)
 
 

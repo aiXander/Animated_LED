@@ -187,6 +187,34 @@ class AgentConfig(BaseModel):
             "Errors are always logged regardless of this flag."
         ),
     )
+    retry_on_tool_error: int = Field(
+        1,
+        ge=0,
+        le=5,
+        description=(
+            "On a failed `update_leds` tool call (validation/compile error), "
+            "automatically re-prompt the LLM up to this many extra times. "
+            "The failed tool result stays in the rolling buffer, so the model "
+            "sees the structured error path on each retry and can self-correct. "
+            "0 disables retries (the operator sees the first failure)."
+        ),
+    )
+
+
+class MastersConfig(BaseModel):
+    """Operator-owned room knobs (refactor §7).
+
+    Persistence shim for the operator UI's `PATCH /masters` with
+    `persist=true`. The render-time copy lives on `Engine.masters` and is
+    seeded from this block on boot.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    brightness: float = Field(1.0, ge=0.0, le=1.0)
+    speed: float = Field(1.0, ge=0.0, le=3.0)
+    audio_reactivity: float = Field(1.0, ge=0.0, le=3.0)
+    saturation: float = Field(1.0, ge=0.0, le=1.0)
+    freeze: bool = False
 
 
 class AppConfig(BaseModel):
@@ -199,6 +227,7 @@ class AppConfig(BaseModel):
     output: OutputConfig = OutputConfig()
     audio: AudioConfig = AudioConfig()
     agent: AgentConfig = AgentConfig()
+    masters: MastersConfig = MastersConfig()
 
     @model_validator(mode="after")
     def _check_strip_layout(self) -> "AppConfig":

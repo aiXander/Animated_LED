@@ -1,33 +1,43 @@
 crossfade_seconds: 1.5
 layers:
-  - effect: scroll
-    blend: normal
+  - blend: normal
     opacity: 1.0
-    params:
-      axis: x
-      speed: 1.5
-      wavelength: 0.5
-      shape: cosine
-      softness: 1.0
-      palette: fire
-      bindings:
+    node:
+      kind: palette_lookup
+      params:
+        scalar:
+          kind: wave
+          params:
+            axis: x
+            speed: 1.5
+            wavelength: 0.5
+            shape: cosine
+            softness: 1.0
+        palette: fire
         brightness:
-          source: audio.low
-          floor: 0.3
-          ceiling: 1.0
-          gain: 4.0
-          release_ms: 300
-  - effect: sparkle
-    blend: screen
+          kind: envelope
+          params:
+            input: {kind: audio_band, params: {band: low}}
+            attack_ms: 30
+            release_ms: 300
+            gain: 4.0
+            floor: 0.3
+            ceiling: 1.0
+  - blend: screen
     opacity: 0.7
-    params:
-      density: 0.4
-      decay: 2.5
-      seed: 11
-      palette: mono_ffffff
-      bindings:
+    node:
+      kind: sparkles
+      params:
+        palette: mono_ffffff
+        density: 0.4
+        decay: 2.5
+        seed: 11
         brightness:
-          source: audio.high
-          floor: 0.0
-          ceiling: 1.0
-          gain: 6.0
+          kind: envelope
+          params:
+            input: {kind: audio_band, params: {band: high}}
+            attack_ms: 30
+            release_ms: 500
+            gain: 6.0
+            floor: 0.0
+            ceiling: 1.0

@@ -19,7 +19,8 @@ cd /Users/xandersteenbrugge/Documents/Projects/animated_LED
 
 # Tests
 .venv/bin/pytest
-.venv/bin/pytest -v tests/test_effects.py   # single file
+.venv/bin/pytest -v tests/test_surface_primitives.py            # single file
+.venv/bin/pytest tests/test_mixer.py::test_crossfade_uses_wall_t # single test
 
 # Lint
 .venv/bin/ruff check src tests
@@ -27,75 +28,94 @@ cd /Users/xandersteenbrugge/Documents/Projects/animated_LED
 
 ## Architecture
 
-The system is a real-time LED controller for a 1800-LED festival install (WS2815 strips on metal scaffolding, driven via DDP over Ethernet to a Gledopto/WLED controller).
+The system is a real-time LED controller for an 1800-LED festival install (4 × 450 WS2815 strips on metal scaffolding, centre-fed via DDP into a Gledopto/WLED controller).
 
-**Render loop** (in `engine.py`): fixed-timestep async loop at `target_fps` — calls `Mixer.render(t, out)` → `PixelBuffer.to_uint8(gamma)` → `Transport.send_frame()`. Frames drop rather than spiral on lag.
+**Render loop** (`engine.py`): fixed-timestep async loop at `target_fps`. Each tick — build a `RenderContext` (effective `t = wall_t × masters.speed`, `audio.*_norm` pre-scaled by `masters.audio_reactivity`, frozen `t` if `masters.freeze`) → `Mixer.render(ctx, out)` walks the compiled layer trees and blends each into the accumulator → master output stage (saturation pull → brightness gain) → `PixelBuffer.to_uint8(gamma)` → `Transport.send_frame()`. Frames drop rather than spiral on lag.
 
 **Key layers:**
-- `topology.py` — Spatial model of all 1800 LEDs. Normalised positions (all axes in [-1, 1]) derived from `config.yaml` strip geometries. Effects must use normalised coords, never raw pixel indices.
-- `effects/` — `field × palette × bindings` pipeline. Field generators (`scroll`, `radial`, `sparkle`, `noise` — in `effects/fields/`) produce a scalar field over the topology; `palette.py` lifts that scalar to RGB via a compiled LUT (named palettes in `NAMED_PALETTES`); `modulator.py` drives `brightness` / `speed` / `hue_shift` slots from audio bands or LFOs with per-slot smoothing (`Envelope`, asymmetric attack/release). Each generator self-registers via `@register` in `effects/registry.py`; new ones must also be re-exported from `effects/fields/__init__.py` so importing the package triggers registration.
-- `mixer.py` — Layer stack with blend modes (normal/add/screen/multiply), opacity, and crossfade transitions between stacks.
-- `pixelbuffer.py` — Float32 working buffer [0.0, 1.0]. Gamma (default 2.2) applied once here, not in WLED.
-- `transports/` — Pluggable output: `simulator` (WebSocket to browser), `ddp` (UDP to WLED), `multi` (both). Swapped via `config.transport.mode`.
-- `audio/` — Split into three pieces so swapping the input source is a one-class change:
-  - `source.py` — `AudioSource` ABC + `SoundDeviceSource` (PortAudio). New sources (network audio over RTP/AES67/NDI, file replay for tests) drop in here.
-  - `analyser.py` — `AudioAnalyser` consumes an `AudioSource`, maintains an FFT ring buffer, computes raw RMS / peak / band features, and stamps an `AudioState`. `blocksize` (HW capture latency) and `fft_window` (FFT length / freq resolution) are independent.
-  - `state.py` — `AudioState` is *raw and instantaneous*: no EMA, no peak hold. All temporal smoothing for visual output happens per-binding in `effects/modulator.Envelope` (asymmetric attack/release). One writer (callback thread), many readers, no locks needed.
-  - `normalizer.py` — `RollingNormalizer` per-feature rolling-window auto-gain. Tracks a high-percentile ceiling over the last `window_s` and divides; `*_norm` companions on `AudioState` map recent dynamic range to ~[0, 1] regardless of mic level. This is what makes audio bindings auto-scale to room loudness — bindings should consume `*_norm`, not raw values.
-  - `capture.py` — `AudioCapture` is a thin convenience wrapper that pre-wires source + analyser; that's what `server.py` and tests hold.
+- `topology.py` — Spatial model of all 1800 LEDs. Normalised positions (each axis in [-1, 1]) derived from `config.yaml` strip geometries. Primitives must use `topology.normalised_positions`, never raw indices.
+- `surface.py` — **The single control surface.** Owns the entire visual vocabulary: colour/shape utilities, the primitive registry, every primitive's pydantic `Params` + `compile()`, named palettes, the spec types (`NodeSpec`, `LayerSpec`, `UpdateLedsSpec`), the compiler (`compile(spec, topology) → CompiledNode`), and `generate_docs()` for the prompt-ready CONTROL SURFACE block. **Adding a new visual idea is a one-place change**: write a `@primitive` class — the agent prompt and operator UI both pick it up via `generate_docs()` / `GET /surface/primitives` automatically. This module never imports from `engine.py` or `mixer.py` (they import it).
+- `masters.py` — Operator-owned `MasterControls` (`brightness`, `speed`, `audio_reactivity`, `saturation`, `freeze`) and per-frame `RenderContext`. Deliberately kept out of the DSL — the LLM never produces or alters them. Bounds enforced in `clamped()`: brightness/saturation ∈ [0, 1], speed/audio_reactivity ∈ [0, 3], freeze: bool.
+- `mixer.py` — Stack of `Layer(node, blend, opacity)` with blend modes (normal/add/screen/multiply), crossfade between stacks, master output stage. Crossfade alpha uses `ctx.wall_t` so operator direction isn't slowed by `speed=0.5` or stopped by `freeze=true`. Per-layer rendering uses `ctx.t` (master-speed-scaled).
+- `pixelbuffer.py` — Float32 working buffer in [0, 1]. Gamma (default 2.2) applied once here, not in WLED.
+- `transports/` — Pluggable output: `simulator` (WebSocket to browser), `ddp` (UDP to WLED, 480 px/packet, PUSH on the final packet only), `multi` (both). Swapped via `config.transport.mode`.
+- `audio/` — Three-piece split so swapping the input source is a one-class change:
+  - `source.py` — `AudioSource` ABC + `SoundDeviceSource` (PortAudio).
+  - `analyser.py` — `AudioAnalyser` consumes blocks, maintains an FFT ring buffer, computes RMS / peak / band features. `blocksize` (HW capture latency) and `fft_window` (FFT length) are independent.
+  - `state.py` — `AudioState` is **raw and instantaneous** (no EMA, no peak hold). Single writer (callback thread), many readers, no locks.
+  - `normalizer.py` — `RollingNormalizer` per-feature rolling-window auto-gain. Bindings consume `*_norm`, not raw values, so they auto-scale to room loudness.
+  - `capture.py` — Thin convenience wrapper that pre-wires source + analyser.
 - `agent/` — Phase 6 language-driven control panel. Thin layer over OpenRouter, NOT a multi-tool agent loop:
-  - `tool.py` — single `update_leds(layers, crossfade_seconds, blackout)` tool. Argument is the *complete* new layer stack, never a diff. Validates each layer through the effect's pydantic schema; on failure the tool result carries a structured error which the LLM sees on the next turn (via the rolling buffer) and self-corrects. Ultimately calls `Engine.crossfade_to` — same code path as `POST /presets/{name}`.
-  - `system_prompt.py` — `build_system_prompt(...)` regenerated *fresh every turn*: install summary (from `Topology`), current layer-stack JSON, audio snapshot (with band freq ranges), full effect catalogue (auto-derived from each effect's pydantic schema), palette names + bindings rubric, 3 anchor examples, behavioural rubric. The dominant token cost — keep effect param descriptions one-liner-tight.
+  - `tool.py` — single `update_leds(layers, crossfade_seconds, blackout)` tool. The argument is the *complete* new layer stack as a tree of `{kind, params}` primitives, never a diff. The surface compiler type-checks the tree (palette in a scalar slot is rejected, leaf must be `rgb_field`, etc.); on failure the tool result carries a structured `{path, msg, valid_kinds}` error which the LLM sees on the next turn (via the rolling buffer) and self-corrects. Calls `Engine.crossfade_to` — same code path as `POST /presets/{name}`.
+  - `system_prompt.py` — `build_system_prompt(...)` regenerated **fresh every turn**: install summary, current layer-stack JSON, audio snapshot, **read-only master values**, full primitive catalogue from `surface.generate_docs()`, anchor examples, anti-patterns. Dominant token cost — keep primitive `Params` `description=` strings tight.
   - `session.py` — in-memory `SessionStore` + `ChatSession` with `history_max`-capped rolling buffer (heals dangling `tool` messages after trim) and per-session rolling-window rate limit. Sessions wipe on restart (v1).
-  - `client.py` — thin OpenAI-compatible wrapper aimed at OpenRouter (`base_url`). Imports `openai` lazily; `MissingApiKey` raised at first call so module import never explodes when the env var is absent.
-- `api/server.py` — FastAPI app: effects, layers, presets, blackout, calibration, topology, audio device management, WebSocket frame broadcast. The landing page (`/`) hosts the LED viz, the chat UI, and the live status panel in one view.
-- `api/agent.py` — `/agent/chat` (synchronous LLM round-trip via `asyncio.to_thread`), `/agent/sessions/{id}` (GET/DELETE), `/agent/config` (read-only; never echoes the API key). 503 on disabled / missing key, 429 on rate-limit hit, 502 on LLM failure.
+  - `client.py` — thin OpenAI-compatible wrapper aimed at OpenRouter. Imports `openai` lazily; `MissingApiKey` raised at first call.
+- `api/server.py` — FastAPI app. Endpoints: `/state`, `/topology`, `/config` (PUT for layout edits), `/surface/primitives`, `/layers` (POST/PATCH/DELETE), `/masters` (GET/PATCH), `/presets/{name}` (POST), `/blackout` + `/resume`, `/calibration/*`, `/audio/*`, `/ws/frames` (WebSocket frame broadcast). The landing page (`/`) hosts the LED viz, chat UI, and live status panel.
+- `api/agent.py` — `/agent/chat` (synchronous LLM round-trip via `asyncio.to_thread`), `/agent/sessions/{id}` (GET/DELETE), `/agent/config` (read-only; never echoes the API key). 503 on disabled/missing key, 429 on rate-limit hit, 502 on LLM failure.
 
-**Config validation** (`config.py` Pydantic schemas): duplicate strip IDs, overlapping pixel ranges, and over-capacity are caught at startup.
+**Config validation** (`config.py` Pydantic schemas): duplicate strip IDs, overlapping pixel ranges, and over-capacity caught at startup.
 
 **Transport swap:** change `config.transport.mode` between `simulator` (dev) and `ddp` (production). All code above the transport layer is identical.
 
-## Effect System
+## The control surface
 
-The base `Effect` ABC (in `effects/base.py`) implements `render(t: float, out: np.ndarray)` against an `(num_leds, 3)` float32 buffer; LED positions live on `self.topology.positions` (normalised, all axes ∈ [-1, 1] — never raw indices).
+Every visual primitive lives in `surface.py`. There are no named effects — a layer is a tree of `{kind, params}` nodes, each validated by its own pydantic `Params` model. The full catalogue (with JSON Schema for every primitive) is served live at `GET /surface/primitives` and embedded into the LLM system prompt every turn.
 
-Most effects are *field generators* that subclass `FieldEffect` (in `effects/fields/base.py`). A field generator:
+**The four output kinds the compiler enforces:**
 
-1. Computes a scalar field per LED (e.g. `scroll` is a 1-D travelling wave whose `shape` param picks cosine / sawtooth / pulse / gauss — the merger of the old `wave` / `gradient` / `chase` effects).
-2. Samples a `PaletteSpec` LUT (`effects/palette.py`) to turn the scalar into RGB. Named palettes ship in `NAMED_PALETTES`; ad-hoc palettes are `{stops: [{pos, color}, …]}`.
-3. Applies `Bindings` (`effects/modulator.py`) — three optional slots `brightness`, `speed`, `hue_shift`, each driven by a `ModulatorSpec` (`source ∈ {const, audio.rms|low|mid|high|peak, lfo.sin|saw|triangle|pulse}`, with per-slot envelope defaults so the LLM rarely needs to specify attack/release). Bindings read `audio.*_norm`, not raw audio.
+| kind            | what it produces                       | typical primitives                                                |
+| --------------- | -------------------------------------- | ----------------------------------------------------------------- |
+| `scalar_field`  | per-LED scalar in [0, 1]               | `wave`, `radial`, `noise2d`, `sparkles`, `position`, `gradient`   |
+| `scalar_t`      | one scalar per frame                   | `lfo`, `audio_band`, `envelope`, `constant`                       |
+| `palette`       | 256-entry RGB LUT                      | `palette_named`, `palette_stops`                                  |
+| `rgb_field`     | per-LED RGB (the layer leaf)           | `palette_lookup`, `solid`                                         |
 
-To add a new field effect:
-1. Subclass `FieldEffect` + `FieldParams` under `effects/fields/`.
-2. Decorate the class with `@register` (from `effects/registry.py`).
-3. Re-export it from `effects/fields/__init__.py` so the import side-effect runs at module load.
+Polymorphic combinators (`mix`, `mul`, `add`, `screen`, `max`, `min`, `remap`, `threshold`, `clamp`, `range_map`, `trail`) resolve their output kind from their inputs at compile time and broadcast where it makes sense (`rgb_field × scalar_t → rgb_field`, `palette × palette → palette` for `mix`).
 
-The pydantic `Params` schema's `description=` strings are user-facing — they feed both the `/effects` REST schema and the LLM system prompt. Keep them tight: one line per field is the budget.
+**Two pieces of sugar in the spec language:**
+- a bare number anywhere a node is expected becomes a `constant` (so `"speed": 0.3` is fine);
+- a bare palette string becomes a `palette_named` (so `"palette": "fire"` is fine).
 
-**Possible future improvement — biquad IIR filter bank:** Today's analyser does block-rate FFT-based band detection. For tighter transient response on mid/high bands, a per-band biquad band-pass filter running sample-by-sample (with a short sliding RMS) would track onsets faster than block-FFT — roughly 3–8 ms better on hi-hats / snare; bass is physics-bound either way. Trade-off: more moving parts and per-band coefficient design (`scipy.signal.butter`). Park behind a config flag if reactivity ever feels sluggish on real DJ audio.
+**Modulation lives directly on the parameter.** Instead of an old-style `bindings.brightness` slot, you pass an `envelope(audio_band(...))` node into `palette_lookup.brightness`. Audio reactivity is composable: `audio_band(band="rms"|"low"|"mid"|"high"|"peak")` returns a `scalar_t`; wrap it in `envelope(input=..., attack_ms, release_ms, gain, floor, ceiling)` for smooth attack/release.
 
-## Coordinate Convention
+**Adding a new primitive:**
+1. Write a `@primitive` class in `surface.py` with a pydantic `Params` model and a `compile()` that returns a `CompiledNode` of the right `output_kind`.
+2. That's it. The doc generator, REST primitive catalogue, and LLM system prompt all pick it up.
 
-Right-handed: `+x` = stage-right, `+y` = up, `+z` = toward audience. Origin = center of scaffolding. All effect math in normalised [-1, 1].
+The `Params` `description=` strings are user-facing — they feed both `GET /surface/primitives` and the LLM system prompt. **One line per field is the budget** (this is the dominant token cost).
 
-## Phase Status
+Named palettes ship in `surface.NAMED_PALETTES`: `rainbow`, `fire`, `ice`, `sunset`, `ocean`, `warm`, `white`, `black`, `mono_<hex>`. Custom palettes are `{kind: "palette_stops", params: {stops: [{pos, color}, …]}}`.
 
-Phases 0–6 are complete (topology, DDP transport, effect engine, REST API, browser simulator + layout editor, audio analysis, language-driven control panel).
+Presets live in `config/presets/<name>.yaml` (sibling of the active config file). Each preset is `{ crossfade_seconds, layers: [{ node: {kind, params}, blend, opacity }, …] }`. Four seed presets ship: `default`, `chill`, `peak`, `cooldown`. Loaded by `presets.py`.
+
+## Coordinate convention
+
+Right-handed: `+x` = stage-right, `+y` = up, `+z` = toward audience. Origin = centre of scaffolding. All primitive math in normalised [-1, 1].
+
+## Phase status
+
+Phases 0–6 are complete (topology, DDP transport, surface engine, REST API, browser simulator + layout editor, audio analysis, language-driven control panel).
 
 Phases 7–9 are planned: mobile operator UI, Pi I²S/systemd cutover, reliability/watchdog.
 
 ## Agent (Phase 6)
 
-The OpenRouter API key is read from `OPENROUTER_API_KEY` (env var name configurable via `agent.api_key_env`). `cli.py` auto-loads `.env` from the repo root (preferred) or `~/.env` before parsing config — never put the key in YAML. With no key, `/agent/chat` returns a clear 503 and the render loop is unaffected.
+The OpenRouter API key is read from `OPENROUTER_API_KEY` (env var name configurable via `agent.api_key_env`). `cli.py` auto-loads `.env` from the repo root before parsing config — never put the key in YAML. With no key, `/agent/chat` returns a clear 503 and the render loop is unaffected.
 
-Contract that holds the design together: the LLM emits **one** `update_leds` per turn, with the *complete* new state. "Make it more red" → re-emit the whole stack with shifted colour stops. No `list_*` / `get_*` discovery tools — the system prompt already carries the catalogue + current state + audio snapshot.
+**Contract that holds the design together:** the LLM emits **one** `update_leds` per turn, with the *complete* new state. "Make it more red" → re-emit the whole stack with shifted colour stops. No `list_*` / `get_*` discovery tools — the system prompt carries the catalogue + current layer stack + audio snapshot + master values every turn.
 
-## Hardware Notes
+**Master controls are deliberately invisible to the LLM as writes.** The agent sees them as a read-only block in the system prompt and tells the user which slider to move when a request can only be honoured that way.
 
-- 1800 LEDs across 4 strips (450 per strip), two 30 m horizontal rows, centre-fed (4 chain heads at `x=0`)
-- Gledopto ESP32 WLED controller at `10.0.0.2:4048` (DDP, port 4048). DDP uses 480 px / packet, PUSH flag *only* on the final packet of each frame
-- WLED must be set to **GRB** colour order for WS2815 (RGB will swap red/green)
-- If WLED's own gamma is enabled, set `output.gamma: 1.0` in YAML — never double-gamma
-- INMP441 I²S microphone (on Pi only; USB audio or built-in mic on dev)
-- `config/config.dev.yaml` for Mac dev (transport=simulator); `config/config.pi.yaml` for Pi (transport=ddp)
-- LedFx and `ledctl` cannot both talk to the same WLED at once
+## Hardware notes
+
+- 1800 LEDs across 4 strips (450 per strip), two 30 m horizontal rows, centre-fed (4 chain heads at `x=0`).
+- Gledopto ESP32 WLED controller at `10.0.0.2:4048` (DDP, port 4048). DDP uses 480 px / packet, PUSH flag *only* on the final packet of each frame.
+- WLED must be set to **GRB** colour order for WS2815 (RGB will swap red/green).
+- If WLED's own gamma is enabled, set `output.gamma: 1.0` in YAML — never double-gamma.
+- INMP441 I²S microphone (on Pi only; USB audio or built-in mic on dev).
+- `config/config.dev.yaml` for Mac dev (transport=simulator); `config/config.pi.yaml` for Pi (transport=ddp).
+- LedFx and `ledctl` cannot both talk to the same WLED at once.
+
+## Possible future improvement — biquad IIR filter bank
+
+Today's analyser does block-rate FFT-based band detection. For tighter transient response on mid/high bands, a per-band biquad band-pass filter running sample-by-sample (with a short sliding RMS) would track onsets faster than block-FFT — roughly 3–8 ms better on hi-hats / snare; bass is physics-bound either way. Trade-off: more moving parts and per-band coefficient design (`scipy.signal.butter`). Park behind a config flag if reactivity ever feels sluggish on real DJ audio.

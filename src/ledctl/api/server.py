@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +15,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..audio import AudioCapture, list_input_devices
 from ..config import AppConfig, AudioConfig, StripConfig
-from ..effects.registry import list_effects
 from ..engine import Engine
+from ..masters import MasterControls
 from ..mixer import BLEND_MODES
 from ..presets import list_presets, load_preset
+from ..surface import primitives_json
 from ..topology import Topology
 from ..transports.base import Transport
 from ..transports.ddp import DDPTransport
@@ -34,7 +36,6 @@ def _build_transport(cfg: AppConfig, sim: SimulatorTransport) -> Transport:
     mode = cfg.transport.mode
     if mode == "simulator":
         return sim
-    # Both ddp and multi need a controller endpoint.
     if not cfg.controllers:
         raise ValueError(f"transport mode {mode!r} requires at least one controller")
     ctrl = next(iter(cfg.controllers.values()))
@@ -48,16 +49,20 @@ def _build_transport(cfg: AppConfig, sim: SimulatorTransport) -> Transport:
 # ---- request bodies ----
 
 
-class PushEffectRequest(BaseModel):
+class PushLayerRequest(BaseModel):
+    """Body for POST /layers — append a single compiled layer to the stack."""
+
     model_config = ConfigDict(extra="forbid")
-    params: dict[str, Any] = Field(default_factory=dict)
+    node: dict[str, Any] = Field(
+        ..., description="Surface tree {kind, params}; leaf must be rgb_field"
+    )
     blend: str = "normal"
     opacity: float = Field(1.0, ge=0.0, le=1.0)
 
 
 class PatchLayerRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    params: dict[str, Any] | None = None
+    node: dict[str, Any] | None = None
     blend: str | None = None
     opacity: float | None = Field(None, ge=0.0, le=1.0)
 
@@ -83,15 +88,11 @@ class CalibrationWalkRequest(BaseModel):
 
 
 class UpdateLayoutRequest(BaseModel):
-    """Editor save: replace the strips list, keeping all other config sections."""
-
     model_config = ConfigDict(extra="forbid")
     strips: list[StripConfig] = Field(..., min_length=1)
 
 
 class AudioSelectRequest(BaseModel):
-    """`device` is an index, a (sub)string of the device name, or null for default."""
-
     model_config = ConfigDict(extra="forbid")
     device: str | int | None = Field(
         None, description="Device index, name (substring ok), or null for system default"
@@ -101,8 +102,24 @@ class AudioSelectRequest(BaseModel):
     )
 
 
+class MastersPatchRequest(BaseModel):
+    """Partial update for the operator master row.
+
+    Mirrors `/audio/select`'s `persist` flag — when true and a config_path is
+    known, the post-merge values are written into the `masters:` block of
+    config.yaml (atomic with `.bak`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    brightness: float | None = Field(None, ge=0.0, le=1.0)
+    speed: float | None = Field(None, ge=0.0, le=3.0)
+    audio_reactivity: float | None = Field(None, ge=0.0, le=3.0)
+    saturation: float | None = Field(None, ge=0.0, le=1.0)
+    freeze: bool | None = None
+    persist: bool = False
+
+
 def _strips_to_yaml_dicts(strips: list[StripConfig]) -> list[dict[str, Any]]:
-    """Plain-Python projection of strips for yaml.safe_dump (no pydantic types)."""
     out: list[dict[str, Any]] = []
     for s in strips:
         out.append(
@@ -125,11 +142,6 @@ def _strips_to_yaml_dicts(strips: list[StripConfig]) -> list[dict[str, Any]]:
 
 
 def _write_config_yaml(path: Path, cfg: AppConfig) -> None:
-    """Atomically rewrite the config YAML, keeping a .bak of the prior version.
-
-    Comments in the original file are lost — pyyaml has no round-trip preservation.
-    Acceptable for v1 of the editor; revisit with ruamel.yaml if comments matter.
-    """
     payload = yaml.safe_dump(
         _config_to_yaml_dict(cfg), sort_keys=False, default_flow_style=False
     )
@@ -142,7 +154,6 @@ def _write_config_yaml(path: Path, cfg: AppConfig) -> None:
 
 
 def _config_to_yaml_dict(cfg: AppConfig) -> dict[str, Any]:
-    """Serialise the full config back to a plain dict in stable section order."""
     return {
         "project": cfg.project.model_dump(),
         "server": cfg.server.model_dump(),
@@ -152,6 +163,7 @@ def _config_to_yaml_dict(cfg: AppConfig) -> dict[str, Any]:
         "output": cfg.output.model_dump(),
         "audio": cfg.audio.model_dump(),
         "agent": cfg.agent.model_dump(),
+        "masters": cfg.masters.model_dump(),
     }
 
 
@@ -166,6 +178,17 @@ def _build_capture(audio_cfg: AudioConfig) -> AudioCapture:
     )
 
 
+def _masters_from_config(cfg: AppConfig) -> MasterControls:
+    m = cfg.masters
+    return MasterControls(
+        brightness=m.brightness,
+        speed=m.speed,
+        audio_reactivity=m.audio_reactivity,
+        saturation=m.saturation,
+        freeze=m.freeze,
+    )
+
+
 def create_app(
     cfg: AppConfig,
     presets_dir: Path | None = None,
@@ -174,7 +197,7 @@ def create_app(
     topology = Topology.from_config(cfg)
     sim = SimulatorTransport()
     transport = _build_transport(cfg, sim)
-    engine = Engine(cfg, topology, transport)
+    engine = Engine(cfg, topology, transport, masters=_masters_from_config(cfg))
     presets_path = presets_dir or DEFAULT_PRESETS_DIR
 
     # Default startup: load the `default` preset from disk so the show is
@@ -182,8 +205,7 @@ def create_app(
     _default_preset = load_preset("default", presets_path)
     for _layer in _default_preset.layers:
         engine.push_layer(
-            _layer.effect,
-            _layer.params,
+            _layer.node,
             blend=_layer.blend,
             opacity=_layer.opacity,
         )
@@ -193,8 +215,6 @@ def create_app(
         audio.start()
     engine.attach_audio(audio.state)
 
-    # State websocket clients. Mutated only from the event loop, so a plain
-    # set + lock-free copy is fine.
     state_clients: set[WebSocket] = set()
 
     @asynccontextmanager
@@ -227,15 +247,11 @@ def create_app(
     app.state.config_path = config_path
     app.state.audio = audio
 
-    # Phase 6 — language-driven control panel. Always installed (state +
-    # routes), but `/agent/chat` no-ops with 503 if `agent.enabled` is false
-    # or the API key env is unset. Render loop is unaffected either way.
     from .agent import install_agent_routes
 
     install_agent_routes(app, cfg.agent, presets_path)
 
     def current_topology() -> Topology:
-        # Topology can be hot-swapped via PUT /config; always read it off the engine.
         return engine.topology
 
     # ---- static / topology ----
@@ -283,6 +299,9 @@ def create_app(
             "high_norm": round(s.high_norm, 5),
         }
 
+    def _masters_payload() -> dict[str, Any]:
+        return asdict(engine.masters)
+
     def _full_state_payload() -> dict:
         return {
             "fps": round(engine.fps, 2),
@@ -298,6 +317,7 @@ def create_app(
             "layers": engine.layer_state(),
             "gamma": engine.gamma,
             "audio": _audio_state_payload(),
+            "masters": _masters_payload(),
         }
 
     @app.get("/state")
@@ -336,30 +356,23 @@ def create_app(
             ],
         }
 
-    # ---- effects ----
+    # ---- surface primitives catalogue ----
 
-    @app.get("/effects")
-    async def get_effects() -> dict:
-        return {
-            name: {
-                "name": name,
-                "params_schema": cls.Params.model_json_schema(),
-            }
-            for name, cls in list_effects().items()
-        }
+    @app.get("/surface/primitives")
+    async def get_surface_primitives() -> dict:
+        return primitives_json()
 
-    @app.post("/effects/{name}", status_code=201)
-    async def post_effect(name: str, body: PushEffectRequest | None = None) -> dict:
-        if name not in list_effects():
-            raise HTTPException(status_code=404, detail=f"unknown effect: {name!r}")
-        body = body or PushEffectRequest()
+    # ---- layers ----
+
+    @app.post("/layers", status_code=201)
+    async def post_layer(body: PushLayerRequest) -> dict:
         if body.blend not in BLEND_MODES:
             raise HTTPException(
                 status_code=422,
                 detail=f"unknown blend {body.blend!r}; must be one of {list(BLEND_MODES)}",
             )
         try:
-            i = engine.push_layer(name, body.params, body.blend, body.opacity)
+            i = engine.push_layer(body.node, body.blend, body.opacity)
         except ValidationError as e:
             raise HTTPException(
                 status_code=422,
@@ -369,9 +382,7 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(e)) from e
         return {"layer_index": i, "layers": engine.layer_state()}
 
-    # ---- layers ----
-
-    @app.patch("/layer/{i}")
+    @app.patch("/layers/{i}")
     async def patch_layer(i: int, body: PatchLayerRequest) -> dict:
         if i < 0 or i >= len(engine.mixer.layers):
             raise HTTPException(status_code=404, detail=f"no layer at index {i}")
@@ -381,7 +392,7 @@ def create_app(
                 detail=f"unknown blend {body.blend!r}; must be one of {list(BLEND_MODES)}",
             )
         try:
-            engine.update_layer(i, body.params, body.blend, body.opacity)
+            engine.update_layer(i, body.node, body.blend, body.opacity)
         except ValidationError as e:
             raise HTTPException(
                 status_code=422,
@@ -391,12 +402,54 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(e)) from e
         return {"layer_index": i, "layers": engine.layer_state()}
 
-    @app.delete("/layer/{i}")
+    @app.delete("/layers/{i}")
     async def delete_layer(i: int) -> dict:
         if i < 0 or i >= len(engine.mixer.layers):
             raise HTTPException(status_code=404, detail=f"no layer at index {i}")
         engine.remove_layer(i)
         return {"layers": engine.layer_state()}
+
+    # ---- masters ----
+
+    @app.get("/masters")
+    async def get_masters() -> dict:
+        return _masters_payload()
+
+    @app.patch("/masters")
+    async def patch_masters(body: MastersPatchRequest) -> dict:
+        patch = {
+            k: v
+            for k, v in body.model_dump(exclude_none=True).items()
+            if k != "persist"
+        }
+        try:
+            engine.set_masters(**patch)
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+        saved_to: str | None = None
+        if body.persist and app.state.config_path is not None:
+            try:
+                new_cfg = AppConfig.model_validate(
+                    {
+                        **app.state.config.model_dump(),
+                        "masters": _masters_payload(),
+                    }
+                )
+            except ValidationError as e:
+                raise HTTPException(
+                    status_code=422,
+                    detail=e.errors(include_url=False, include_context=False),
+                ) from e
+            try:
+                _write_config_yaml(Path(app.state.config_path), new_cfg)
+            except OSError as e:
+                raise HTTPException(
+                    status_code=500, detail=f"could not write config: {e}"
+                ) from e
+            app.state.config = new_cfg
+            saved_to = str(app.state.config_path)
+        return {**_masters_payload(), "saved_to": saved_to}
 
     # ---- blackout ----
 
@@ -430,17 +483,8 @@ def create_app(
             if body.crossfade_seconds is not None
             else preset.crossfade_seconds
         )
-        specs = [
-            {
-                "effect": layer.effect,
-                "params": layer.params,
-                "blend": layer.blend,
-                "opacity": layer.opacity,
-            }
-            for layer in preset.layers
-        ]
         try:
-            engine.crossfade_to(specs, duration)
+            engine.crossfade_to(preset.layers, duration)
         except ValidationError as e:
             raise HTTPException(
                 status_code=422,
@@ -490,8 +534,6 @@ def create_app(
 
     @app.post("/audio/select")
     async def post_audio_select(body: AudioSelectRequest) -> dict:
-        # Build a fresh capture against the new device. If it fails to start,
-        # restart the previous one so the install isn't left without audio.
         prev: AudioCapture = app.state.audio
         prev.stop()
         new_cap = AudioCapture(
@@ -505,7 +547,6 @@ def create_app(
         new_cap.start()
         if not new_cap.state.enabled:
             err = new_cap.state.error or "audio capture failed to start"
-            # Restore the previous device so the system isn't left silent.
             prev.start()
             engine.attach_audio(prev.state)
             raise HTTPException(status_code=422, detail=err)
@@ -553,9 +594,6 @@ def create_app(
 
     @app.put("/config")
     async def put_config(body: UpdateLayoutRequest) -> dict:
-        # Build a candidate AppConfig with the new strips, keeping all other sections.
-        # AppConfig validators run on construction (overlap detection, controller refs,
-        # capacity check), so a bad layout is rejected before we touch disk.
         try:
             new_cfg = AppConfig.model_validate(
                 {
@@ -572,8 +610,6 @@ def create_app(
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
 
-        # Persist to disk before mutating the engine, so a write failure leaves
-        # the running config consistent with what's on disk.
         path = app.state.config_path
         if path is not None:
             try:
@@ -611,8 +647,6 @@ def create_app(
         await sim.add_client(websocket)
         try:
             while True:
-                # The simulator is server-push only. Block on receive so we
-                # detect client disconnects via WebSocketDisconnect.
                 await websocket.receive_text()
         except WebSocketDisconnect:
             pass
@@ -621,9 +655,6 @@ def create_app(
 
     @app.websocket("/ws/state")
     async def ws_state(websocket: WebSocket) -> None:
-        # Server-push stream of /state at engine.target_fps. Lets the landing
-        # page update the engine + audio panel at 60fps without an HTTP poll
-        # storm or rebuilding the chat / layer DOM.
         await websocket.accept()
         state_clients.add(websocket)
         try:
@@ -642,16 +673,7 @@ async def _state_broadcaster(
     payload_fn,
     target_fps: float,
 ) -> None:
-    """Push a fresh state JSON to every connected client at `target_fps`.
-
-    Skips serialisation entirely when nobody is listening so the engine isn't
-    paying for a payload no one reads. Drops clients on send error.
-
-    Deadline-based scheduling — same pattern as `Engine._loop` — so payload
-    serialisation and per-client sends don't drift the rate below target. A
-    flat `await asyncio.sleep(period)` per cycle would have the audio meter
-    visibly lag the LED viz on a loaded event loop.
-    """
+    """Push a fresh state JSON to every connected client at `target_fps`."""
     period = 1.0 / max(1.0, float(target_fps))
     next_tick = time.perf_counter()
     while True:
@@ -660,7 +682,6 @@ async def _state_broadcaster(
         if sleep > 0:
             await asyncio.sleep(sleep)
         else:
-            # Fell behind — resync to "now" so we don't burst-send a backlog.
             next_tick = time.perf_counter()
         if not clients:
             continue
