@@ -5,6 +5,9 @@ Python control layer for a 1800-LED festival install (4 × 450 WS2815 strips fed
 Design docs in repo root:
 - `Audio-Reactive LED installation.md` — hardware/electrical build (gear, power injection, waterproofing, signal integrity)
 - `implementation_roadmap.md` — software roadmap, phases 0–9
+- `refactor_LED_control_surface.md` — in-progress refactor that collapses the effect / palette / modulator layer into a single compositional surface (`src/ledctl/surface.py`) plus an operator-owned `MasterControls` set; lands before Phase 7 (mobile UI)
+
+> **Refactor in progress.** The "Effects, layers, and presets" and "Switching effect modes on the fly" sections below describe today's `field × palette × bindings` shape (effects: `scroll`, `radial`, `sparkle`, `noise`). They will be rewritten to a tree-shaped `{kind, params}` spec with composable primitives once the surface refactor lands. See the design doc above for the new shape. Layer endpoints rename: `POST /effects/{name}` → `POST /layers`, `PATCH /layer/{i}` → `PATCH /layers/{i}`, `DELETE /layer/{i}` → `DELETE /layers/{i}`, `GET /effects` → `GET /surface/primitives`. `POST /presets/{name}` keeps its path. The curl examples below (and the matching endpoint table) will be rewritten in commit 2 of the refactor.
 
 ---
 
@@ -53,13 +56,13 @@ animated_LED/
 ├── config/
 │   ├── config.dev.yaml      # mac/sim defaults (transport.mode = simulator)
 │   ├── config.pi.yaml       # on-site defaults (transport.mode = ddp, host 10.0.0.2)
-│   └── presets/             # YAML preset files: chill, peak, cooldown
+│   └── presets/             # YAML preset files: default, chill, peak, cooldown
 ├── src/
 │   ├── ledctl/
 │   │   ├── config.py        # pydantic schema + load_config()
 │   │   ├── topology.py      # per-LED (strip_id, local_index, global_index, x,y,z)
 │   │   ├── pixelbuffer.py   # float32 working buffer, uint8 + gamma at the boundary
-│   │   ├── effects/         # Effect ABC + registry + wave/solid/gradient/sparkle/chase/audio_pulse
+│   │   ├── effects/         # Effect ABC + registry + field generators (scroll/radial/sparkle/noise) + palette + modulator/bindings
 │   │   ├── mixer.py         # layer stack, blend modes, crossfade, blackout
 │   │   ├── presets.py       # YAML preset loader
 │   │   ├── transports/      # base / ddp / simulator / multi
@@ -87,21 +90,22 @@ animated_LED/
 
 ## Effects, layers, and presets (Phase 2)
 
-Five effects ship in `src/ledctl/effects/`, each with a pydantic `Params` class whose field `description=`s are what the LLM (Phase 6) and operator UI (Phase 7) will read:
+Four field-generator effects ship in `src/ledctl/effects/fields/`, each with a pydantic `Params` class whose field `description=`s feed both the `/effects` REST schema and the LLM (Phase 6) / operator UI (Phase 7). Every field generator pairs a *scalar field over the topology* with a `palette` (named or stops list) and optional `bindings` driving `brightness` / `speed` / `hue_shift` from audio bands or LFOs.
 
-| name       | params (highlights)                                                          |
-| ---------- | ----------------------------------------------------------------------------- |
-| `solid`    | `color`                                                                       |
-| `gradient` | `stops` (list of `{pos, color}`), `direction`, `speed` (0 = anchored, ≠0 wraps), `cross_phase` (per-axis phase offset, e.g. `[0, 0.05, 0]` to skew the wave between top and bottom rows) |
-| `wave`     | `color_a`, `color_b`, `wavelength`, `speed`, `direction`, `softness`            |
-| `sparkle`  | `base`, `color`, `density`, `decay`, `seed`                                   |
-| `chase`    | `color`, `length`, `speed`, `direction`                                       |
+| name      | params (highlights)                                                                                |
+| --------- | -------------------------------------------------------------------------------------------------- |
+| `scroll`  | `axis`, `wavelength`, `speed`, `shape` (`cosine`/`sawtooth`/`pulse`/`gauss`), `softness`, `width`, `cross_phase`, `palette`, `bindings` |
+| `radial`  | `center`, `frequency`, `shape`, `softness`, `palette`, `bindings`                                  |
+| `sparkle` | `density`, `decay`, `seed`, `palette`, `bindings`                                                  |
+| `noise`   | `scale`, `speed`, `palette`, `bindings`                                                            |
+
+`palette` is either a name (`rainbow`, `fire`, `ice`, `sunset`, `ocean`, `warm`, `white`, `mono_<hex>`) or `{stops: [{pos, color}, …]}`. `bindings` slots take a `ModulatorSpec` of the form `{source, floor?, ceiling?, gain?, attack_ms?, release_ms?}` where `source ∈ {const, audio.rms|low|mid|high|peak, lfo.sin|saw|triangle|pulse}`. Audio bindings consume rolling-normalised `*_norm` values so they auto-scale to room loudness.
 
 The `Mixer` holds an ordered layer stack; layer 0 renders onto black, each subsequent layer blends with `blend ∈ {normal, add, screen, multiply}` and `opacity ∈ [0, 1]`. `crossfade_to(new_layers, duration)` renders both stacks for `duration` seconds and lerps between them — no hard cuts.
 
 Gamma 2.2 is applied once, in `PixelBuffer.to_uint8(gamma)`, configurable via `output.gamma` in YAML. Set it to `1.0` if WLED is also gamma-correcting (don't double up).
 
-Presets live in `config/presets/<name>.yaml` (sibling of the active config file). Each preset is `{ crossfade_seconds, layers: [{ effect, params, blend, opacity }, ...] }`. Three seed presets ship: `chill`, `peak`, `cooldown`.
+Presets live in `config/presets/<name>.yaml` (sibling of the active config file). Each preset is `{ crossfade_seconds, layers: [{ effect, params, blend, opacity }, ...] }`. Four seed presets ship: `default` (the boot stack), `chill`, `peak`, `cooldown`.
 
 ---
 
@@ -163,31 +167,31 @@ curl -s -X POST localhost:8000/presets/chill \
   -d '{"crossfade_seconds": 5.0}' | jq .
 ```
 
-### Switch to a single solid colour
+### Solid wash via a `mono_<hex>` palette
 
 ```bash
-# Deep purple — everything off except a flat wash
-curl -s -X POST localhost:8000/effects/solid \
+# Deep purple — flat wash, no animation
+curl -s -X POST localhost:8000/effects/scroll \
   -H 'content-type: application/json' \
-  -d '{"params":{"color":"#4b0082"}}'
+  -d '{"params":{"axis":"x","speed":0.0,"shape":"cosine","palette":"mono_4b0082"}}'
 ```
 
-### Slow colour-wave (wave effect)
+### Slow colour scroll
 
 ```bash
-# Slow blue↔teal wave travelling left→right
-curl -s -X POST localhost:8000/effects/wave \
+# Fire palette scrolling left→right at 0.3 cycles/sec
+curl -s -X POST localhost:8000/effects/scroll \
   -H 'content-type: application/json' \
-  -d '{"params":{"color_a":"#0033ff","color_b":"#00ffe7","wavelength":1.2,"speed":0.3,"direction":"x","softness":0.5}}'
+  -d '{"params":{"axis":"x","speed":0.3,"wavelength":1.2,"shape":"cosine","softness":0.5,"palette":"fire"}}'
 ```
 
-### Scrolling gradient
+### Scrolling gradient with custom stops
 
 ```bash
 # Rainbow gradient wrapping slowly left→right
-curl -s -X POST localhost:8000/effects/gradient \
+curl -s -X POST localhost:8000/effects/scroll \
   -H 'content-type: application/json' \
-  -d '{"params":{"stops":[{"pos":0,"color":"#ff0000"},{"pos":0.33,"color":"#00ff00"},{"pos":0.66,"color":"#0000ff"},{"pos":1,"color":"#ff0000"}],"direction":"x","speed":0.15}}'
+  -d '{"params":{"axis":"x","speed":0.15,"wavelength":2.0,"shape":"sawtooth","palette":{"stops":[{"pos":0,"color":"#ff0000"},{"pos":0.33,"color":"#00ff00"},{"pos":0.66,"color":"#0000ff"},{"pos":1,"color":"#ff0000"}]}}}'
 ```
 
 ### Sparkle only
@@ -196,26 +200,21 @@ curl -s -X POST localhost:8000/effects/gradient \
 # Sparse silver sparkle on black
 curl -s -X POST localhost:8000/effects/sparkle \
   -H 'content-type: application/json' \
-  -d '{"params":{"density":0.04,"color":"#ffffff","decay":1.5}}'
+  -d '{"params":{"density":0.04,"decay":1.5,"palette":"mono_ffffff"}}'
 
-# Dense gold rain
+# Dense gold rain reactive to high-band audio
 curl -s -X POST localhost:8000/effects/sparkle \
   -H 'content-type: application/json' \
-  -d '{"params":{"density":0.3,"color":"#ffd700","decay":0.6}}'
+  -d '{"params":{"density":0.3,"decay":0.6,"palette":"mono_ffd700","bindings":{"brightness":{"source":"audio.high","floor":0.0,"ceiling":1.0,"gain":4.0}}}}'
 ```
 
-### Chase
+### Radial pulse from centre
 
 ```bash
-# Single white comet chasing left→right
-curl -s -X POST localhost:8000/effects/chase \
+# Sunset palette radiating from origin, breathing on the kick
+curl -s -X POST localhost:8000/effects/radial \
   -H 'content-type: application/json' \
-  -d '{"params":{"color":"#ffffff","length":0.05,"speed":1.0,"direction":"x"}}'
-
-# Wide slow green chase going right→left
-curl -s -X POST localhost:8000/effects/chase \
-  -H 'content-type: application/json' \
-  -d '{"params":{"color":"#00ff88","length":0.25,"speed":0.4,"direction":"-x"}}'
+  -d '{"params":{"center":[0,0,0],"frequency":1.5,"shape":"gauss","palette":"sunset","bindings":{"brightness":{"source":"audio.low","floor":0.4,"ceiling":1.0,"release_ms":300}}}}'
 ```
 
 ### Emergency blackout / resume
@@ -273,15 +272,9 @@ Open `http://127.0.0.1:8000/audio` to:
 
 `/state` also includes an `audio` block so a single poll covers everything.
 
-The `audio_pulse` effect joins the registry next to `wave`/`solid`/`gradient`/`sparkle`/`chase`:
+Audio reactivity is no longer a separate `audio_pulse` effect — it lives on every field generator's `bindings` slots (`brightness`, `speed`, `hue_shift`). A binding's `source` selects the band (`audio.rms` / `audio.low` / `audio.mid` / `audio.high` / `audio.peak`) and reads the rolling-normalised `*_norm` value, with per-binding `attack_ms` / `release_ms` smoothing via `effects/modulator.Envelope`.
 
-| name          | params (highlights)                                                     |
-| ------------- | ----------------------------------------------------------------------- |
-| `audio_pulse` | `color`, `band` (`rms`/`peak`/`low`/`mid`/`high`), `floor`, `ceiling`, `sensitivity`, `decay_seconds` (peak-hold time constant; 0 = follow signal directly) |
-
-Stack it under another effect with `blend: multiply` for "fades to dark on quiet" or with `blend: add` for "punches up on the kick."
-
-The default boot stack now layers a fire-coloured (orange / amber / red) `gradient` scrolling left → right (with a small `cross_phase` so the top row leads the bottom by ~0.1 cycles) under an `audio_pulse` with `blend: multiply`, `floor=0.5`, `ceiling=1.0`, and `decay_seconds=0.5` — the whole frame breathes between 50–100% brightness on the room's RMS, and a kick-drum spike lingers for ~half a second instead of snapping back. Tweak any of it via `PATCH /layer/{i}` or replace it with `POST /presets/{name}`.
+The default boot stack is a fire-coloured `scroll` (orange / amber / red palette stops) scrolling left → right with a small `cross_phase` so the top row leads the bottom, and a `bindings.brightness` driven by `audio.rms` between `floor=0.65` and `ceiling=1.0` — the whole frame breathes with the room. Tweak via `PATCH /layer/{i}` or replace with `POST /presets/{name}`.
 
 ---
 
@@ -412,7 +405,7 @@ For centre-feed all 4 chain heads sit at `x=0`, so the dev/pi configs use `start
 7. **WS frame format is raw packed RGB bytes** (`N×3`). Browser fetches `/topology` once for positions. No per-frame metadata.
 8. **`asyncio.wait_for` on a stop-event** is how the engine paces sleep, so `engine.stop()` returns promptly without waiting for the next tick.
 9. **Engine drops frames rather than spiralling** if it falls behind (`engine.dropped_frames` is exposed via `/state`).
-10. **Default boot stack = single `wave` layer** so the install isn't dark on startup. The API can replace it via `/presets/{name}` or `/effects/{name}` + `DELETE /layer/0`.
+10. **Default boot stack = single `scroll` layer** (the `default` preset) so the install isn't dark on startup. The API can replace it via `/presets/{name}` or `/effects/{name}` + `DELETE /layer/0`.
 11. **No auth on the REST API yet.** Phase 7 adds a shared password + Tailscale; until then, only bind to `127.0.0.1` (the default).
 12. **No `git init`** yet. Repo is plain files; add when the user wants commits.
 13. **No tests for `MultiTransport`** because it instantiates a real DDP socket at app boot — needs a UDP listener fixture. Add when we exercise that path.
@@ -424,13 +417,13 @@ For centre-feed all 4 chain heads sit at `x=0`, so the dev/pi configs use `start
 - `tests/test_config.py` — dev/pi YAML loads, overlap/over-capacity rejection
 - `tests/test_topology.py` — 1800 LEDs total, bbox spans 30×1 m, normalised in [-1,1], `reversed` semantics
 - `tests/test_ddp.py` — packet count, PUSH-only-on-last, payload round-trip, single-packet frame still has PUSH
-- `tests/test_wave_effect.py` — wave bounded and travels over time
-- `tests/test_effects.py` — registry + each new effect's output bounded; gradient endpoints align with stops; sparkle reproducible with a seed; chase moves
+- `tests/test_effects.py` — registry + each field generator's output bounded; palette LUT correctness; sparkle reproducible with a seed; bindings drive brightness/speed/hue_shift from audio + LFO sources
 - `tests/test_mixer.py` — blend modes (normal, add, screen, multiply), opacity lerp, blackout zeros output, crossfade transitions and snaps to target after `duration`
 - `tests/test_pixelbuffer.py` — clip + rounding in `to_uint8`, gamma 2.2 darkens midtones
 - `tests/test_api.py` — driven via FastAPI `TestClient` (exercises engine lifespan): `/state`, `/effects` schemas, push/patch/delete layer, blackout/resume, preset application + 404/422 paths
 - `tests/test_audio_features.py` — RMS / peak / band split (sine-tone isolation in low / mid / high bins)
-- `tests/test_audio_pulse.py` — `audio_pulse` reads `topology.audio_state`, honours floor / ceiling / sensitivity
+- `tests/test_audio_analyser.py` — block→FFT→band aggregation, `AudioState` write semantics
+- `tests/test_audio_normalizer.py` — rolling-window auto-gain produces `*_norm` ≈ [0, 1] regardless of input level
 - `tests/test_audio_api.py` — `/audio` endpoints with `AudioCapture.start` monkeypatched: `/state` audio block, device list, persisted YAML write on `/audio/select` (and the previous YAML survives a failed device switch)
 - `tests/test_agent.py` — Phase 6: system-prompt assembly (install + catalogue + audio snapshot), `update_leds` tool round-trip + structured errors, rolling buffer cap + dangling-`tool` heal, per-session rate limit, `/agent/chat` with `AgentClient.complete` mocked (engine actually morphs), 503 on missing API key, 503 when `agent.enabled = false`
 
@@ -454,7 +447,7 @@ These are project-level reminders to apply when relevant; not everything is wire
 - [x] Phase 2 — effect engine (mixer, more effects, gamma)
 - [x] Phase 3 — REST API
 - [x] Phase 4 — spatial GUI / layout editor
-- [x] Phase 5 — audio analysis (capture, RMS / band features, `/audio` UI, `audio_pulse` effect)
+- [x] Phase 5 — audio analysis (capture, RMS / band features, rolling normaliser, `/audio` UI, audio-driven `bindings` on every field generator)
 - [x] Phase 6 — language-driven control panel via OpenRouter (single `update_leds` tool, fresh system prompt with current state + catalogue + audio every turn, rolling buffer, chat panel folded into the landing page)
 - [ ] Phase 7 — operator mobile UI
 - [ ] Phase 8 — Pi cutover
