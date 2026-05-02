@@ -51,6 +51,9 @@ transport:
   sim:
     ws_path: /ws/frames
 
+output:
+  gamma: 1.5
+
 audio:
   enabled: true
   # Set this to the INMP441 ALSA card name once Phase 8 wires it up

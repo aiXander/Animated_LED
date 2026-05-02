@@ -1,0 +1,37 @@
+crossfade_seconds: 5.0
+masters:
+  brightness: 1.0
+  speed: 1.0
+  audio_reactivity: 1.0
+  saturation: 1.0
+  freeze: false
+layers:
+- blend: normal
+  opacity: 1.0
+  node:
+    kind: palette_lookup
+    params:
+      brightness:
+        params:
+          floor: 0.65
+          attack_ms: 30
+          input:
+            params:
+              band: rms
+            kind: audio_band
+          ceiling: 1
+          release_ms: 500
+        kind: envelope
+      palette: rainbow
+      scalar:
+        params:
+          softness: 1
+          speed: 0.3
+          shape: cosine
+          wavelength: 1
+          cross_phase:
+          - 0
+          - 0.15
+          - 0
+          axis: x
+        kind: wave

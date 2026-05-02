@@ -266,11 +266,15 @@ class LayerSpec(BaseModel):
 
 
 class UpdateLedsSpec(BaseModel):
-    """Tool argument: the complete new state of the install."""
+    """Tool argument: the complete new state of the install.
+
+    Crossfade duration is *not* part of this spec. The operator's master
+    crossfade slider is the single source of truth — the LLM never picks
+    transition speed (the field is shown read-only in the system prompt).
+    """
 
     model_config = ConfigDict(extra="forbid")
     layers: list[LayerSpec] = Field(default_factory=list)
-    crossfade_seconds: float | None = Field(None, ge=0.0)
     blackout: bool = False
 
 
@@ -345,11 +349,22 @@ class CompileError(ValueError):
 
     The path is dotted (`layers[0].node.params.scalar.params.shape`) so the
     LLM tool-result formatter can surface it to the model verbatim.
+
+    `expected_kind` is set when the failure is a kind mismatch — the tool-
+    result formatter uses it to filter `valid_kinds` to just the primitives
+    that produce the expected kind, so the LLM gets a small, relevant list
+    instead of the entire registry.
     """
 
-    def __init__(self, message: str, path: list[str] | None = None):
+    def __init__(
+        self,
+        message: str,
+        path: list[str] | None = None,
+        expected_kind: str | None = None,
+    ):
         self.raw_message = message
         self.path = list(path or [])
+        self.expected_kind = expected_kind
         super().__init__(self._format())
 
     def _format(self) -> str:
@@ -454,7 +469,9 @@ class Compiler:
             return cls.compile(params, self.topology, self)
         except CompileError as e:
             if not e.path:
-                raise CompileError(e.raw_message, list(self._path)) from e
+                raise CompileError(
+                    e.raw_message, list(self._path), expected_kind=e.expected_kind,
+                ) from e
             raise
         except (ValueError, TypeError) as e:
             raise CompileError(f"{node.kind}: {e}", self._path) from e
@@ -469,9 +486,19 @@ class Compiler:
         # Allow scalar_t to broadcast wherever scalar_field is expected.
         if expected == "scalar_field" and got == "scalar_t":
             return
-        raise CompileError(
-            f"expected {expected}, got {got}", self._path
-        )
+        suggestion = _primitives_producing(expected)
+        if suggestion:
+            msg = (
+                f"expected {expected}, got {got}; this slot needs a {expected} "
+                f"primitive (e.g. {', '.join(suggestion)}) — "
+                f"{got} primitives are spatial/per-LED and cannot be used here"
+                if expected == "scalar_t" and got == "scalar_field"
+                else f"expected {expected}, got {got}; "
+                f"use one of: {', '.join(suggestion)}"
+            )
+        else:
+            msg = f"expected {expected}, got {got}"
+        raise CompileError(msg, self._path, expected_kind=expected)
 
     # ---- entry points ----
 
@@ -517,6 +544,21 @@ def compile_layers(
 def _kind_priority(kind: str) -> int:
     # Higher = wins. rgb_field beats scalar_field beats scalar_t.
     return {"scalar_t": 0, "scalar_field": 1, "rgb_field": 2}.get(kind, -1)
+
+
+def _primitives_producing(kind: str) -> list[str]:
+    """Return the kinds of primitives that produce `kind` directly.
+
+    Used by `_check_kind` to turn "expected scalar_t, got scalar_field" into
+    actionable advice ("use audio_band, constant, envelope, lfo"). Polymorphic
+    combinators are excluded from the suggestion — they could match, but the
+    LLM does better with concrete leaf primitives in front of it.
+    """
+    return sorted(
+        prim.kind
+        for prim in REGISTRY.values()
+        if prim.output_kind == kind
+    )
 
 
 def _broadcast_kind(a: str, b: str) -> str:
@@ -1917,6 +1959,13 @@ ANTI_PATTERNS: list[str] = [
     "either a literal or a scalar_t/scalar_field node.",
     "Audio is read via `audio_band` (rolling-normalised). Wrap it in `envelope` "
     "for smooth attack/release; raw `audio_band` is jagged on purpose (peak-kick).",
+    "`mix.t` is the lerp factor — it is a `scalar_t` (one number per frame), "
+    "not a `scalar_field`. Feed it `lfo`, `audio_band`, `envelope`, or a literal "
+    "0..1 number; do NOT feed it `position`/`wave`/`noise` (those are per-LED).",
+    "To split the install spatially (top half vs bottom half, etc.) use a "
+    "`scalar_field` like `position` as the `palette_lookup.scalar` directly, or "
+    "build it via `add`/`mul`/`mix` of two `scalar_field`s — `mix.t` cannot "
+    "do per-LED splits because its blend factor is a single number.",
 ]
 
 

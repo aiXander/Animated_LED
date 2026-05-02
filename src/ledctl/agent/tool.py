@@ -75,7 +75,9 @@ def update_leds_tool_schema() -> dict[str, Any]:
                 "crossfade to it. Always emit the full state — never a diff. "
                 "For 'make it more red' or 'slower', re-emit the full stack "
                 "with the relevant fields adjusted. The current stack is "
-                "shown in CURRENT STATE in the system prompt."
+                "shown in CURRENT STATE in the system prompt. Transition "
+                "duration is set by the operator's master crossfade slider, "
+                "not by you — there is no crossfade field on this tool."
             ),
             "parameters": parameters,
         },
@@ -148,11 +150,9 @@ def apply_update_leds(
         }
     engine.mixer.blackout = False
 
-    duration = (
-        args.crossfade_seconds
-        if args.crossfade_seconds is not None
-        else float(default_crossfade_seconds)
-    )
+    # Crossfade duration is operator-owned via the master slider; the LLM
+    # has no say. UpdateLedsSpec deliberately omits the field.
+    duration = float(default_crossfade_seconds)
 
     # Pre-flight: structured compile of every layer against the registry,
     # before mutating engine state. The engine itself would catch these too,
@@ -175,12 +175,22 @@ def apply_update_leds(
         try:
             Compiler(engine.topology).compile_layer(layer)
         except CompileError as e:
+            # When the failure is a kind mismatch, narrow `valid_kinds` to
+            # primitives that produce the expected kind. The LLM does much
+            # better with a focused 4-name shortlist than the full registry.
+            if e.expected_kind is not None:
+                kinds = sorted(
+                    k for k, p in REGISTRY.items()
+                    if p.output_kind == e.expected_kind
+                )
+            else:
+                kinds = sorted(REGISTRY.keys())
             layer_errors.append(
                 {
                     "layer": i,
                     "path": e.path,
                     "msg": e.raw_message,
-                    "valid_kinds": sorted(REGISTRY.keys()),
+                    "valid_kinds": kinds,
                 }
             )
         except ValidationError as e:

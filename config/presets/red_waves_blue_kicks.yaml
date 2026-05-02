@@ -1,0 +1,59 @@
+crossfade_seconds: 5.0
+masters:
+  brightness: 1.0
+  speed: 1.0
+  audio_reactivity: 1.0
+  saturation: 1.0
+  freeze: false
+layers:
+- blend: normal
+  opacity: 1.0
+  node:
+    kind: palette_lookup
+    params:
+      palette:
+        kind: palette_stops
+        params:
+          stops:
+          - color: '#000000'
+            pos: 0
+          - color: '#ff0000'
+            pos: 0.5
+          - color: '#000000'
+            pos: 1
+      scalar:
+        kind: wave
+        params:
+          speed: 0.1
+          shape: cosine
+          cross_phase:
+          - 0
+          - 0.5
+          - 0
+          axis: x
+          wavelength: 1
+      brightness: 1
+      hue_shift: 0
+- blend: add
+  opacity: 1.0
+  node:
+    kind: palette_lookup
+    params:
+      hue_shift: 0
+      brightness:
+        params:
+          gain: 1
+          input:
+            kind: audio_band
+            params:
+              band: low
+          release_ms: 500
+          ceiling: 0.3
+          curve: sqrt
+          attack_ms: 50
+        kind: envelope
+      palette: mono_0000ff
+      scalar:
+        params:
+          value: 1
+        kind: constant

@@ -55,9 +55,30 @@
     pre.diff .add { color: #4ade80; }
     pre.diff .del { color: #f87171; }
     .help { color: #888; font-size: 11px; }
+    #viz-nav {
+      position: fixed; top: 10px; right: 12px; display: flex;
+      gap: 6px; z-index: 5;
+    }
+    #viz-nav a {
+      padding: 4px 10px; background: rgba(17, 17, 17, 0.85);
+      border: 1px solid #2a2a2a; border-radius: 6px; color: #ddd;
+      text-decoration: none; font-size: 11px;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    #viz-nav a:hover { background: #1a1a1a; border-color: #3a3a3a; color: #93c5fd; }
+    #viz-nav a.active,
+    #viz-nav a.active:hover {
+      background: #1e3a8a; border-color: #3b82f6; color: #dbeafe;
+    }
   </style>
 </head>
 <body>
+  <nav id="viz-nav">
+    <a href="/">main</a>
+    <a href="/editor" class="active">layout</a>
+    <a href="/audio">audio</a>
+    <a href="/docs">api docs</a>
+  </nav>
   <div id="app">
     <div id="canvas-wrap">
       <canvas id="canvas"></canvas>
@@ -66,7 +87,6 @@
       <h1>ledctl · layout editor</h1>
       <div class="help">
         Drag <b>endpoints</b> to move them. Click a strip to select it and edit numerically.
-        <a href="/">← back to live view</a>
       </div>
       <h2>strips</h2>
       <div id="strips"></div>

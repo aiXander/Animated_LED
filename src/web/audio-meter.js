@@ -5,8 +5,9 @@
   const KEYS = ["rms", "peak", "low", "mid", "high"];
   const STYLE_ID = "audio-meter-styles";
   const STYLE = `
-    .am-meter { display: grid; grid-template-columns: auto 1fr auto;
-                gap: 4px 8px; align-items: center; font-size: 11px; }
+    .am-meter { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+                gap: 4px 8px; align-items: center; font-size: 11px;
+                padding-right: 4px; }
     .am-meter-label { opacity: 0.6; }
     .am-bar { position: relative; height: 10px; background: #111;
               border: 1px solid #1f1f1f; border-radius: 2px; overflow: hidden; }
@@ -17,7 +18,7 @@
     .am-fill.am-mid  { background: #facc15; }
     .am-fill.am-high { background: #38bdf8; }
     .am-num { text-align: right; font-variant-numeric: tabular-nums; opacity: 0.8;
-              min-width: 42px; }
+              min-width: 44px; }
   `;
 
   function ensureStyles() {

@@ -16,6 +16,7 @@ streaming variant.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import asdict
 from pathlib import Path
@@ -189,6 +190,19 @@ def build_router(app: FastAPI) -> APIRouter:
         # recent attempt if no tool call was ever emitted).
         primary_usage: dict[str, int] | None = None
 
+        # Detect operator edits to the layer stack between turns. The chat
+        # history's last `update_leds` tool result echoed `layers: [...]` at
+        # the time we applied it; if the engine's current `layer_state()`
+        # differs, the operator hit the LAYERS UI (delete/patch/reorder)
+        # since then. We surface this to the LLM via a flag in the system
+        # prompt so it doesn't blindly copy its prior tool-call args and
+        # reinstate the removed layers.
+        last_seen_layers = _last_tool_result_layers(list(sess.messages))
+        external_edit = (
+            last_seen_layers is not None
+            and last_seen_layers != engine.layer_state()
+        )
+
         for attempt in range(max_attempts):
             # Regenerate per-turn prompt so each retry sees a fresh audio
             # snapshot + the latest engine state. The install/topology
@@ -199,6 +213,12 @@ def build_router(app: FastAPI) -> APIRouter:
                 audio_state=audio_state,
                 presets_dir=presets_dir,
                 masters=engine.masters,
+                crossfade_seconds=cfg.default_crossfade_seconds,
+                external_edit=external_edit,
+            )
+            log.info(
+                "agent.attempt: session=%s attempt=%d/%d msgs=%d",
+                sess.id, attempt + 1, max_attempts, len(msgs_for_call),
             )
             try:
                 result = await asyncio.to_thread(
@@ -306,28 +326,31 @@ def build_router(app: FastAPI) -> APIRouter:
         finish_reason = result.finish_reason if result else ""
         model_id = result.model if result else ""
 
-        if cfg.debug_logging:
-            log.info(
-                "agent.chat_done: session=%s finish=%s text_chars=%d "
-                "tool=%s tool_ok=%s retries=%d",
-                sess.id,
-                finish_reason,
-                len(turn.assistant_text),
-                primary_call["name"] if primary_call else None,
-                turn.tool_result.get("ok") if turn.tool_result else None,
-                turn.retries_used,
-            )
-        elif primary_call and turn.tool_result and not turn.tool_result.get("ok"):
-            # Always surface tool-result failures so the operator sees them
-            # even with debug_logging off.
+        # One always-on summary line so you can verify the retry budget was
+        # actually exercised — the per-attempt `agent.attempt` lines above pair
+        # with this. Failures additionally surface `details` so the operator
+        # can see the structured error without cranking up debug logging.
+        log.info(
+            "agent.chat_done: session=%s finish=%s text_chars=%d "
+            "tool=%s tool_ok=%s retries=%d/%d",
+            sess.id,
+            finish_reason,
+            len(turn.assistant_text),
+            primary_call["name"] if primary_call else None,
+            turn.tool_result.get("ok") if turn.tool_result else None,
+            turn.retries_used,
+            cfg.retry_on_tool_error,
+        )
+        if primary_call and turn.tool_result and not turn.tool_result.get("ok"):
             log.warning(
                 "agent.tool_failed: session=%s tool=%s error=%s details=%s "
-                "retries=%d",
+                "retries=%d/%d",
                 sess.id,
                 primary_call["name"],
                 turn.tool_result.get("error"),
                 turn.tool_result.get("details"),
                 turn.retries_used,
+                cfg.retry_on_tool_error,
             )
 
         return {
@@ -346,18 +369,39 @@ def build_router(app: FastAPI) -> APIRouter:
 
 
 def _serialise_tool_result(payload: dict[str, Any]) -> str:
-    import json
-
     return json.dumps(payload, default=str)
 
 
 def _deserialise_tool_result(content: str) -> Any:
-    import json
-
     try:
         return json.loads(content)
     except json.JSONDecodeError:
         return {"_raw": content}
+
+
+def _last_tool_result_layers(messages: list[dict[str, Any]]) -> list | None:
+    """Return the `layers` field of the most recent `tool` reply in `messages`.
+
+    Used to detect whether the operator manually edited the layer stack via
+    the UI between LLM turns. The tool result's `layers` field is set from
+    `engine.layer_state()` at the time we applied the call, so it's the last
+    layer state the LLM was told about. Comparing it to the current
+    `engine.layer_state()` is a structural-equal check on dicts of native
+    JSON types — no normalisation needed.
+    """
+    for msg in reversed(messages):
+        if msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("layers"), list):
+            return payload["layers"]
+    return None
 
 
 def install_agent_routes(

@@ -97,7 +97,9 @@ def test_update_leds_schema_is_a_function_tool():
     params = schema["function"]["parameters"]
     assert params["type"] == "object"
     assert "layers" in params["properties"]
-    assert "crossfade_seconds" in params["properties"]
+    # `crossfade_seconds` is deliberately *not* exposed to the LLM — the
+    # operator's master crossfade slider is the single source of truth.
+    assert "crossfade_seconds" not in params["properties"]
     assert "blackout" in params["properties"]
 
 
@@ -166,13 +168,18 @@ def test_update_leds_input_round_trips_a_minimal_spec():
                 }
             }
         ],
-        "crossfade_seconds": 0.5,
     }
     parsed = UpdateLedsInput.model_validate(spec)
     assert parsed.layers[0].node.kind == "palette_lookup"
     assert parsed.layers[0].blend == "normal"
-    assert parsed.crossfade_seconds == 0.5
     assert parsed.blackout is False
+
+
+def test_update_leds_input_rejects_crossfade_field():
+    """The LLM must not pick transition speed — schema forbids it."""
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        UpdateLedsInput.model_validate({"layers": [], "crossfade_seconds": 0.5})
 
 
 def test_apply_update_leds_calls_engine_crossfade(agent_client_app: TestClient):
@@ -189,11 +196,10 @@ def test_apply_update_leds_calls_engine_crossfade(agent_client_app: TestClient):
                 }
             }
         ],
-        "crossfade_seconds": 0.0,
     }
     result = apply_update_leds(args, engine=engine, default_crossfade_seconds=1.0)
     assert result["ok"] is True
-    assert result["crossfade_seconds"] == 0.0
+    assert result["crossfade_seconds"] == 1.0
     assert len(result["layers"]) == 1
     assert engine.layer_state()[0]["node"]["params"]["palette"] == "fire"
 
@@ -226,7 +232,6 @@ def test_apply_update_leds_clears_blackout_on_normal_call(agent_client_app: Test
                     }
                 }
             ],
-            "crossfade_seconds": 0.0,
         },
         engine=engine,
         default_crossfade_seconds=1.0,
@@ -359,7 +364,6 @@ def _ice_wave_args() -> dict[str, Any]:
                 }
             }
         ],
-        "crossfade_seconds": 0.0,
     }
 
 

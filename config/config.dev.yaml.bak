@@ -41,8 +41,8 @@ strips:
     - 0.5
     - 0.0
     end:
-    - 15.7
-    - 1.25
+    - 15.0
+    - 0.5
     - 0.0
   reversed: false
 - id: bottom_left
@@ -84,7 +84,7 @@ transport:
   sim:
     ws_path: /ws/frames
 output:
-  gamma: 2.2
+  gamma: 1.5
 audio:
   enabled: true
   device: null

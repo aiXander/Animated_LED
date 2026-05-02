@@ -1,4 +1,10 @@
 crossfade_seconds: 0.0
+masters:
+  brightness: 1.0
+  speed: 1.0
+  audio_reactivity: 1.0
+  saturation: 1.0
+  freeze: false
 layers:
   - blend: normal
     opacity: 1.0

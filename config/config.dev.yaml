@@ -84,7 +84,7 @@ transport:
   sim:
     ws_path: /ws/frames
 output:
-  gamma: 2.2
+  gamma: 1.5
 audio:
   enabled: true
   device: null

@@ -18,7 +18,7 @@ from ..config import AppConfig, AudioConfig, StripConfig
 from ..engine import Engine
 from ..masters import MasterControls
 from ..mixer import BLEND_MODES
-from ..presets import list_presets, load_preset
+from ..presets import list_presets, load_preset, save_preset, validate_preset_name
 from ..surface import primitives_json
 from ..topology import Topology
 from ..transports.base import Transport
@@ -71,6 +71,26 @@ class ApplyPresetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     crossfade_seconds: float | None = Field(
         None, ge=0.0, description="Override the preset's own crossfade duration"
+    )
+    apply_masters: bool = Field(
+        False,
+        description=(
+            "If true, also push the preset's masters block into MasterControls. "
+            "Off by default — the visual stack and the room knobs are independent."
+        ),
+    )
+
+
+class SavePresetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=40,
+        description="Preset name; letters/digits/_/-, max 40 chars.",
+    )
+    overwrite: bool = Field(
+        True, description="If false, fail with 409 when a preset of this name exists."
     )
 
 
@@ -256,21 +276,27 @@ def create_app(
 
     # ---- static / topology ----
 
+    _NO_CACHE_HEADERS = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+
     @app.get("/")
     async def index() -> FileResponse:
-        return FileResponse(WEB_DIR / "index.html")
+        return FileResponse(WEB_DIR / "index.html", headers=_NO_CACHE_HEADERS)
 
     @app.get("/editor")
     async def editor() -> FileResponse:
-        return FileResponse(WEB_DIR / "editor.html")
+        return FileResponse(WEB_DIR / "editor.html", headers=_NO_CACHE_HEADERS)
 
     @app.get("/audio")
     async def audio_page() -> FileResponse:
-        return FileResponse(WEB_DIR / "audio.html")
+        return FileResponse(WEB_DIR / "audio.html", headers=_NO_CACHE_HEADERS)
 
     @app.get("/audio-meter.js")
     async def audio_meter_js() -> FileResponse:
-        return FileResponse(WEB_DIR / "audio-meter.js", media_type="application/javascript")
+        return FileResponse(
+            WEB_DIR / "audio-meter.js",
+            media_type="application/javascript",
+            headers=_NO_CACHE_HEADERS,
+        )
 
     def _audio_state_payload() -> dict[str, Any]:
         cap: AudioCapture | None = app.state.audio
@@ -478,10 +504,15 @@ def create_app(
         except (ValidationError, ValueError) as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         body = body or ApplyPresetRequest()
+        # Operator's master crossfade slider (agent.default_crossfade_seconds)
+        # is the single source of truth for transition speed. The duration
+        # baked into the preset YAML is preserved for archival reasons but
+        # ignored at apply-time. An explicit `body.crossfade_seconds` still
+        # overrides for direct API/automation callers.
         duration = (
             body.crossfade_seconds
             if body.crossfade_seconds is not None
-            else preset.crossfade_seconds
+            else float(app.state.config.agent.default_crossfade_seconds)
         )
         try:
             engine.crossfade_to(preset.layers, duration)
@@ -492,10 +523,55 @@ def create_app(
             ) from e
         except (TypeError, ValueError, KeyError) as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+        if body.apply_masters:
+            try:
+                engine.set_masters(**preset.masters.model_dump())
+            except (TypeError, ValueError) as e:
+                raise HTTPException(status_code=422, detail=str(e)) from e
         return {
             "applied": preset.name or name,
             "crossfade_seconds": duration,
+            "applied_masters": body.apply_masters,
             "layers": engine.layer_state(),
+            "masters": _masters_payload(),
+        }
+
+    @app.post("/presets", status_code=201)
+    async def create_preset(body: SavePresetRequest) -> dict:
+        try:
+            validate_preset_name(body.name)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        layers = engine.layer_state()
+        masters = _masters_payload()
+        # Crossfade duration baked into the preset = whatever the operator has
+        # currently dialed in on the agent's default-crossfade slider. That's
+        # the closest single-source-of-truth for "how fast should this preset
+        # come in next time" without adding a second knob to the save dialog.
+        duration = float(app.state.config.agent.default_crossfade_seconds)
+        try:
+            path = save_preset(
+                name=body.name,
+                presets_dir=presets_path,
+                crossfade_seconds=duration,
+                layers=layers,
+                masters=masters,
+                overwrite=body.overwrite,
+            )
+        except FileExistsError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        except (ValidationError, ValueError) as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except OSError as e:
+            raise HTTPException(
+                status_code=500, detail=f"could not write preset: {e}"
+            ) from e
+        return {
+            "name": body.name,
+            "saved_to": str(path),
+            "crossfade_seconds": duration,
+            "layers": layers,
+            "masters": masters,
         }
 
     # ---- calibration (Phase 4) ----

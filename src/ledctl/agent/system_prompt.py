@@ -51,7 +51,7 @@ def _summarise_install(topology: Topology) -> str:
     )
 
 
-def _summarise_current_state(engine: Any) -> str:
+def _summarise_current_state(engine: Any, external_edit: bool = False) -> str:
     layer_state = engine.layer_state()
     payload: dict[str, Any] = {
         "blackout": bool(engine.mixer.blackout),
@@ -60,7 +60,21 @@ def _summarise_current_state(engine: Any) -> str:
         "dropped_frames": engine.dropped_frames,
         "layers": layer_state,
     }
-    return "CURRENT STATE\n" + json.dumps(payload, indent=2, default=str)
+    header = (
+        "CURRENT STATE (authoritative — operator can edit the stack via "
+        "the UI between turns; if this differs from your last `update_leds` "
+        "call, the operator removed/changed/reordered layers manually and "
+        "you MUST rebuild from this, not from your prior tool call args)"
+    )
+    if external_edit:
+        header += (
+            "\n!! OPERATOR EDIT DETECTED: the layer stack below differs from "
+            "what you returned in your most recent `update_leds` call. The "
+            "operator manually edited the stack via the LAYERS UI panel "
+            "since your last turn. Treat the layers below as ground truth "
+            "and rebuild from them — do NOT re-add layers the operator removed."
+        )
+    return header + "\n" + json.dumps(payload, indent=2, default=str)
 
 
 def _summarise_audio(audio_state: AudioState | None) -> str:
@@ -91,23 +105,38 @@ def _summarise_audio(audio_state: AudioState | None) -> str:
     )
 
 
-def _summarise_masters(masters: MasterControls | None) -> str:
-    if masters is None:
+def _summarise_masters(
+    masters: MasterControls | None,
+    crossfade_seconds: float | None = None,
+) -> str:
+    if masters is None and crossfade_seconds is None:
         return ""
-    return (
-        "OPERATOR MASTERS (read-only — set by sliders, persist across your changes):\n"
-        f"  brightness:        {masters.brightness:.2f}   (final-output gain)\n"
-        f"  speed:             {masters.speed:.2f}   (time multiplier on motion)\n"
-        f"  audio_reactivity:  {masters.audio_reactivity:.2f}   (multiplier on every audio_band)\n"
-        f"  saturation:        {masters.saturation:.2f}   (1 = full colour, 0 = greyscale)\n"
-        f"  freeze:            {str(bool(masters.freeze)).lower()}   "
-        "(true = effective time stops; envelope/audio still update)\n"
+    lines = ["OPERATOR MASTERS (read-only — set by sliders, persist across your changes):"]
+    if masters is not None:
+        lines.extend([
+            f"  brightness:        {masters.brightness:.2f}   (final-output gain)",
+            f"  speed:             {masters.speed:.2f}   (time multiplier on motion)",
+            f"  audio_reactivity:  {masters.audio_reactivity:.2f}   "
+            "(multiplier on every audio_band)",
+            f"  saturation:        {masters.saturation:.2f}   (1 = full colour, 0 = greyscale)",
+            f"  freeze:            {str(bool(masters.freeze)).lower()}   "
+            "(true = effective time stops; envelope/audio still update)",
+        ])
+    if crossfade_seconds is not None:
+        lines.append(
+            f"  crossfade:         {crossfade_seconds:.2f}s   "
+            "(duration of every fade between layer stacks — applies to your "
+            "`update_leds` calls AND preset loads)"
+        )
+    lines.append(
         "You cannot modify these — they are sliders the operator owns. If a "
         "request can only be honoured by a master change ('make it brighter' "
         "while brightness < 1.0; 'less reactive' while audio_reactivity is "
-        "high), say so in your reply and tell the user which slider to move. "
-        "Otherwise, design your spec assuming the masters stay where they are."
+        "high; 'slower transition' while crossfade is short), say so in your "
+        "reply and tell the user which slider to move. Otherwise, design "
+        "your spec assuming the masters stay where they are."
     )
+    return "\n".join(lines)
 
 
 def _summarise_blends_and_presets(presets: list[str]) -> str:
@@ -128,8 +157,6 @@ RUBRIC = (
     "stack — never a diff.\n"
     "- For 'more red, slower', re-emit the current stack with shifted colours "
     "and reduced wave speed.\n"
-    "- Pick a `crossfade_seconds` that fits: snappy ~0.3, normal ~1–1.5, "
-    "slow drift 3–5.\n"
     "- The user can see the lights — keep your assistant text terse "
     "(<= 1 short sentence). No reciting the spec; the tool call already says it.\n"
     "- The control panel is for setting/adjusting the vibe at human typing "
@@ -142,6 +169,14 @@ RUBRIC = (
     "the tool call with a structured error including the full tree path. "
     "Re-emit a corrected full stack on the next turn — the previous valid "
     "stack is in CURRENT STATE so you can build from it.\n"
+    "- The operator can edit the layer stack manually via the LAYERS UI "
+    "panel (add/remove/reorder/patch). When that happens, CURRENT STATE "
+    "will diverge from the `layers` argument you sent in your most recent "
+    "`update_leds` call (and from the `layers` field in prior tool results "
+    "in this conversation). ALWAYS rebuild from CURRENT STATE — do NOT "
+    "reinstate layers the operator removed by copying your previous tool "
+    "call's arguments. Your chat history is a record of what you did; "
+    "CURRENT STATE is what's actually running.\n"
     "- If a tool result has `ok: false`, READ THE `details` field carefully "
     "before retrying — it tells you exactly which path/key the validator "
     "rejected.\n"
@@ -157,6 +192,8 @@ def build_system_prompt(
     audio_state: AudioState | None,
     presets_dir: Path | None = None,
     masters: MasterControls | None = None,
+    crossfade_seconds: float | None = None,
+    external_edit: bool = False,
 ) -> str:
     """Assemble the per-turn system prompt. Pure function — easy to test."""
     presets: list[str] = []
@@ -171,10 +208,10 @@ def build_system_prompt(
         "crossfade. Validation is strict; the surface catalogue below is the "
         "authoritative spec.",
         _summarise_install(topology),
-        _summarise_current_state(engine),
+        _summarise_current_state(engine, external_edit=external_edit),
         _summarise_audio(audio_state),
     ]
-    masters_block = _summarise_masters(masters)
+    masters_block = _summarise_masters(masters, crossfade_seconds)
     if masters_block:
         sections.append(masters_block)
     sections.extend(
