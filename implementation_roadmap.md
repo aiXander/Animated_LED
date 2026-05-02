@@ -367,12 +367,9 @@ agent:
 **Goal:** a phone-friendly page bar staff can pull up to change vibe quickly.
 
 - Single page, big buttons:
-  - 4–8 saved presets ("chill", "peak", "cooldown", "blackout").
-  - Master brightness slider.
-  - Master speed scaler (multiplies all effect `speed` params).
-  - Color picker for the "primary" colour (effects with a primary slot reflect it).
-  - A free-text box → POSTs to `/agent/chat` (Phase 6) with a session id pinned to the operator UI, so phone-typed prompts feed the same conversational agent (and benefit from the rolling buffer for "make it more red"-style follow-ups).
-- Auth: simple shared password on a query string or basic auth; rotate per event. Behind Tailscale or Cloudflare Tunnel — never expose the Pi directly.
+  - All master sliders.
+  - Chat window
+- Auth: simple shared password "kaailed" on a query string (rotate per event). Behind Tailscale — never expose the Pi directly.
 - PWA manifest so it installs as an app icon on the bar staff's home screens.
 
 ---

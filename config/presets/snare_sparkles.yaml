@@ -1,0 +1,35 @@
+crossfade_seconds: 5.0
+masters:
+  brightness: 1.0
+  speed: 1.56
+  audio_reactivity: 0.78
+  saturation: 1.0
+  freeze: false
+layers:
+- blend: add
+  opacity: 1.0
+  node:
+    kind: sparkles
+    params:
+      density: 0.5
+      seed: 42
+      brightness:
+        kind: envelope
+        params:
+          release_ms: 200
+          floor: 0
+          attack_ms: 10
+          input:
+            kind: audio_band
+            params:
+              band: high
+          ceiling: 2
+      palette:
+        kind: palette_stops
+        params:
+          stops:
+          - color: '#ffffff'
+            pos: 0
+          - pos: 1
+            color: '#add8e6'
+      decay: 2
