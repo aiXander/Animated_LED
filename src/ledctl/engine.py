@@ -296,8 +296,6 @@ class Engine:
             return s
         return dataclasses.replace(
             s,
-            rms_norm=s.rms_norm * gain,
-            peak_norm=s.peak_norm * gain,
             low_norm=s.low_norm * gain,
             mid_norm=s.mid_norm * gain,
             high_norm=s.high_norm * gain,

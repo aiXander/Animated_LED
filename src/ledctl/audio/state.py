@@ -21,6 +21,11 @@ class AudioState:
     range of the room. Modulators consume the `_norm` values, and the level
     meter UI shows them too — the raw fields stay close to zero on quiet
     inputs and made the bars unreadable.
+
+    Only the three frequency bands are tracked: full-band RMS was too coarse
+    for visual modulation (a wash of "loudness" with no musical structure)
+    and full-band peak was too noisy (a single sample spike in any band hits
+    the bar). Pick low/mid/high to track a specific musical element.
     """
 
     samplerate: int = 48000
@@ -31,25 +36,17 @@ class AudioState:
     enabled: bool = False
     error: str = ""
     block_count: int = 0
-    rms: float = 0.0          # raw RMS over the current FFT window, ~[0, 1]
-    peak: float = 0.0         # raw max |sample| over the current FFT window
     low: float = 0.0          # raw low-band FFT energy
     mid: float = 0.0          # raw mid-band FFT energy
     high: float = 0.0         # raw high-band FFT energy
-    rms_norm: float = 0.0     # rms / rolling-window ceiling, in [0, 1]
-    peak_norm: float = 0.0
-    low_norm: float = 0.0
+    low_norm: float = 0.0     # low / rolling-window ceiling, in [0, 1]
     mid_norm: float = 0.0
     high_norm: float = 0.0
 
     def reset_levels(self) -> None:
-        self.rms = 0.0
-        self.peak = 0.0
         self.low = 0.0
         self.mid = 0.0
         self.high = 0.0
-        self.rms_norm = 0.0
-        self.peak_norm = 0.0
         self.low_norm = 0.0
         self.mid_norm = 0.0
         self.high_norm = 0.0

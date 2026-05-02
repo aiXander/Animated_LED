@@ -1,8 +1,8 @@
 """Real-time audio analyser.
 
 Drives an `AudioSource`, accumulates the most recent `fft_window` samples in a
-ring buffer, and computes RMS / peak / band features per source block. Writes
-*raw* (unsmoothed) values into a shared `AudioState` along with their
+ring buffer, and computes per-band FFT energy per source block. Writes *raw*
+(unsmoothed) values into a shared `AudioState` along with their
 rolling-window-normalised counterparts. Temporal smoothing for visual output is
 the modulator envelope's job — see `effects/modulator.py`. Keeping the analyser
 raw means audio measurements stay as fast as the source delivers, and each
@@ -26,7 +26,7 @@ from typing import Any
 
 import numpy as np
 
-from .features import DEFAULT_BANDS, band_energies, peak, rms
+from .features import DEFAULT_BANDS, band_energies
 from .normalizer import RollingNormalizer
 from .source import AudioSource
 from .state import AudioState
@@ -92,7 +92,7 @@ class AudioAnalyser:
                 window_s=self.normalize_window_s,
                 update_rate_hz=update_rate_hz,
             )
-            for name in ("rms", "peak", "low", "mid", "high")
+            for name in ("low", "mid", "high")
         }
         self._lock = threading.Lock()
 
@@ -143,22 +143,16 @@ class AudioAnalyser:
 
     def _compute_features(self, win: np.ndarray) -> None:
         sr = self.state.samplerate
-        rms_v = rms(win)
-        peak_v = peak(win)
         low_v, mid_v, high_v = band_energies(win, sr, self.bands)
         s = self.state
         # Raw, instantaneous values — no EMA, no peak-hold. Modulator envelopes
         # downstream apply per-binding attack/release. Keeping the source state
         # raw is the whole point of the post-Phase-5 audio refactor: visuals
         # smooth, audio doesn't.
-        s.rms = rms_v
-        s.peak = peak_v
         s.low = low_v
         s.mid = mid_v
         s.high = high_v
         n = self._normalizers
-        s.rms_norm = n["rms"].step(rms_v)
-        s.peak_norm = n["peak"].step(peak_v)
         s.low_norm = n["low"].step(low_v)
         s.mid_norm = n["mid"].step(mid_v)
         s.high_norm = n["high"].step(high_v)

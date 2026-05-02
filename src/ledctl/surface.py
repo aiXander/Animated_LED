@@ -675,8 +675,13 @@ class Lfo(Primitive):
 
 class _AudioBandParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    band: Literal["rms", "peak", "low", "mid", "high"] = Field(
-        ..., description="Which rolling-normalised AudioState band to read"
+    band: Literal["low", "mid", "high"] = Field(
+        ...,
+        description=(
+            "Which rolling-normalised frequency band to read: "
+            "low (20–250 Hz, kick/sub), mid (250 Hz–2 kHz, vocals/snare body), "
+            "high (2–12 kHz, hats/cymbals)"
+        ),
     )
 
 
@@ -697,9 +702,11 @@ class AudioBand(Primitive):
     kind = "audio_band"
     output_kind = "scalar_t"
     summary = (
-        "Rolling-normalised audio band (~[0, 1] under typical room loudness; "
-        "may exceed 1 when masters.audio_reactivity > 1 — clip downstream if "
-        "needed)."
+        "Rolling-normalised frequency band (low/mid/high) — ~[0, 1] under "
+        "typical room loudness; may exceed 1 when masters.audio_reactivity > 1 "
+        "(clip downstream if needed). Always pick a band that matches the "
+        "musical element you want; full-band loudness is intentionally not "
+        "exposed."
     )
     Params = _AudioBandParams
 
@@ -1876,7 +1883,7 @@ EXAMPLE_TREES: dict[str, dict[str, Any]] = {
             "brightness": {
                 "kind": "envelope",
                 "params": {
-                    "input": {"kind": "audio_band", "params": {"band": "rms"}},
+                    "input": {"kind": "audio_band", "params": {"band": "low"}},
                     "attack_ms": 30,
                     "release_ms": 500,
                     "floor": 0.5,
@@ -1957,8 +1964,10 @@ ANTI_PATTERNS: list[str] = [
     "Discrete params (`axis`, `shape`, `band`, `direction`) are baked at compile "
     "time and cannot be modulated. Numeric params are `NumberOrNode` and accept "
     "either a literal or a scalar_t/scalar_field node.",
-    "Audio is read via `audio_band` (rolling-normalised). Wrap it in `envelope` "
-    "for smooth attack/release; raw `audio_band` is jagged on purpose (peak-kick).",
+    "Audio is read via `audio_band` with band ∈ {low, mid, high} (rolling-"
+    "normalised). Pick the band that matches the musical element you want to "
+    "track (low=kick, mid=vocals/snare, high=hats). Wrap in `envelope` for "
+    "smooth attack/release; raw `audio_band` is jagged on purpose.",
     "`mix.t` is the lerp factor — it is a `scalar_t` (one number per frame), "
     "not a `scalar_field`. Feed it `lfo`, `audio_band`, `envelope`, or a literal "
     "0..1 number; do NOT feed it `position`/`wave`/`noise` (those are per-LED).",

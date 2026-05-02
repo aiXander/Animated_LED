@@ -74,8 +74,8 @@ def test_build_system_prompt_includes_audio_when_enabled(agent_client_app: TestC
     audio = engine.audio_state
     audio.enabled = True
     audio.device_name = "fake-mic"
-    audio.rms = 0.42
-    audio.rms_norm = 0.55
+    audio.low = 0.42
+    audio.low_norm = 0.55
     prompt = build_system_prompt(
         topology=engine.topology,
         engine=engine,

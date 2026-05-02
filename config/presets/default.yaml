@@ -31,7 +31,7 @@ layers:
         brightness:
           kind: envelope
           params:
-            input: {kind: audio_band, params: {band: rms}}
+            input: {kind: audio_band, params: {band: low}}
             attack_ms: 30
             release_ms: 500
             floor: 0.65

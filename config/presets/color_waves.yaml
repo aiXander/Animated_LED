@@ -17,7 +17,7 @@ layers:
           attack_ms: 30
           input:
             params:
-              band: rms
+              band: low
             kind: audio_band
           ceiling: 1
           release_ms: 500
