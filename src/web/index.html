@@ -5,13 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ledctl</title>
   <style>
-    :root { color-scheme: dark; }
+    /* Root font-size scales with viewport so every rem-based dimension
+       (paddings, gaps, font sizes, panel min-widths, …) tracks the screen.
+       1440×900 (13" MBP) → ~16.6px;  1680×1050 → ~18.7px;
+       1920×1080 → ~19.1px;  2560×1440 → clamped at 26px. */
+    :root {
+      color-scheme: dark;
+      font-size: clamp(14px, 1.4vmin + 4px, 26px);
+      --viz-h: clamp(8.75rem, 24vh, 20rem);
+    }
+    /* Universal border-box: without this, paddings on flex children with an
+       explicit basis (e.g. #status-panel) get added on top of the basis and
+       push the panel past its share, clipping the rightmost content. */
+    *, *::before, *::after { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: #050505; color: #ddd;
                   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                  overflow: hidden; box-sizing: border-box; }
-    body { padding: 10px; }
-    #app { display: grid; grid-template-rows: auto auto 1fr; height: 100%;
-           border: 1px solid #1a1a1a; border-radius: 8px; overflow: hidden; }
+                  overflow: hidden; }
+    body { padding: 0.625rem; }
+    /* Two rows only. With the older `auto auto 1fr`, #tooltip (display:none)
+       didn't take a grid cell, so #middle landed in row 2 (auto) and row 3
+       sat empty — the empty band at the bottom of the screen. */
+    #app { display: grid; grid-template-rows: auto 1fr; height: 100%;
+           border: 1px solid #1a1a1a; border-radius: 0.5rem; overflow: hidden; }
     .ok  { color: #4ade80; }
     .bad { color: #f87171; }
     .warn { color: #fbbf24; }
@@ -20,27 +35,27 @@
 
     /* ---- top: LED viz ---- */
     #viz {
-      position: relative; width: 100%; height: 220px;
+      position: relative; width: 100%; height: var(--viz-h);
       border-bottom: 1px solid #1a1a1a; background: #050505;
     }
     #canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
     #cal-banner {
-      position: absolute; top: 48px; right: 12px; padding: 6px 10px;
+      position: absolute; top: 3rem; right: 0.75rem; padding: 0.375rem 0.625rem;
       background: rgba(127, 29, 29, 0.85); border: 1px solid #b91c1c;
-      border-radius: 6px; color: #fee2e2; font-size: 11px; display: none;
+      border-radius: 0.375rem; color: #fee2e2; font-size: 0.6875rem; display: none;
     }
     #cal-banner button {
-      margin-left: 8px; background: #b91c1c; color: #fee2e2; border: 0;
-      padding: 3px 6px; border-radius: 3px; font-family: inherit; cursor: pointer;
+      margin-left: 0.5rem; background: #b91c1c; color: #fee2e2; border: 0;
+      padding: 0.1875rem 0.375rem; border-radius: 0.1875rem; font-family: inherit; cursor: pointer;
     }
     #viz-nav {
-      position: absolute; top: 10px; right: 12px; display: flex;
-      gap: 6px; z-index: 5;
+      position: absolute; top: 0.625rem; right: 0.75rem; display: flex;
+      gap: 0.375rem; z-index: 5;
     }
     #viz-nav a {
-      padding: 4px 10px; background: rgba(17, 17, 17, 0.85);
-      border: 1px solid #2a2a2a; border-radius: 6px; color: #ddd;
-      text-decoration: none; font-size: 11px;
+      padding: 0.25rem 0.625rem; background: rgba(17, 17, 17, 0.85);
+      border: 1px solid #2a2a2a; border-radius: 0.375rem; color: #ddd;
+      text-decoration: none; font-size: 0.6875rem;
       transition: background 0.15s, border-color 0.15s, color 0.15s;
     }
     #viz-nav a:hover { background: #1a1a1a; border-color: #3a3a3a; color: #93c5fd; }
@@ -49,96 +64,96 @@
       background: #1e3a8a; border-color: #3b82f6; color: #dbeafe;
     }
     #tooltip {
-      position: fixed; pointer-events: none; padding: 6px 8px;
+      position: fixed; pointer-events: none; padding: 0.375rem 0.5rem;
       background: rgba(10, 10, 10, 0.92); border: 1px solid #333;
-      border-radius: 6px; font-size: 11px; line-height: 1.4;
+      border-radius: 0.375rem; font-size: 0.6875rem; line-height: 1.4;
       display: none; z-index: 20;
     }
     #tooltip .gid { color: #93c5fd; }
     #ws-pill {
-      position: absolute; top: 10px; left: 12px; font-size: 11px;
-      padding: 4px 8px; border-radius: 999px; border: 1px solid #333;
+      position: absolute; top: 0.625rem; left: 0.75rem; font-size: 0.6875rem;
+      padding: 0.25rem 0.5rem; border-radius: 999px; border: 1px solid #333;
       background: rgba(0, 0, 0, 0.5);
     }
 
     /* ---- middle: chat | splitter | status ---- */
     #middle { display: flex; min-height: 0; overflow: hidden; }
     #chat {
-      display: flex; flex-direction: column; min-width: 280px;
+      display: flex; flex-direction: column; min-width: 17.5rem;
       border-right: 0; min-height: 0;
     }
     #chat header {
-      display: flex; gap: 10px; align-items: center; padding: 8px 14px;
-      border-bottom: 1px solid #1a1a1a; font-size: 12px;
+      display: flex; gap: 0.625rem; align-items: center; padding: 0.5rem 0.875rem;
+      border-bottom: 1px solid #1a1a1a; font-size: 0.75rem;
     }
     #chat header .title { color: #93c5fd; font-weight: 600; }
     #chat header .spacer { flex: 1; }
     #chat header label { opacity: 0.6; }
     #chat header input, #chat header button {
-      background: #111; color: #ddd; border: 1px solid #333; border-radius: 6px;
-      padding: 4px 8px; font-family: inherit; font-size: 12px;
+      background: #111; color: #ddd; border: 1px solid #333; border-radius: 0.375rem;
+      padding: 0.25rem 0.5rem; font-family: inherit; font-size: 0.75rem;
     }
     #chat header button { cursor: pointer; }
-    #log { flex: 1; overflow-y: auto; padding: 14px; min-height: 0; }
-    .turn { margin-bottom: 14px; }
-    .bubble { padding: 8px 12px; border-radius: 10px; max-width: 92%;
+    #log { flex: 1; overflow-y: auto; padding: 0.875rem; min-height: 0; }
+    .turn { margin-bottom: 0.875rem; }
+    .bubble { padding: 0.5rem 0.75rem; border-radius: 0.625rem; max-width: 92%;
               white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
     .user .bubble { background: #1e3a8a; color: #dbeafe; margin-left: auto; }
     .asst .bubble { background: #161616; border: 1px solid #2a2a2a; color: #ddd; }
     .row { display: flex; }
     .user.row { justify-content: flex-end; }
     .asst.row { justify-content: flex-start; }
-    .meta { font-size: 10px; opacity: 0.55; margin-top: 4px; }
-    .toolblock { margin-top: 6px; font-size: 11px; }
+    .meta { font-size: 0.625rem; opacity: 0.55; margin-top: 0.25rem; }
+    .toolblock { margin-top: 0.375rem; font-size: 0.6875rem; }
     .toolblock summary { cursor: pointer; opacity: 0.75; }
-    .toolblock pre { background: #0c0c0c; border: 1px solid #222; border-radius: 6px;
-                     padding: 8px; overflow-x: auto; max-height: 280px; }
-    #chat footer { border-top: 1px solid #1a1a1a; padding: 10px 14px; }
-    #chat footer .composer { display: flex; gap: 8px; }
+    .toolblock pre { background: #0c0c0c; border: 1px solid #222; border-radius: 0.375rem;
+                     padding: 0.5rem; overflow-x: auto; max-height: 30vh; }
+    #chat footer { border-top: 1px solid #1a1a1a; padding: 0.625rem 0.875rem; }
+    #chat footer .composer { display: flex; gap: 0.5rem; }
     #input { flex: 1; background: #0a0a0a; color: #eee; border: 1px solid #333;
-             border-radius: 8px; padding: 10px 12px; font-family: inherit;
-             font-size: 14px; resize: none; }
-    #send { background: #1e40af; color: white; border: 0; border-radius: 8px;
-            padding: 10px 14px; font-family: inherit; font-weight: 600; cursor: pointer; }
+             border-radius: 0.5rem; padding: 0.625rem 0.75rem; font-family: inherit;
+             font-size: 0.875rem; resize: none; }
+    #send { background: #1e40af; color: white; border: 0; border-radius: 0.5rem;
+            padding: 0.625rem 0.875rem; font-family: inherit; font-weight: 600; cursor: pointer; }
     #send:disabled { opacity: 0.5; cursor: not-allowed; }
-    #chat-status { font-size: 11px; opacity: 0.7; }
+    #chat-status { font-size: 0.6875rem; opacity: 0.7; }
 
     /* ---- splitter ---- */
     #splitter {
-      flex: 0 0 6px; background: #1a1a1a; cursor: col-resize;
+      flex: 0 0 0.375rem; background: #1a1a1a; cursor: col-resize;
       position: relative; transition: background 0.15s;
     }
     #splitter:hover, #splitter.dragging { background: #2a2a2a; }
     #splitter::after {
       content: ""; position: absolute; top: 50%; left: 50%;
-      width: 2px; height: 32px; background: #444;
+      width: 2px; height: 2rem; background: #444;
       transform: translate(-50%, -50%); border-radius: 2px;
     }
     body.dragging { cursor: col-resize; user-select: none; }
 
     /* ---- status panel ---- */
     #status-panel {
-      min-width: 200px; overflow-y: auto; overflow-x: hidden;
-      padding: 14px 10px 14px 14px;
-      font-size: 12px; background: #080808;
+      min-width: 12.5rem; overflow-y: auto; overflow-x: hidden;
+      padding: 0.875rem 0.625rem 0.875rem 0.875rem;
+      font-size: 0.75rem; background: #080808;
     }
     #status-panel h3 {
-      font-size: 11px; margin: 16px 0 6px; color: #fbbf24;
+      font-size: 0.6875rem; margin: 1rem 0 0.375rem; color: #fbbf24;
       text-transform: uppercase; letter-spacing: 0.06em;
-      border-bottom: 1px solid #1a1a1a; padding-bottom: 4px;
+      border-bottom: 1px solid #1a1a1a; padding-bottom: 0.25rem;
     }
     #status-panel h3:first-child { margin-top: 0; }
-    .status-cols { display: flex; gap: 16px; align-items: flex-start; }
+    .status-cols { display: flex; gap: 1rem; align-items: flex-start; }
     .status-cols .status-col { flex: 1 1 0; min-width: 0; }
     .status-cols .status-col h3 { margin-top: 0; }
-    .status-cols .stat .k { min-width: 64px; }
-    .stat { display: flex; gap: 8px; padding: 2px 0; line-height: 1.4; }
-    .stat .k { opacity: 0.6; min-width: 84px; }
+    .status-cols .stat .k { min-width: 4rem; }
+    .stat { display: flex; gap: 0.5rem; padding: 0.125rem 0; line-height: 1.4; }
+    .stat .k { opacity: 0.6; min-width: 5.25rem; }
     .stat .v { font-variant-numeric: tabular-nums; word-break: break-word; flex: 1; }
-    #audio-meter { margin-top: 4px; }
+    #audio-meter { margin-top: 0.25rem; }
     .layer-row {
-      position: relative; padding: 5px 8px; margin: 3px 0; border-radius: 4px;
-      border: 1px solid #1a1a1a; font-size: 11px; line-height: 1.3;
+      position: relative; padding: 0.3125rem 0.5rem; margin: 0.1875rem 0; border-radius: 0.25rem;
+      border: 1px solid #1a1a1a; font-size: 0.6875rem; line-height: 1.3;
       cursor: ew-resize; user-select: none; overflow: hidden;
       --op: 100%;
       background:
@@ -155,24 +170,24 @@
     .layer-row > * { position: relative; pointer-events: none; }
     .layer-row .head {
       position: relative;
-      display: flex; align-items: center; gap: 6px;
+      display: flex; align-items: center; gap: 0.375rem;
     }
     .layer-row .name {
       color: #dbeafe; font-weight: 600;
       min-width: 0; flex: 1 1 auto;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      padding-right: 44px; /* clear the centered op-num */
+      padding-right: 2.75rem; /* clear the centered op-num */
     }
     .layer-row .op-num {
       position: absolute; left: 50%; transform: translateX(-50%);
       font-variant-numeric: tabular-nums; opacity: 0.85;
-      background: rgba(20, 20, 20, 0.55); padding: 0 4px; border-radius: 3px;
+      background: rgba(20, 20, 20, 0.55); padding: 0 0.25rem; border-radius: 0.1875rem;
     }
     .layer-row .remove {
       margin-left: auto; pointer-events: auto;
       background: transparent; border: 1px solid #3a1a1a; color: #f87171;
-      border-radius: 4px; padding: 0 7px; font-family: inherit;
-      font-size: 13px; line-height: 1.4; cursor: pointer;
+      border-radius: 0.25rem; padding: 0 0.4375rem; font-family: inherit;
+      font-size: 0.8125rem; line-height: 1.4; cursor: pointer;
       transition: background 0.12s, border-color 0.12s, color 0.12s;
     }
     .layer-row .remove:hover {
@@ -182,40 +197,40 @@
 
     /* ---- masters ---- */
     .master-row {
-      display: flex; align-items: center; gap: 8px; padding: 3px 4px 3px 0;
+      display: flex; align-items: center; gap: 0.5rem; padding: 0.1875rem 0.25rem 0.1875rem 0;
       min-width: 0;
     }
     .master-row > label {
-      flex: 0 0 76px; opacity: 0.6; font-size: 11px;
+      flex: 0 0 4.75rem; opacity: 0.6; font-size: 0.6875rem;
     }
     .master-row input[type=range] {
-      flex: 1 1 0; min-width: 0; accent-color: #93c5fd; height: 4px;
+      flex: 1 1 0; min-width: 0; accent-color: #93c5fd; height: 0.25rem;
     }
     .master-row .v {
-      flex: 0 0 44px; text-align: right; font-size: 11px;
+      flex: 0 0 2.75rem; text-align: right; font-size: 0.6875rem;
       font-variant-numeric: tabular-nums; opacity: 0.85;
     }
     .master-row button {
       background: #111; color: #ddd; border: 1px solid #2a2a2a;
-      border-radius: 6px; padding: 4px 10px; font-family: inherit;
-      font-size: 11px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+      border-radius: 0.375rem; padding: 0.25rem 0.625rem; font-family: inherit;
+      font-size: 0.6875rem; cursor: pointer; transition: background 0.15s, border-color 0.15s;
     }
     .master-row button:hover { background: #1a1a1a; border-color: #3a3a3a; }
     .master-row button.on {
       background: #b45309; border-color: #d97706; color: #fef3c7;
     }
-    .master-row.toggles { gap: 6px; padding-top: 6px; }
+    .master-row.toggles { gap: 0.375rem; padding-top: 0.375rem; }
     .master-row.toggles button { flex: 1; }
 
     /* ---- preset bar (overlaid on viz, same row as ws-pill / viz-nav) ---- */
     #preset-bar {
-      position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
-      display: flex; gap: 8px; z-index: 5;
+      position: absolute; top: 0.625rem; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 0.5rem; z-index: 5;
     }
     .preset-btn {
       background: linear-gradient(180deg, #6d28d9 0%, #4c1d95 100%);
-      color: #ede9fe; border: 1px solid #7c3aed; border-radius: 6px;
-      padding: 4px 12px; font-family: inherit; font-size: 11px;
+      color: #ede9fe; border: 1px solid #7c3aed; border-radius: 0.375rem;
+      padding: 0.25rem 0.75rem; font-family: inherit; font-size: 0.6875rem;
       font-weight: 600; letter-spacing: 0.04em; cursor: pointer;
       box-shadow: 0 1px 0 rgba(255,255,255,0.08) inset,
                   0 2px 4px rgba(0,0,0,0.4);
@@ -236,63 +251,63 @@
     }
     .modal-overlay.open { display: flex; }
     .modal {
-      width: 80vw; height: 20vh;
-      min-height: 200px; max-height: 360px;
-      background: #0e0e10; border: 1px solid #2a2a2a; border-radius: 10px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+      width: min(80vw, 40rem); height: auto;
+      min-height: clamp(11rem, 28vh, 20rem); max-height: min(40vh, 24rem);
+      background: #0e0e10; border: 1px solid #2a2a2a; border-radius: 0.625rem;
+      box-shadow: 0 0.625rem 1.875rem rgba(0,0,0,0.6);
       display: flex; flex-direction: column;
-      padding: 14px 18px;
+      padding: 0.875rem 1.125rem;
     }
-    /* The load dialog hosts a long scrollable list — fix it tall so the
-       list isn't cramped regardless of how many presets are saved. */
+    /* The load dialog hosts a long scrollable list — give it more vertical
+       room so the list isn't cramped regardless of how many presets are saved. */
     #load-modal .modal {
-      height: 70vh; min-height: 0; max-height: 70vh;
+      width: min(80vw, 40rem); height: 70vh; min-height: 0; max-height: 70vh;
     }
     .modal h2 {
-      margin: 0 0 10px; font-size: 13px; color: #93c5fd;
+      margin: 0 0 0.625rem; font-size: 0.8125rem; color: #93c5fd;
       text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
     }
-    .modal .body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
-    .modal .row { display: flex; gap: 10px; align-items: center; }
+    .modal .body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0.625rem; }
+    .modal .row { display: flex; gap: 0.625rem; align-items: center; }
     .modal input[type=text] {
       flex: 1; background: #0a0a0a; color: #eee; border: 1px solid #333;
-      border-radius: 6px; padding: 8px 10px; font-family: inherit; font-size: 13px;
+      border-radius: 0.375rem; padding: 0.5rem 0.625rem; font-family: inherit; font-size: 0.8125rem;
     }
     .modal input[type=text]:focus { outline: none; border-color: #7c3aed; }
     .modal .footer {
-      display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px;
+      display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.625rem;
     }
     .modal button {
       background: #1a1a1a; color: #ddd; border: 1px solid #2a2a2a;
-      border-radius: 6px; padding: 6px 14px; font-family: inherit;
-      font-size: 12px; cursor: pointer;
+      border-radius: 0.375rem; padding: 0.375rem 0.875rem; font-family: inherit;
+      font-size: 0.75rem; cursor: pointer;
     }
     .modal button:hover { background: #222; border-color: #3a3a3a; }
     .modal button.primary {
       background: #1e40af; border-color: #2563eb; color: #dbeafe;
     }
     .modal button.primary:hover { filter: brightness(1.15); }
-    .modal .err { color: #f87171; font-size: 11px; min-height: 14px; }
-    .modal .hint { font-size: 11px; opacity: 0.6; }
+    .modal .err { color: #f87171; font-size: 0.6875rem; min-height: 0.875rem; }
+    .modal .hint { font-size: 0.6875rem; opacity: 0.6; }
 
     .preset-list {
       flex: 1; overflow-y: auto; border: 1px solid #1a1a1a;
-      border-radius: 6px; background: #050505; padding: 4px;
+      border-radius: 0.375rem; background: #050505; padding: 0.25rem;
       min-height: 0;
     }
     .preset-list .preset-item {
-      padding: 6px 10px; border-radius: 4px; cursor: pointer;
-      font-size: 12px; line-height: 1.3;
+      padding: 0.375rem 0.625rem; border-radius: 0.25rem; cursor: pointer;
+      font-size: 0.75rem; line-height: 1.3;
       transition: background 0.1s;
     }
     .preset-list .preset-item:hover { background: #161616; }
     .preset-list .preset-item.selected {
       background: #1e3a8a; color: #dbeafe;
     }
-    .preset-list .empty { padding: 10px; opacity: 0.5; font-size: 11px; }
+    .preset-list .empty { padding: 0.625rem; opacity: 0.5; font-size: 0.6875rem; }
 
     .modal label.checkbox {
-      display: flex; align-items: center; gap: 8px; font-size: 12px;
+      display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem;
       cursor: pointer; user-select: none; opacity: 0.85;
     }
     .modal label.checkbox input { accent-color: #7c3aed; }
@@ -462,8 +477,10 @@
 
   function setSplit(leftPct) {
     const clamped = Math.max(35, Math.min(85, leftPct));
-    chatPane.style.flex = `0 0 calc(${clamped}% - 3px)`;
-    statusPane.style.flex = `0 0 calc(${100 - clamped}% - 3px)`;
+    // Subtract half the splitter's own width so the two panes + splitter
+    // sum to exactly 100%. Splitter is `flex: 0 0 0.375rem` in CSS.
+    chatPane.style.flex = `0 0 calc(${clamped}% - 0.1875rem)`;
+    statusPane.style.flex = `0 0 calc(${100 - clamped}% - 0.1875rem)`;
   }
   setSplit(60);
 

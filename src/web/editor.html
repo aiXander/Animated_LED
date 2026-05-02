@@ -5,64 +5,72 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ledctl layout editor</title>
   <style>
-    :root { color-scheme: dark; }
+    :root {
+      color-scheme: dark;
+      font-size: clamp(14px, 1.4vmin + 4px, 26px);
+    }
+    *, *::before, *::after { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: #050505; color: #ddd;
                   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; }
-    #app { display: grid; grid-template-columns: 1fr 360px; height: 100%; }
+    #app {
+      display: grid;
+      grid-template-columns: 1fr clamp(16rem, 26vw, 28rem);
+      height: 100%;
+    }
     #canvas-wrap { position: relative; overflow: hidden; }
     canvas { display: block; }
     #side {
-      border-left: 1px solid #1a1a1a; background: #0a0a0a; padding: 14px;
-      overflow-y: auto; font-size: 12px; line-height: 1.5;
+      border-left: 1px solid #1a1a1a; background: #0a0a0a; padding: 0.875rem;
+      overflow-y: auto; font-size: 0.75rem; line-height: 1.5;
     }
-    #side h1 { font-size: 13px; margin: 0 0 8px; color: #93c5fd; }
-    #side h2 { font-size: 12px; margin: 16px 0 6px; color: #fbbf24; }
+    #side h1 { font-size: 0.8125rem; margin: 0 0 0.5rem; color: #93c5fd; }
+    #side h2 { font-size: 0.75rem; margin: 1rem 0 0.375rem; color: #fbbf24; }
     a { color: #93c5fd; }
     .strip-card {
-      border: 1px solid #222; border-radius: 6px; padding: 8px; margin-bottom: 8px;
+      border: 1px solid #222; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem;
       background: rgba(20, 20, 20, 0.6);
     }
     .strip-card.selected { border-color: #4ade80; }
-    .strip-card label { display: block; opacity: 0.6; margin-top: 6px; }
+    .strip-card label { display: block; opacity: 0.6; margin-top: 0.375rem; }
     .strip-card input[type=text], .strip-card input[type=number] {
       width: 100%; box-sizing: border-box; background: #050505; border: 1px solid #222;
-      color: #ddd; padding: 4px 6px; font-family: inherit; font-size: 11px; border-radius: 3px;
+      color: #ddd; padding: 0.25rem 0.375rem; font-family: inherit; font-size: 0.6875rem; border-radius: 0.1875rem;
     }
-    .strip-card .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    .strip-card .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
-    .strip-card .header { display: flex; align-items: center; gap: 8px; }
-    .strip-card .swatch { width: 10px; height: 10px; border-radius: 50%; }
+    .strip-card .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.375rem; }
+    .strip-card .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.25rem; }
+    .strip-card .header { display: flex; align-items: center; gap: 0.5rem; }
+    .strip-card .swatch { width: 0.625rem; height: 0.625rem; border-radius: 50%; }
     .strip-card .id-input { flex: 1; }
-    .actions { position: sticky; bottom: -14px; padding: 10px 0; background: #0a0a0a;
-                border-top: 1px solid #1a1a1a; margin-top: 14px; }
+    .actions { position: sticky; bottom: -0.875rem; padding: 0.625rem 0; background: #0a0a0a;
+                border-top: 1px solid #1a1a1a; margin-top: 0.875rem; }
     button {
-      background: #1f2937; color: #ddd; border: 1px solid #374151; padding: 6px 12px;
-      border-radius: 4px; font-family: inherit; font-size: 12px; cursor: pointer;
+      background: #1f2937; color: #ddd; border: 1px solid #374151; padding: 0.375rem 0.75rem;
+      border-radius: 0.25rem; font-family: inherit; font-size: 0.75rem; cursor: pointer;
     }
     button:hover { background: #374151; }
     button.primary { background: #15803d; border-color: #16a34a; color: #f0fdf4; }
     button.primary:hover { background: #16a34a; }
     button.danger { background: #7f1d1d; border-color: #b91c1c; color: #fee2e2; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-    #status { font-size: 11px; padding: 6px 0; }
+    #status { font-size: 0.6875rem; padding: 0.375rem 0; }
     #status.ok { color: #4ade80; }
     #status.bad { color: #f87171; }
     #status.warn { color: #fbbf24; }
     pre.diff {
-      background: #050505; border: 1px solid #222; padding: 8px; font-size: 11px;
-      max-height: 240px; overflow: auto; white-space: pre-wrap; border-radius: 4px;
+      background: #050505; border: 1px solid #222; padding: 0.5rem; font-size: 0.6875rem;
+      max-height: 30vh; overflow: auto; white-space: pre-wrap; border-radius: 0.25rem;
     }
     pre.diff .add { color: #4ade80; }
     pre.diff .del { color: #f87171; }
-    .help { color: #888; font-size: 11px; }
+    .help { color: #888; font-size: 0.6875rem; }
     #viz-nav {
-      position: fixed; top: 10px; right: 12px; display: flex;
-      gap: 6px; z-index: 5;
+      position: fixed; top: 0.625rem; right: 0.75rem; display: flex;
+      gap: 0.375rem; z-index: 5;
     }
     #viz-nav a {
-      padding: 4px 10px; background: rgba(17, 17, 17, 0.85);
-      border: 1px solid #2a2a2a; border-radius: 6px; color: #ddd;
-      text-decoration: none; font-size: 11px;
+      padding: 0.25rem 0.625rem; background: rgba(17, 17, 17, 0.85);
+      border: 1px solid #2a2a2a; border-radius: 0.375rem; color: #ddd;
+      text-decoration: none; font-size: 0.6875rem;
       transition: background 0.15s, border-color 0.15s, color 0.15s;
     }
     #viz-nav a:hover { background: #1a1a1a; border-color: #3a3a3a; color: #93c5fd; }
@@ -247,9 +255,11 @@
       ctx.arc(ex, ey, 6, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = 1.0;
-      // label
+      // label — pull the actual root font-size so the canvas annotation
+      // tracks the same viewport scaling as the rest of the UI.
+      const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 14;
       ctx.fillStyle = "#ddd";
-      ctx.font = "11px ui-monospace, Menlo, monospace";
+      ctx.font = (rootPx * 0.6875).toFixed(1) + "px ui-monospace, Menlo, monospace";
       const mx = (sx + ex) / 2, my = (sy + ey) / 2;
       ctx.fillText(s.id, mx + 4, my - 4);
     }
