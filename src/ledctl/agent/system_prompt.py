@@ -92,8 +92,6 @@ def _summarise_audio(audio_state: AudioState | None) -> str:
     return (
         f"AUDIO (snapshot at request time — treat as 'the room a moment ago')\n"
         f"  device: {audio_state.device_name or 'default'}\n"
-        f"  rms (full-band): {audio_state.rms:.3f} (norm {audio_state.rms_norm:.2f})\n"
-        f"  peak (full-band): {audio_state.peak:.3f} (norm {audio_state.peak_norm:.2f})\n"
         f"  low  ({low_lo:.0f}–{low_hi:.0f} Hz): {audio_state.low:.3f} "
         f"(norm {audio_state.low_norm:.2f})\n"
         f"  mid  ({mid_lo:.0f}–{mid_hi:.0f} Hz): {audio_state.mid:.3f} "
@@ -101,7 +99,9 @@ def _summarise_audio(audio_state: AudioState | None) -> str:
         f"  high ({hi_lo:.0f}–{hi_hi:.0f} Hz): {audio_state.high:.3f} "
         f"(norm {audio_state.high_norm:.2f})\n"
         f"  audio_band reads the *_norm values (rolling-window auto-scaled to "
-        f"~[0, 1]; multiplied by masters.audio_reactivity at the engine)."
+        f"~[0, 1]; multiplied by masters.audio_reactivity at the engine). "
+        f"Pick the band that matches the musical element you want to track — "
+        f"there is no full-band loudness primitive."
     )
 
 

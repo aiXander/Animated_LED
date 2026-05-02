@@ -1,8 +1,8 @@
 // Shared audio level meter, used by /index and /audio.
-// Renders five bars (RMS, peak, low, mid, high) bound to the rolling-window-
+// Renders three band bars (low, mid, high) bound to the rolling-window-
 // normalised audio fields (`*_norm`) — same values modulators consume.
 (() => {
-  const KEYS = ["rms", "peak", "low", "mid", "high"];
+  const KEYS = ["low", "mid", "high"];
   const STYLE_ID = "audio-meter-styles";
   const STYLE = `
     .am-meter { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
@@ -12,8 +12,6 @@
     .am-bar { position: relative; height: 0.625rem; background: #111;
               border: 1px solid #1f1f1f; border-radius: 2px; overflow: hidden; }
     .am-fill { height: 100%; }
-    .am-fill.am-rms  { background: linear-gradient(90deg, #22c55e, #facc15, #f87171); }
-    .am-fill.am-peak { background: #93c5fd; opacity: 0.7; }
     .am-fill.am-low  { background: #ef4444; }
     .am-fill.am-mid  { background: #facc15; }
     .am-fill.am-high { background: #38bdf8; }
@@ -41,8 +39,6 @@
     ensureStyles();
     container.innerHTML =
       `<div class="am-meter">` +
-      rowHTML("rms", "RMS") +
-      rowHTML("peak", "peak") +
       rowHTML("low", "low") +
       rowHTML("mid", "mid") +
       rowHTML("high", "high") +

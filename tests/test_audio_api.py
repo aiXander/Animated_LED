@@ -53,11 +53,11 @@ def test_audio_state_endpoint(audio_off_client: TestClient):
     r = audio_off_client.get("/audio/state")
     assert r.status_code == 200
     body = r.json()
-    for key in ("enabled", "device", "samplerate", "rms", "peak", "low", "mid", "high"):
+    for key in ("enabled", "device", "samplerate", "low", "mid", "high"):
         assert key in body
     # No real device opened, so capture is idle.
     assert body["enabled"] is False
-    assert body["rms"] == 0.0
+    assert body["low"] == 0.0
 
 
 def test_audio_devices_endpoint(audio_off_client: TestClient):

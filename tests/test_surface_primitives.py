@@ -139,18 +139,30 @@ def test_lfo_sin_cycles(ctx: RenderContext):
 
 def test_audio_band_returns_zero_when_no_state(ctx: RenderContext):
     cls = REGISTRY["audio_band"]
-    params = cls.Params.model_validate({"band": "rms"})
+    params = cls.Params.model_validate({"band": "low"})
     node = cls.compile(params, None, None)
     assert node.render(ctx) == 0.0
 
 
 def test_audio_band_reads_norm_value():
-    state = AudioState(rms=0.3, low=0.5, mid=0.7, high=0.1,
-                       rms_norm=0.3, low_norm=0.5, mid_norm=0.7, high_norm=0.1)
+    state = AudioState(low=0.5, mid=0.7, high=0.1,
+                       low_norm=0.5, mid_norm=0.7, high_norm=0.1)
     cls = REGISTRY["audio_band"]
     params = cls.Params.model_validate({"band": "low"})
     node = cls.compile(params, None, None)
     assert node.render(RenderContext(audio=state)) == 0.5
+
+
+def test_audio_band_rejects_rms_and_peak():
+    """RMS (too coarse, just loudness) and peak (too noisy, single-sample
+    spikes) are deliberately not exposed for visual modulation."""
+    cls = REGISTRY["audio_band"]
+    for forbidden in ("rms", "peak"):
+        try:
+            cls.Params.model_validate({"band": forbidden})
+        except Exception:
+            continue
+        raise AssertionError(f"band={forbidden!r} should be rejected")
 
 
 def test_envelope_attack_then_release(topo: Topology):
@@ -160,7 +172,7 @@ def test_envelope_attack_then_release(topo: Topology):
         brightness={
             "kind": "envelope",
             "params": {
-                "input": {"kind": "audio_band", "params": {"band": "rms"}},
+                "input": {"kind": "audio_band", "params": {"band": "low"}},
                 "attack_ms": 100.0,
                 "release_ms": 1000.0,
             },
@@ -168,12 +180,12 @@ def test_envelope_attack_then_release(topo: Topology):
     ))
     layers = compile_layers([spec], topo)
     state = AudioState()
-    state.rms_norm = 0.0
+    state.low_norm = 0.0
     ctx = RenderContext(t=0.0, wall_t=0.0, audio=state, masters=MasterControls())
     layers[0].node.render(ctx)
     # source switches to 1.0 at wall_t=0; sample at wall_t=0.1 should be
     # ~63% of the way to 1 (one tau).
-    state.rms_norm = 1.0
+    state.low_norm = 1.0
     ctx2 = RenderContext(t=0.1, wall_t=0.1, audio=state, masters=MasterControls())
     out2 = layers[0].node.render(ctx2)
     assert out2.max() > 0.55 and out2.max() < 0.70

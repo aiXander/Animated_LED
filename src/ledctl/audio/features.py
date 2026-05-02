@@ -19,21 +19,6 @@ def _hann(n: int) -> np.ndarray:
     return win
 
 
-def rms(mono: np.ndarray) -> float:
-    """Root-mean-square amplitude. `mono` is a 1-D float buffer in roughly [-1, 1]."""
-    if mono.size == 0:
-        return 0.0
-    # Promote to float64 for the sum to avoid catastrophic cancellation on tiny
-    # blocks of float32; the cost is negligible at our block sizes.
-    return float(np.sqrt(np.mean(np.square(mono, dtype=np.float64))))
-
-
-def peak(mono: np.ndarray) -> float:
-    if mono.size == 0:
-        return 0.0
-    return float(np.max(np.abs(mono)))
-
-
 def band_energies(
     mono: np.ndarray,
     samplerate: int,

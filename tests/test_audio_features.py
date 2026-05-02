@@ -1,28 +1,11 @@
-import math
-
 import numpy as np
-import pytest
 
-from ledctl.audio.features import band_energies, peak, rms
+from ledctl.audio.features import band_energies
 
 
 def _sine(freq: float, sr: int, n: int, amp: float = 1.0) -> np.ndarray:
     t = np.arange(n) / sr
     return (amp * np.sin(2 * np.pi * freq * t)).astype(np.float32)
-
-
-def test_rms_silence_is_zero():
-    assert rms(np.zeros(512, dtype=np.float32)) == 0.0
-
-
-def test_rms_full_scale_sine_is_root_two_over_two():
-    x = _sine(1000.0, 48000, 4096, amp=1.0)
-    assert rms(x) == pytest.approx(1.0 / math.sqrt(2.0), rel=0.01)
-
-
-def test_peak_tracks_amplitude():
-    x = _sine(440.0, 48000, 1024, amp=0.5)
-    assert peak(x) == pytest.approx(0.5, rel=0.01)
 
 
 def test_band_energies_isolate_band():
@@ -45,10 +28,8 @@ def test_band_energies_empty_input():
     assert band_energies(np.zeros(0, dtype=np.float32), 48000) == (0.0, 0.0, 0.0)
 
 
-def test_features_handle_short_block():
+def test_band_energies_handle_short_block():
     # Smallest realistic block size shouldn't crash.
     x = _sine(440.0, 48000, 64)
-    assert rms(x) > 0
-    assert peak(x) > 0
     bands = band_energies(x, 48000)
     assert len(bands) == 3
