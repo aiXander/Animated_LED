@@ -1,13 +1,19 @@
 """Real-time audio analyser.
 
 Drives an `AudioSource`, accumulates the most recent `fft_window` samples in a
-ring buffer, and computes per-band FFT energy per source block. Writes *raw*
-(unsmoothed) values into a shared `AudioState` along with their
-rolling-window-normalised counterparts. Temporal smoothing for visual output is
-the modulator envelope's job — see `effects/modulator.py`. Keeping the analyser
-raw means audio measurements stay as fast as the source delivers, and each
-LED-control binding can pick its own attack/release without inheriting a
-hidden, project-wide EMA.
+ring buffer, and computes per-band FFT energy per source block. Writes raw
+FFT magnitudes (`low`, `mid`, `high`) into a shared `AudioState` for inspection
+and writes a *cleaned*, normalised counterpart (`low_norm` / `mid_norm` /
+`high_norm`) for LED bindings.
+
+The `*_norm` pipeline is two stages, both running at audio block rate:
+  1. `RollingNormalizer` — divides by a rolling-window 95th-percentile
+     ceiling so the signal auto-scales to the room's recent dynamic range.
+  2. `FeatureCleaner` — asymmetric peak-follower with exponential release
+     plus a soft noise gate, blended against raw by `cleaning_strength`.
+     Tuned conservatively so dynamics survive (periodic content up to
+     ~150 BPM decays cleanly between beats) and rising edges have zero
+     latency on every band, including highs.
 
 Window vs. block size — the two are independent on purpose:
   - `source.blocksize` sets the hardware capture latency (PortAudio buffers one
@@ -26,6 +32,7 @@ from typing import Any
 
 import numpy as np
 
+from .cleaner import FeatureCleaner
 from .features import DEFAULT_BANDS, band_energies
 from .normalizer import RollingNormalizer
 from .source import AudioSource
@@ -94,7 +101,24 @@ class AudioAnalyser:
             )
             for name in ("low", "mid", "high")
         }
+        # Per-band envelope cleaner. Operates on the rolling-window-normalised
+        # values so its internal scale (noise floors etc.) is in the same [0, 1]
+        # space regardless of the absolute mic level.
+        self._cleaner = FeatureCleaner(update_rate_hz=update_rate_hz)
         self._lock = threading.Lock()
+
+    @property
+    def cleaning_strength(self) -> float:
+        return self._cleaner.strength
+
+    @cleaning_strength.setter
+    def cleaning_strength(self, v: float) -> None:
+        f = float(v)
+        if f < 0.0:
+            f = 0.0
+        elif f > 1.0:
+            f = 1.0
+        self._cleaner.strength = f
 
     @property
     def running(self) -> bool:
@@ -128,6 +152,7 @@ class AudioAnalyser:
             self._ring.fill(0.0)
             for n in self._normalizers.values():
                 n.reset()
+            self._cleaner.reset()
 
     def _on_block(self, mono: np.ndarray) -> None:
         n = mono.size
@@ -145,17 +170,30 @@ class AudioAnalyser:
         sr = self.state.samplerate
         low_v, mid_v, high_v = band_energies(win, sr, self.bands)
         s = self.state
-        # Raw, instantaneous values — no EMA, no peak-hold. Modulator envelopes
-        # downstream apply per-binding attack/release. Keeping the source state
-        # raw is the whole point of the post-Phase-5 audio refactor: visuals
-        # smooth, audio doesn't.
+        # Raw FFT magnitudes are passed through untouched — they're the
+        # ground-truth diagnostic readout (and what the level meter raw view
+        # would show). Per-binding modulator envelopes still handle visual
+        # attack/release downstream.
         s.low = low_v
         s.mid = mid_v
         s.high = high_v
         n = self._normalizers
-        s.low_norm = n["low"].step(low_v)
-        s.mid_norm = n["mid"].step(mid_v)
-        s.high_norm = n["high"].step(high_v)
+        ln = n["low"].step(low_v)
+        mn = n["mid"].step(mid_v)
+        hn = n["high"].step(high_v)
+        # The *_norm fields are what bindings consume. At strength > 0, run
+        # them through the per-band envelope cleaner so live-music jitter
+        # (single-block FFT outliers, mic-noise floor) doesn't leak into the
+        # LEDs. At strength == 0, skip the cleaner entirely so the output is
+        # bit-exactly the rolling-normalizer values — identical to the
+        # pre-cleaner pipeline, with zero possibility of leftover peak-hold
+        # or gate behaviour.
+        if self._cleaner.strength > 0.0:
+            s.low_norm, s.mid_norm, s.high_norm = self._cleaner.step(ln, mn, hn)
+        else:
+            s.low_norm = ln
+            s.mid_norm = mn
+            s.high_norm = hn
         s.block_count += 1
 
     @property

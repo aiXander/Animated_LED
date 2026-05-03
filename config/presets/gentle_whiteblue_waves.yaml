@@ -1,0 +1,32 @@
+crossfade_seconds: 5.0
+masters:
+  brightness: 1.0
+  speed: 0.78
+  audio_reactivity: 1.38
+  saturation: 1.0
+  freeze: false
+layers:
+- blend: normal
+  opacity: 1.0
+  node:
+    kind: palette_lookup
+    params:
+      scalar:
+        kind: noise
+        params:
+          scale: 0.05
+          octaves: 1
+          speed: 0.02
+      palette:
+        kind: palette_stops
+        params:
+          stops:
+          - pos: 0
+            color: '#000508'
+          - color: '#0a2030'
+            pos: 0.4
+          - pos: 0.6
+            color: '#4090c0'
+          - pos: 1
+            color: '#ffffff'
+      brightness: 0.8

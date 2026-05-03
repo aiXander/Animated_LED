@@ -74,6 +74,36 @@ def hex_to_rgb01(s: str) -> np.ndarray:
     return np.array([r / 255.0, g / 255.0, b / 255.0], dtype=np.float32)
 
 
+def _hsv_to_rgb01(
+    h: np.ndarray, s: np.ndarray, v: np.ndarray
+) -> np.ndarray:
+    """Vectorised HSV->RGB. Hue in degrees (any sign / magnitude — taken mod 360);
+    s, v in [0, 1]. Returns (N, 3) float32 in [0, 1].
+
+    Used to bake `palette_hsv` (and the named `rainbow` palette) without the
+    muddy / desaturated midpoints that RGB-space lerp gives between
+    complementary colours.
+    """
+    h = np.mod(h.astype(np.float32, copy=False), 360.0)
+    s = s.astype(np.float32, copy=False)
+    v = v.astype(np.float32, copy=False)
+    c = v * s
+    h6 = h / 60.0
+    x = c * (1.0 - np.abs(np.mod(h6, 2.0) - 1.0))
+    zero = np.zeros_like(h)
+    # Per-sector channel tables; shape (6, N) each.
+    r_t = np.stack([c, x, zero, zero, x, c])
+    g_t = np.stack([x, c, c, x, zero, zero])
+    b_t = np.stack([zero, zero, x, c, c, x])
+    seg = np.minimum(h6.astype(np.int32), 5)  # h=360 wraps to seg 0 via mod above
+    rows = np.arange(h.shape[0])
+    m = v - c
+    return np.stack(
+        [r_t[seg, rows] + m, g_t[seg, rows] + m, b_t[seg, rows] + m],
+        axis=1,
+    ).astype(np.float32, copy=False)
+
+
 def _apply_shape(
     phase: np.ndarray,
     shape: str,
@@ -116,50 +146,81 @@ def _apply_shape(
 # Named palettes
 # ---------------------------------------------------------------------------
 
+# Mutable at boot via `set_lut_size()` (driven by `output.lut_size` in the
+# YAML). 256 is the default — adequate for the 1800-LED install in most
+# scenes. Bump higher (e.g. 1024) if a smooth scalar walking the full palette
+# shows visible "stair" banding; cost is purely the one-time bake + LUT memory.
 LUT_SIZE = 256
 
-NAMED_PALETTES: dict[str, list[tuple[float, str]]] = {
-    "rainbow": [
-        (0.000, "#ff0000"),
-        (0.167, "#ffff00"),
-        (0.333, "#00ff00"),
-        (0.500, "#00ffff"),
-        (0.667, "#0000ff"),
-        (0.833, "#ff00ff"),
-        (1.000, "#ff0000"),
-    ],
-    "fire": [
-        (0.00, "#000000"),
-        (0.25, "#600000"),
-        (0.50, "#ff3000"),
-        (0.75, "#ffa000"),
-        (1.00, "#ffff80"),
-    ],
-    "ice": [
-        (0.0, "#000010"),
-        (0.4, "#003080"),
-        (0.7, "#00a0e0"),
-        (1.0, "#ffffff"),
-    ],
-    "sunset": [
-        (0.0, "#100030"),
-        (0.4, "#c02060"),
-        (0.7, "#ff7020"),
-        (1.0, "#ffe080"),
-    ],
-    "ocean": [
-        (0.0, "#001020"),
-        (0.4, "#006080"),
-        (0.7, "#20a0c0"),
-        (1.0, "#c0f0ff"),
-    ],
-    "warm": [
-        (0.0, "#ff3000"),
-        (0.5, "#ffa000"),
-        (1.0, "#ff5000"),
-    ],
-    "white": [(0.0, "#ffffff"), (1.0, "#ffffff")],
-    "black": [(0.0, "#000000"), (1.0, "#000000")],
+
+def set_lut_size(n: int) -> None:
+    """Override the palette LUT size. Must be called before any palettes bake."""
+    global LUT_SIZE
+    if n < 2:
+        raise ValueError(f"lut_size must be >= 2, got {n}")
+    LUT_SIZE = int(n)
+
+# Tagged: each entry is {"interp": "rgb"|"hsv", "stops": ...}.
+#   - "rgb" stops are (pos, "#rrggbb") tuples; intentionally vary brightness
+#     (fire / ice / sunset / ocean go dark->bright on purpose).
+#   - "hsv" stops are {pos, hue, sat?, val?} dicts; they bake via hue-space
+#     interpolation so the LUT stays at uniform brightness with no muddy /
+#     grey midpoints between complementary colours.
+NAMED_PALETTES: dict[str, dict[str, Any]] = {
+    "rainbow": {
+        "interp": "hsv",
+        "stops": [
+            {"pos": 0.0, "hue": 0.0},
+            {"pos": 1.0, "hue": 360.0},
+        ],
+    },
+    "fire": {
+        "interp": "rgb",
+        "stops": [
+            (0.00, "#000000"),
+            (0.25, "#600000"),
+            (0.50, "#ff3000"),
+            (0.75, "#ffa000"),
+            (1.00, "#ffff80"),
+        ],
+    },
+    "ice": {
+        "interp": "rgb",
+        "stops": [
+            (0.0, "#000010"),
+            (0.4, "#003080"),
+            (0.7, "#00a0e0"),
+            (1.0, "#ffffff"),
+        ],
+    },
+    "sunset": {
+        "interp": "rgb",
+        "stops": [
+            (0.0, "#100030"),
+            (0.4, "#c02060"),
+            (0.7, "#ff7020"),
+            (1.0, "#ffe080"),
+        ],
+    },
+    "ocean": {
+        "interp": "rgb",
+        "stops": [
+            (0.0, "#001020"),
+            (0.4, "#006080"),
+            (0.7, "#20a0c0"),
+            (1.0, "#c0f0ff"),
+        ],
+    },
+    "warm": {
+        "interp": "rgb",
+        "stops": [
+            (0.0, "#ff3000"),
+            (0.5, "#ffa000"),
+            (1.0, "#ff5000"),
+        ],
+    },
+    "white": {"interp": "rgb", "stops": [(0.0, "#ffffff"), (1.0, "#ffffff")]},
+    "black": {"interp": "rgb", "stops": [(0.0, "#000000"), (1.0, "#000000")]},
 }
 
 
@@ -176,15 +237,18 @@ def _lut_from_named(name: str) -> np.ndarray:
         rgb = hex_to_rgb01(name[5:])
         positions = np.array([0.0, 1.0], dtype=np.float32)
         colors = np.stack([rgb, rgb])
-    else:
-        if name not in NAMED_PALETTES:
-            raise ValueError(
-                f"unknown palette {name!r}; choose one of {sorted(NAMED_PALETTES)} "
-                f"or mono_<hex>"
-            )
-        named = NAMED_PALETTES[name]
-        positions = np.array([p for p, _ in named], dtype=np.float32)
-        colors = np.stack([hex_to_rgb01(c) for _, c in named])
+        return _bake_lut(positions, colors)
+    if name not in NAMED_PALETTES:
+        raise ValueError(
+            f"unknown palette {name!r}; choose one of {sorted(NAMED_PALETTES)} "
+            f"or mono_<hex>"
+        )
+    spec = NAMED_PALETTES[name]
+    if spec["interp"] == "hsv":
+        return _lut_from_hsv_stops(spec["stops"])
+    stops = spec["stops"]
+    positions = np.array([p for p, _ in stops], dtype=np.float32)
+    colors = np.stack([hex_to_rgb01(c) for _, c in stops])
     return _bake_lut(positions, colors)
 
 
@@ -195,6 +259,32 @@ def _lut_from_stops(stops: list[dict[str, Any]]) -> np.ndarray:
     positions = np.array([s["pos"] for s in sorted_stops], dtype=np.float32)
     colors = np.stack([hex_to_rgb01(s["color"]) for s in sorted_stops])
     return _bake_lut(positions, colors)
+
+
+def _lut_from_hsv_stops(stops: list[dict[str, Any]]) -> np.ndarray:
+    """Bake an RGB LUT (size = `LUT_SIZE`) from hue/sat/val stops via HSV-space lerp.
+
+    Hue can take any signed value (interpreted mod 360 only at the final
+    HSV->RGB step), so the user explicitly controls the path: stops at
+    hue=0,360 walks the full chromatic circle red->...->red the long way;
+    stops at hue=0,-180 goes red->magenta->blue (the other way).
+    """
+    if len(stops) < 2:
+        raise ValueError("palette_hsv needs at least 2 stops")
+    sorted_stops = sorted(stops, key=lambda s: s["pos"])
+    positions = np.array([s["pos"] for s in sorted_stops], dtype=np.float32)
+    hues = np.array([s["hue"] for s in sorted_stops], dtype=np.float32)
+    sats = np.array(
+        [s.get("sat", 1.0) for s in sorted_stops], dtype=np.float32
+    )
+    vals = np.array(
+        [s.get("val", 1.0) for s in sorted_stops], dtype=np.float32
+    )
+    x = np.linspace(0.0, 1.0, LUT_SIZE, dtype=np.float32)
+    h = np.interp(x, positions, hues).astype(np.float32, copy=False)
+    s = np.interp(x, positions, sats).astype(np.float32, copy=False)
+    v = np.interp(x, positions, vals).astype(np.float32, copy=False)
+    return _hsv_to_rgb01(h, s, v)
 
 
 # ---------------------------------------------------------------------------
@@ -893,8 +983,17 @@ class _WaveParams(BaseModel):
         description="Cycles/sec (scalar_t). Sign sets direction.",
     )
     shape: Literal["cosine", "sawtooth", "pulse", "gauss"] = Field(
-        "cosine",
-        description="cosine = wave, sawtooth = gradient, pulse = bands, gauss = comet",
+        "sawtooth",
+        description=(
+            "How phase sweeps [0,1] each cycle. "
+            "sawtooth = continuous linear flow — DEFAULT, smoothest color across "
+            "LEDs, use for flowing/scrolling palettes (esp. cyclic ones like rainbow). "
+            "cosine = up/down pulse — color *plateaus* at peaks and troughs because "
+            "its derivative is zero there, so use this for breathing brightness with "
+            "mono palettes, NOT for smooth color sweeps. "
+            "pulse = hard on/off bands. "
+            "gauss = single comet pulse per cycle."
+        ),
     )
     softness: float = Field(
         1.0, ge=0.0, le=1.0,
@@ -1275,8 +1374,10 @@ class PaletteNamed(Primitive):
     kind = "palette_named"
     output_kind = "palette"
     summary = (
-        "Named 256-entry LUT (rainbow / fire / ice / sunset / ocean / warm / "
-        "white / black / mono_<hex>). Bare strings in node fields are sugar."
+        "Named LUT (rainbow / fire / ice / sunset / ocean / warm / white / "
+        "black / mono_<hex>). `rainbow` is HSV-baked at uniform brightness; "
+        "the others encode brightness on purpose. Bare strings in node "
+        "fields are sugar for this primitive."
     )
     Params = _PaletteNamedParams
 
@@ -1321,6 +1422,66 @@ class PaletteStops(Primitive):
     @classmethod
     def compile(cls, params, topology, compiler):
         return _CompiledPaletteStops(params)
+
+
+class _PaletteHsvStop(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pos: float = Field(..., ge=0.0, le=1.0)
+    hue: float = Field(
+        ...,
+        description=(
+            "Hue in degrees: 0=red, 60=yellow, 120=green, 180=cyan, "
+            "240=blue, 300=magenta. Values can exceed 360 (or go negative) "
+            "for multi-cycle / direction-controlled sweeps; e.g. stops "
+            "hue=0 and hue=360 walk the full chromatic circle the long way, "
+            "hue=0 and hue=-180 go red->magenta->blue."
+        ),
+    )
+    sat: float = Field(
+        1.0, ge=0.0, le=1.0,
+        description="Saturation (default 1 = pure colour, 0 = grey).",
+    )
+    val: float = Field(
+        1.0, ge=0.0, le=1.0,
+        description=(
+            "HSV value/brightness (default 1 = max). Keep at 1 if you want "
+            "the master + per-LED brightness controls to do all the dimming."
+        ),
+    )
+
+
+class _PaletteHsvParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stops: list[_PaletteHsvStop] = Field(..., min_length=2)
+
+
+class _CompiledPaletteHsv(CompiledNode):
+    output_kind: ClassVar[OutputKind] = "palette"
+
+    def __init__(self, params: _PaletteHsvParams):
+        self._lut = _lut_from_hsv_stops([s.model_dump() for s in params.stops])
+
+    def render(self, ctx: RenderContext) -> np.ndarray:
+        return self._lut
+
+
+@primitive
+class PaletteHsv(Primitive):
+    kind = "palette_hsv"
+    output_kind = "palette"
+    summary = (
+        "Custom palette baked by HSV interpolation between hue stops. The "
+        "LUT walks the chromatic surface so brightness stays uniform and "
+        "complementary-colour midpoints stay saturated (no muddy/grey runs "
+        "you'd get from RGB-space lerp). Prefer this over `palette_stops` "
+        "whenever the palette is meant to encode colour and you want "
+        "master/per-LED brightness controls to handle all the dimming."
+    )
+    Params = _PaletteHsvParams
+
+    @classmethod
+    def compile(cls, params, topology, compiler):
+        return _CompiledPaletteHsv(params)
 
 
 # ---------------------------------------------------------------------------
@@ -1931,8 +2092,8 @@ EXAMPLE_TREES: dict[str, dict[str, Any]] = {
             "scalar": {
                 "kind": "mul",
                 "params": {
-                    "a": {"kind": "wave", "params": {"axis": "x", "speed": 0.4}},
-                    "b": {"kind": "wave", "params": {"axis": "y", "speed": 0.3}},
+                    "a": {"kind": "wave", "params": {"axis": "x", "speed": 0.4, "shape": "cosine"}},
+                    "b": {"kind": "wave", "params": {"axis": "y", "speed": 0.3, "shape": "cosine"}},
                 },
             },
             "palette": "rainbow",
@@ -1946,6 +2107,19 @@ EXAMPLE_TREES: dict[str, dict[str, Any]] = {
             "decay": 2.0,
             "spread": 1.0,
             "palette_center": 0.5,
+        },
+    },
+    "chromatic_drift": {
+        "kind": "palette_lookup",
+        "params": {
+            "scalar": {"kind": "wave", "params": {"axis": "x", "speed": 0.2}},
+            "palette": {
+                "kind": "palette_hsv",
+                "params": {"stops": [
+                    {"pos": 0.0, "hue": 200.0},
+                    {"pos": 1.0, "hue": 320.0},
+                ]},
+            },
         },
     },
 }
@@ -1975,6 +2149,13 @@ ANTI_PATTERNS: list[str] = [
     "`scalar_field` like `position` as the `palette_lookup.scalar` directly, or "
     "build it via `add`/`mul`/`mix` of two `scalar_field`s — `mix.t` cannot "
     "do per-LED splits because its blend factor is a single number.",
+    "`wave.shape: cosine` *plateaus* color near peaks and troughs (its "
+    "derivative is zero there), so dozens of adjacent LEDs end up the same "
+    "colour and you get visible block artefacts on a smooth-palette sweep. "
+    "Default is `sawtooth` — use it whenever you want flowing/scrolling colour. "
+    "Pick `cosine` only when you actually want a breathing pulse on a mono "
+    "palette (where the brightness up-down is the point and there's no "
+    "colour gradient to band).",
 ]
 
 
@@ -2053,7 +2234,7 @@ def generate_docs(
         "OUTPUT KINDS\n"
         "  scalar_field — per-LED scalar [0, 1] (spatial)\n"
         "  scalar_t     — single scalar/frame (time-only)\n"
-        "  palette      — 256-entry RGB LUT\n"
+        f"  palette      — {LUT_SIZE}-entry RGB LUT\n"
         "  rgb_field    — per-LED RGB; the layer leaf"
     )
 

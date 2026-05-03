@@ -128,6 +128,75 @@ def test_per_band_normalization_independent():
     assert 0.85 <= a.state.high_norm <= 1.0, f"high_norm={a.state.high_norm}"
 
 
+def test_cleaning_strength_zero_is_bit_exact_passthrough():
+    """Critical contract: at audio_feature_cleaning=0, the analyser's *_norm
+    outputs must be exactly the rolling-normalizer values — no peak-follower
+    decay, no noise-gate dead zone, no transient one-block artifacts. This
+    proves the operator can fully disable the cleaner via the master slider.
+
+    Strategy: run a known-impulse signal through the analyser at strength=0
+    and check that *_norm drops to 0 the instant the raw signal does (no
+    decay tail). This is the simplest assertion that excludes both the peak
+    follower (which would hold) and the noise gate (which would still report 0
+    but for a different reason — we cover that with a positive-quiet-input
+    check too).
+    """
+    sr = 48000
+    bs = 512
+    src = FakeSource(samplerate=sr, blocksize=bs)
+    a = AudioAnalyser(src, fft_window=bs)
+    a.cleaning_strength = 0.0
+    a.start()
+    # Loud signal — drives normalizer ceiling up so *_norm reaches ~1.
+    for _ in range(20):
+        src.push(_sine(1000.0, sr, bs, amp=0.8))
+    assert a.state.mid_norm > 0.5, (
+        f"sanity: loud mid should be reactive, got mid_norm={a.state.mid_norm}"
+    )
+    # Single block of silence. With cleaner off, mid_norm must be exactly 0
+    # because the rolling-normalizer's input is exactly 0. With the cleaner
+    # on, the peak follower would hold at ~1 and decay over many blocks.
+    src.push(np.zeros(bs, dtype=np.float32))
+    assert a.state.mid_norm == 0.0, (
+        f"strength=0 should produce zero hold/decay; mid_norm={a.state.mid_norm}"
+    )
+    assert a.state.low_norm == 0.0
+    assert a.state.high_norm == 0.0
+    # And a small but non-zero raw signal should NOT be gated — the noise
+    # floor only fires at strength>0.
+    quiet = _sine(1000.0, sr, bs, amp=0.02).astype(np.float32)
+    src.push(quiet)
+    # After 20 loud blocks, the rolling normalizer's ceiling is high, so this
+    # quiet block normalises to a small positive value. Cleaner-off => that
+    # small value reaches mid_norm verbatim. Cleaner-on (strength=1) would
+    # squash it to 0 via the noise gate.
+    assert a.state.mid_norm > 0.0, (
+        f"strength=0 should not gate quiet signals; mid_norm={a.state.mid_norm}"
+    )
+
+
+def test_cleaning_strength_one_decays_from_loud_to_silent():
+    """Mirror of the above: at strength=1, after loud→silent, the *_norm
+    output decays smoothly rather than snapping to 0 — confirming the cleaner
+    is in fact active when the master slider says so."""
+    sr = 48000
+    bs = 512
+    src = FakeSource(samplerate=sr, blocksize=bs)
+    a = AudioAnalyser(src, fft_window=bs)
+    a.cleaning_strength = 1.0
+    a.start()
+    for _ in range(20):
+        src.push(_sine(1000.0, sr, bs, amp=0.8))
+    src.push(np.zeros(bs, dtype=np.float32))
+    # With τ_mid = 45 ms and dt = bs/sr ≈ 10.7 ms, decay-per-block ≈ 0.79.
+    # Output is well above 0 but below the loud peak — the signature of an
+    # active envelope follower.
+    assert 0.1 < a.state.mid_norm < 1.0, (
+        f"strength=1 should produce decay, not snap-to-zero; "
+        f"mid_norm={a.state.mid_norm}"
+    )
+
+
 def test_fft_window_smaller_than_block_rejected():
     """Configuration sanity — analyser refuses fft_window < source blocksize."""
     src = FakeSource(samplerate=48000, blocksize=512)

@@ -53,6 +53,7 @@ transport:
 
 output:
   gamma: 1.5
+  lut_size: 256
 
 audio:
   enabled: true

@@ -118,6 +118,8 @@ def _summarise_masters(
             f"  speed:             {masters.speed:.2f}   (time multiplier on motion)",
             f"  audio_reactivity:  {masters.audio_reactivity:.2f}   "
             "(multiplier on every audio_band)",
+            f"  audio_feature_cleaning: {masters.audio_feature_cleaning:.2f}   "
+            "(0 = raw jittery features, 1 = musical envelopes)",
             f"  saturation:        {masters.saturation:.2f}   (1 = full colour, 0 = greyscale)",
             f"  freeze:            {str(bool(masters.freeze)).lower()}   "
             "(true = effective time stops; envelope/audio still update)",
