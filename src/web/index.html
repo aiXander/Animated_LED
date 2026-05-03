@@ -680,13 +680,19 @@
           HOVER_DOT + 4, HOVER_DOT + 4,
         );
         const led = leds[hit];
+        const cSrc = hit * 3;
+        const cr = lastFrame[cSrc], cg = lastFrame[cSrc + 1], cb = lastFrame[cSrc + 2];
+        const swatch = `display:inline-block;width:0.7em;height:0.7em;`
+                     + `vertical-align:middle;margin-right:0.35em;border:1px solid #333;`
+                     + `background:rgb(${cr},${cg},${cb})`;
         tooltip.style.display = "block";
         tooltip.style.left = (mouseAbsX + 12) + "px";
         tooltip.style.top = (mouseAbsY + 12) + "px";
         tooltip.innerHTML =
           `<div class="gid">global #${led.global_index}</div>` +
           `<div>${led.strip_id} · local ${led.local_index}</div>` +
-          `<div class="dim">x=${led.position[0].toFixed(2)} y=${led.position[1].toFixed(2)}</div>`;
+          `<div class="dim">x=${led.position[0].toFixed(2)} y=${led.position[1].toFixed(2)}</div>` +
+          `<div><span style="${swatch}"></span>rgb(${cr}, ${cg}, ${cb})</div>`;
       } else {
         tooltip.style.display = "none";
       }

@@ -19,9 +19,12 @@ Both go away with two cheap ops applied per band:
      short enough that periodic content up to ~150 BPM (400 ms period)
      decays to near-silent between hits.
 
-  2. Soft noise gate. (y - floor) / (1 - floor), clamped to [0, 1]. The
-     mic-noise floor is trimmed; gate is intentionally low so musical
-     dynamics survive — easier to dial up than to recover lost detail.
+  2. Smooth power compression. cleaned = y ** p with p > 1 per band. Pulls
+     small values toward zero monotonically without a hard threshold, so a
+     value oscillating around the noise level can't flicker on/off the way
+     a gate would. The peak (y=1) stays at 1; mid-range values are gently
+     pulled down (p=1.7 → 0.5 → 0.31; p=2.0 → 0.5 → 0.25). Stronger p on
+     highs because hi-hat-band jitter benefits from more compression.
 
 `strength` ∈ [0, 1] linearly blends raw input against the fully-shaped
 output, per band. At strength=0 the cleaner is a passthrough; at strength=1
@@ -47,9 +50,11 @@ class _BandShape:
     bass decays cleanly between hits. With τ=80 ms, exp(-400/80) ≈ 0.007 →
     fully decayed.
 
-    `noise_floor` is in normalised units (post rolling-window auto-gain), so
-    0.05 means "trim the bottom 5% of the recent-loudness ceiling." Set low
-    so bass mid-decay doesn't get squashed.
+    `compression_power` is the exponent applied to the followed value: a
+    smooth replacement for a hard noise gate. p > 1 pulls small values
+    toward zero (y=0.2, p=2 → 0.04) while peaks stay near 1 (y=0.9, p=2 →
+    0.81). No threshold means no flicker around a gate edge. Higher p on
+    highs squashes hi-hat-band jitter more.
 
     `attack_alpha` blends the previous output back in on rising edges; 0 means
     instant follow (zero latency). All bands use 0 — highs especially must
@@ -57,15 +62,15 @@ class _BandShape:
     """
 
     release_tau_s: float
-    noise_floor: float
+    compression_power: float
     attack_alpha: float
 
 
 # Index order: low, mid, high. Matches AudioState's *_norm fields.
 _BAND_SHAPES: tuple[_BandShape, _BandShape, _BandShape] = (
-    _BandShape(release_tau_s=0.080, noise_floor=0.05, attack_alpha=0.0),
-    _BandShape(release_tau_s=0.045, noise_floor=0.04, attack_alpha=0.0),
-    _BandShape(release_tau_s=0.025, noise_floor=0.03, attack_alpha=0.0),
+    _BandShape(release_tau_s=0.080, compression_power=1.7, attack_alpha=0.0),
+    _BandShape(release_tau_s=0.045, compression_power=1.8, attack_alpha=0.0),
+    _BandShape(release_tau_s=0.025, compression_power=2.0, attack_alpha=0.0),
 )
 
 
@@ -80,7 +85,7 @@ class FeatureCleaner:
     different threads.
     """
 
-    __slots__ = ("_release", "_floor", "_attack", "_y0", "_y1", "_y2", "strength")
+    __slots__ = ("_release", "_power", "_attack", "_y0", "_y1", "_y2", "strength")
 
     def __init__(self, update_rate_hz: float, strength: float = 1.0):
         if update_rate_hz <= 0.0:
@@ -92,8 +97,8 @@ class FeatureCleaner:
         self._release: tuple[float, float, float] = tuple(
             math.exp(-dt / s.release_tau_s) for s in _BAND_SHAPES
         )  # type: ignore[assignment]
-        self._floor: tuple[float, float, float] = tuple(
-            s.noise_floor for s in _BAND_SHAPES
+        self._power: tuple[float, float, float] = tuple(
+            s.compression_power for s in _BAND_SHAPES
         )  # type: ignore[assignment]
         self._attack: tuple[float, float, float] = tuple(
             s.attack_alpha for s in _BAND_SHAPES
@@ -153,13 +158,14 @@ class FeatureCleaner:
         else:
             self._y2 = y
 
-        floor = self._floor[i]
-        if y <= floor:
+        # Smooth power compression replaces a hard noise gate: monotonic, no
+        # threshold, so a value oscillating around the noise floor can't
+        # flicker on/off. y is in [0, 1] (rolling normaliser bounds), so y**p
+        # stays in [0, 1] for any p > 0.
+        if y <= 0.0:
             cleaned = 0.0
         else:
-            cleaned = (y - floor) / (1.0 - floor)
-            if cleaned > 1.0:
-                cleaned = 1.0
+            cleaned = y ** self._power[i]
 
         # Lerp raw → cleaned.
         return (1.0 - s) * x + s * cleaned
