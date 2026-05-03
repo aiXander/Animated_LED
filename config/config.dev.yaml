@@ -85,7 +85,7 @@ transport:
     ws_path: /ws/frames
 output:
   gamma: 1.5
-  lut_size: 1024
+  lut_size: 256
 audio:
   enabled: true
   device: null

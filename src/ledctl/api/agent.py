@@ -63,11 +63,6 @@ class AgentConfigPatch(BaseModel):
     default_crossfade_seconds: float | None = Field(None, ge=0.0, le=30.0)
 
 
-def _turn_to_dict(turn: AgentTurn) -> dict[str, Any]:
-    d = asdict(turn)
-    return d
-
-
 def _attach_agent_state(
     app: FastAPI,
     cfg: AgentConfig,
@@ -129,7 +124,7 @@ def build_router(app: FastAPI) -> APIRouter:
             "id": sess.id,
             "created_at": sess.created_at,
             "history_max_messages": sess.history_max,
-            "turns": [_turn_to_dict(t) for t in sess.turns],
+            "turns": [asdict(t) for t in sess.turns],
         }
 
     @router.delete("/sessions/{session_id}")
@@ -370,13 +365,6 @@ def build_router(app: FastAPI) -> APIRouter:
 
 def _serialise_tool_result(payload: dict[str, Any]) -> str:
     return json.dumps(payload, default=str)
-
-
-def _deserialise_tool_result(content: str) -> Any:
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return {"_raw": content}
 
 
 def _last_tool_result_layers(messages: list[dict[str, Any]]) -> list | None:
