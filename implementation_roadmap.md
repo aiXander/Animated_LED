@@ -1,449 +1,143 @@
-x# Implementation Roadmap — Audio-Reactive LED Installation
+# Implementation Roadmap — Audio-Reactive LED Installation
 
-> Companion to `Audio-Reactive LED installation.md`. That doc covers the **physical/electrical** build; this one covers the **software** build, sequenced from a laptop test-bench to the on-site Raspberry Pi.
+> Companion to `Audio-Reactive LED installation.md` (physical/electrical) and `Hardware_setup.md` (gear-list and on-site wiring). This doc tracks the **software** build, sequenced from a laptop test-bench to the on-site Raspberry Pi.
 
----
-
-## 0. Guiding principles
-
-1. **Hardware-agnostic core.** All effects/animations write into an abstract `PixelBuffer` (1D array of RGB(W) values, indexed 0..N-1). A separate `Transport` layer ships that buffer to either:
-   - a real **WLED/Gledopto** device over **DDP** (UDP port 4048), or
-   - a **virtual simulator** (browser canvas / Three.js scene).
-   Swapping mac ↔ Pi ↔ real hardware is a config change, not a code change.
-2. **Single source of spatial truth.** A `config.yaml` describes controllers, strips, and the spatial layout. Everything (effects, simulator, GUI, MCP tool descriptions) reads from this — no hard-coded indices anywhere.
-3. **Lean on what exists.** WLED already runs on the Gledopto and speaks DDP. LedFx already does audio→DDP. We won't reinvent the protocol or the audio pipeline; we wrap them with a control layer + spatial model + LLM-friendly API.
-4. **Don't optimise prematurely for the Pi.** Build with stdlib + `numpy` and keep the per-frame work in vectorised array ops. A Pi 4 can comfortably push 60 FPS to 1800 LEDs over Ethernet if we don't do anything silly (per-pixel Python loops are the only real trap).
-5. **Every layer is testable on a mac without LEDs plugged in.** No code path should require physical hardware to run; the simulator is the default transport during dev.
+**Status:** Phases 0–6 are complete. Phase 8.1's digital prep landed early (see below). Phase 7 (mobile UI), the rest of Phase 8 (Pi/INMP441 hardware bring-up), and Phase 9 (reliability) are next.
 
 ---
 
-## 1. Architecture overview
+## Guiding principles (still in force)
 
-```
-                 ┌─────────────────────────────────────────────┐
-                 │  Operator phone (mobile web UI, Phase 7)    │
-                 │  + chat UI → LLM agent (OpenRouter, Ph. 6)  │
-                 └────────────────┬────────────────────────────┘
-                                  │ HTTPS (REST + SSE)
-                  ┌───────────────▼────────────────┐
-                  │  FastAPI control server        │
-                  │  ─ REST endpoints (Phase 3)    │
-                  │  ─ /agent/chat   (Phase 6)     │
-                  │  ─ WebSocket → simulator       │
-                  └───────────────┬────────────────┘
-                                  │
-            ┌─────────────────────▼──────────────────────┐
-            │  Effect Engine (Phase 2)                   │
-            │  ─ scheduled effects                       │
-            │  ─ parameter envelopes                     │
-            │  ─ audio modulation hooks (Phase 5)        │
-            │  outputs ───► PixelBuffer (numpy array)    │
-            └─────────────────────┬──────────────────────┘
-                                  │
-              ┌───────────────────▼─────────────────────┐
-              │  Spatial mapper (config.yaml -> coords) │
-              │  per-LED (x, y, z) + per-strip metadata │
-              └───────────────────┬─────────────────────┘
-                                  │
-              ┌───────────────────▼─────────────────────┐
-              │  Transport layer (pluggable)            │
-              │   • DDPTransport ── UDP ──► WLED        │
-              │   • SimTransport ── WS  ──► browser     │
-              │   • MultiTransport (both at once)       │
-              └─────────────────────────────────────────┘
-```
+1. **Hardware-agnostic core.** All effects render into a `PixelBuffer`; a `Transport` ships frames to either a real WLED/Gledopto over DDP or a browser simulator. Mac ↔ Pi ↔ real hardware is a config change, not a code change.
+2. **Single source of spatial truth.** `config.yaml` describes controllers, strips, and geometry. Effects use normalised coords (`x, y, z ∈ [-1, 1]`) — no hard-coded indices.
+3. **Lean on what exists.** WLED runs on the Gledopto and speaks DDP. We wrap it with a control layer + spatial model + LLM-friendly API.
+4. **Vectorised numpy only.** A Pi 4 pushes 60 FPS to 1800 LEDs comfortably as long as no per-pixel Python loops sneak in.
+5. **Every layer testable on a mac without LEDs plugged in.** The simulator is the default transport during dev.
 
-Key idea: effects don't know where they're going. The `MultiTransport` lets us run real LEDs and the simulator simultaneously — invaluable for on-site debugging.
+**Coordinate convention:** right-handed, `+x` = stage-right, `+y` = up, `+z` = toward audience. Origin = centre of scaffolding (15 m mark, midway between rows). All effect math in normalised `[-1, 1]`.
 
 ---
 
-## 2. Tech stack choices
+## What's already built (Phases 0–6)
 
-| Concern | Choice | Why |
-|---|---|---|
-| Language | **Python 3.11+** | Matches WLED ecosystem (LedFx, python-wled), good numpy perf, easy on Pi. |
-| Web server | **FastAPI** + `uvicorn` | Async-first, OpenAPI docs out of the box, pairs cleanly with MCP. |
-| LLM control panel | **`openai` SDK → OpenRouter** + `python-dotenv` | OpenAI-compatible client; OpenRouter routes to any model by string id. API key in `.env`, never in YAML. Single `update_leds` tool — current state + control surface auto-injected into the system prompt, no `list_*`/`get_*` round-trips. |
-| Frame math | **`numpy`** | Vectorised RGB ops; fine on Pi 4 for 1800 px @ 60 FPS. |
-| Config | **`pydantic` + YAML** | Validated config, IDE autocomplete, descriptive errors. |
-| DDP client | tiny custom module (~50 lines) | The protocol is trivial; existing libs add deps without much value. Reference: `wledcast`, `ha_ddp2wled`. |
-| Simulator (browser) | plain HTML + **Canvas2D** (later **Three.js**) served from FastAPI; live frames over **WebSocket** | No build step initially; Three.js for the 3D layout view in Phase 4. |
-| Layout editor | same web app, drag/drop on Canvas, writes back to `config.yaml` (Phase 4) | Avoids a separate desktop tool. |
-| Audio capture | **`sounddevice`** (PortAudio) | Cross-platform — same code on mac and Pi (with INMP441 via I²S/ALSA). |
-| BPM detection | **`aubio`** primary, **`BeatNet`** as a research alternative | Aubio is light and proven; BeatNet is more accurate but heavier. |
-| Process supervision | **systemd** on Pi | Auto-restart, runs at boot, integrates with read-only rootfs. |
-| Remote access | **Tailscale** (or Cloudflare Tunnel) | The Pi sits behind an arbitrary venue WiFi NAT; Tailscale gives a stable, private URL without port-forwarding. |
+The full architecture and module-level contracts live in `CLAUDE.md`. Brief recap:
+
+- **Phase 0–1 — Scaffolding, topology, transports, simulator.** `uv` + `ruff` + `pytest`; `ledctl run --config …` entrypoint. `config.yaml` + pydantic schemas with duplicate-strip / overlap / over-capacity validation. `Topology` gives every LED a stable `(strip_id, local_index, global_index, x, y, z)`. `PixelBuffer` is a float32 `(N, 3)` array in `[0, 1]` with a single gamma stage. `DDPTransport` (480 px/packet, PUSH only on the final packet), `SimTransport` (WebSocket binary frames), `MultiTransport` (both at once). Engine is a fixed-timestep async loop at `target_fps`; frames drop rather than spiral on lag.
+- **Phase 2 — Surface engine.** Replaced the originally-planned "named effects" library with a polymorphic primitive surface (`surface.py`). A layer is a tree of `{kind, params}` nodes resolving to one of four output kinds: `scalar_field`, `scalar_t`, `palette`, `rgb_field`. Combinators (`mix`, `mul`, `add`, `screen`, `max`, `min`, `remap`, `threshold`, `clamp`, `range_map`, `trail`) broadcast across kinds at compile time. Scalar/palette sugar (bare numbers → `constant`, palette name strings → `palette_named`). `Mixer` stacks layers with blend modes (`normal/add/screen/multiply`) + opacity, and crossfades between stacks using `wall_t` so operator transitions aren't slowed by `speed=0.5` or stopped by `freeze=true`. `MasterControls` (`brightness`, `speed`, `audio_reactivity`, `saturation`, `freeze`) are deliberately operator-only — never in the DSL.
+- **Phase 3 — REST API.** FastAPI app at `/`, OpenAPI at `/docs`. Endpoints: `/state`, `/topology`, `/config` (PUT for layout edits), `/surface/primitives`, `/layers` (POST/PATCH/DELETE), `/masters` (GET/PATCH), `/presets/{name}` (POST), `/blackout` + `/resume`, `/calibration/*`, `/audio/*`, `/ws/frames`. Four seed presets ship: `default`, `chill`, `peak`, `cooldown`.
+- **Phase 4 — Browser simulator + layout editor.** Top-down 2D canvas at `/`: live LED viz, hover for `global_index/strip_id/local_index`, click to solo-light for calibration. Editor view drags strip endpoints, edits length/density/orientation, writes back to `config.yaml`. Calibration helper script walks LEDs at fixed indices in red.
+- **Phase 5 — Audio analysis.** `sounddevice` source → `AudioAnalyser` (FFT ring buffer, RMS / peak / band features) → `AudioState` (raw, instantaneous, single-writer/many-readers, no locks) → `RollingNormalizer` per-feature auto-gain. Bindings consume `*_norm`, so reactivity auto-scales to room loudness. Modulation lives directly on the parameter: `palette_lookup.brightness = envelope(audio_band(band="low"), attack_ms=10, release_ms=120)` — no separate `bindings` block.
+- **Phase 6 — Language-driven control panel.** Thin layer over OpenRouter (`openai` SDK pointed at `https://openrouter.ai/api/v1`), NOT a multi-tool agent loop. **One tool, `update_leds(layers, crossfade_seconds, blackout)`**, whose argument is the *complete* new layer stack — never a diff. Calls `Engine.crossfade_to`, same code path as `POST /presets/{name}`. System prompt regenerated **fresh every turn** with: install summary, current layer-stack JSON, audio snapshot, read-only master values, full primitive catalogue from `surface.generate_docs()`, anchor examples, anti-patterns. Rolling buffer of last `N` messages (default 20, heals dangling `tool` messages after trim). Per-session rolling-window rate limit. Sessions wipe on restart (v1). On compile/validation failure the tool result carries a structured `{path, msg, valid_kinds}` error which the LLM sees on its next turn and self-corrects. `OPENROUTER_API_KEY` read from `.env`; missing key → 503 on `/agent/chat`, render loop unaffected.
+
+What this leaves us with going into Phase 7: a complete dev-grade controller that runs on a mac, drives the simulator at 60 FPS, accepts REST + chat input, and is one config flag (`transport.mode: simulator → multi → ddp`) away from talking to real hardware.
 
 ---
 
-## 3. Existing tools we'll reuse or borrow ideas from
-
-Before writing anything, scan these — several solve sub-problems entirely:
-
-- **[WLED](https://kno.wled.ge/)** — already on the Gledopto. Has a built-in 2D matrix mapper, gamma correction, hundreds of effects, and DDP receive. Our server *augments* WLED, it doesn't replace it. We can fall back to WLED's own effects if our process dies.
-- **[LedFx](https://www.ledfx.app/)** — audio-reactive engine that already speaks DDP→WLED. Worth running once end-to-end early on as a sanity check that the network/DDP/Gledopto path is healthy, before our own effects exist.
-- **[wled-sim](https://github.com/13rac1/wled-sim)** — desktop WLED simulator with a DDP listener on port 4048. Useful as a *receive-side* sanity check: aim our DDP packets at it and confirm pixels light up before we have our own browser visualizer.
-- **[wled-tools](https://github.com/isra17/wled-tools)** — DDP parser + virtual LED viewer (`python -m wled_tools.viewer`). Same idea, more pythonic.
-- **[WLEDVideoSync](https://github.com/zak-45/WLEDVideoSync)** — NiceGUI-based web visualizer that streams DDP. Good reference for the browser-side architecture.
-- **[python-wled](https://github.com/frenck/python-wled)** — async client for WLED's JSON API. We'll use it to *configure* the Gledopto (set effect, brightness, segments) but **not** for realtime pixel data — that goes via DDP.
-- **[WLED Pixel Studio](https://wps.tsp.tools/)** / **[wled-matrix-tool](https://github.com/kudp02/wled-matrix-tool)** — browser-based pixel editors. Useful inspiration for the layout/preview UI.
-- **xLights** / **LedMapper** — full-blown 3D pixel-mapping tools. Overkill for two parallel lines, but worth a look if the install grows.
-
-**Recommendation:** treat LedFx as the "stock" install path and only run our custom server when we want richer control or LLM integration. They can coexist (different effect at different times — only one talks to WLED at once).
-
----
-
-## 4. Repo layout
-
-```
-animated_LED/
-├── config/
-│   ├── config.yaml             # active config
-│   ├── config.dev.yaml         # mac/sim defaults
-│   └── config.pi.yaml          # on-site defaults
-├── src/
-│   ├── ledctl/
-│   │   ├── __init__.py
-│   │   ├── config.py           # pydantic models
-│   │   ├── topology.py         # strip/LED spatial model
-│   │   ├── pixelbuffer.py
-│   │   ├── transports/
-│   │   │   ├── base.py
-│   │   │   ├── ddp.py
-│   │   │   ├── simulator.py
-│   │   │   └── multi.py
-│   │   ├── effects/
-│   │   │   ├── base.py         # Effect ABC + parameter schema
-│   │   │   ├── solid.py
-│   │   │   ├── gradient.py
-│   │   │   ├── wave.py         # the "left→right morph" example
-│   │   │   ├── sparkle.py
-│   │   │   └── audio_pulse.py  # Phase 5
-│   │   ├── engine.py           # scheduler / mixer / FPS loop
-│   │   ├── audio/
-│   │   │   ├── capture.py      # sounddevice
-│   │   │   ├── bpm.py          # aubio
-│   │   │   └── features.py     # bands, RMS, onset
-│   │   ├── api/
-│   │   │   ├── server.py       # FastAPI app
-│   │   │   ├── routes.py
-│   │   │   ├── ws.py           # simulator websocket
-│   │   │   └── agent.py        # /agent/chat (SSE), /agent/sessions/*
-│   │   ├── agent/              # Phase 6
-│   │   │   ├── client.py       # OpenRouter (OpenAI-compatible) wrapper
-│   │   │   ├── session.py      # ChatSession + rolling message buffer
-│   │   │   ├── tool.py         # single `update_leds` tool: schema + handler
-│   │   │   └── system_prompt.py # rebuilt every turn (state + catalogue + audio)
-│   │   └── cli.py              # `ledctl run` etc.
-│   └── web/
-│       ├── index.html          # operator UI + simulator
-│       ├── editor.html         # spatial layout editor
-│       └── static/
-├── scripts/
-│   ├── calibrate.py            # light strips one at a time, with on-screen IDs
-│   └── stress_test.py          # burn-in: full white at full FPS
-├── tests/
-├── pyproject.toml
-└── README.md
-```
-
----
-
-## 5. Phased plan
-
-Each phase has a **Goal**, **Deliverables**, **Test you can run on the mac alone**, and **Risks**.
-
-### Phase 0 — Project scaffolding (½ day)
-
-**Goal:** repo, deps, lint, run target.
-
-- `uv` for dep management.
-- `ruff` + `pytest`.
-- `ledctl run --config config/config.dev.yaml` entrypoint that just prints the parsed config — proves the wiring is real.
-
----
-
-### Phase 1 — Topology, transport, and a working simulator (1–2 days)
-
-**Goal:** End-to-end `effect → buffer → simulator` pipeline with **no hardware** and **no audio**, running at a stable FPS.
-
-**Deliverables:**
-- `config.yaml` schema (pydantic):
-  ```yaml
-  project: { name: festival_scaffold, target_fps: 60 }
-  controllers:
-    gledopto_main:
-      type: wled-ddp
-      host: 10.0.0.2
-      port: 4048
-      pixel_count: 1800
-  strips:
-    - id: top_left
-      controller: gledopto_main
-      output: 1
-      pixel_offset: 0
-      pixel_count: 450
-      leds_per_meter: 30
-      geometry: { type: line, start: [0, 1.0, 0], end: [-15, 1.0, 0] }
-      reversed: true
-    - id: top_right        { ...offset: 450, end: [15, 1.0, 0] }
-    - id: bottom_left      { ...offset: 900, y: 0.0 }
-    - id: bottom_right     { ...offset: 1350, y: 0.0 }
-  transport:
-    mode: simulator        # ddp | simulator | multi
-    sim:
-      ws_path: /ws/frames
-  ```
-- `Topology` object: every LED has a stable `(strip_id, local_index, global_index, x, y, z)` and a global ID. **This ID is the one we'll print on labels when wiring up.**
-- `PixelBuffer`: numpy `(N, 3) uint8` array.
-- `DDPTransport`: builds DDP packets (10-byte header, push flag on last packet, 480 px/packet to stay under MTU). Reference: `http://www.3waylabs.com/ddp/`.
-- `SimTransport`: pushes frames over a WebSocket as a packed binary blob.
-- A static `web/index.html` that opens the WS and draws every LED as a circle at its `(x,y)` from the config. Show measured FPS.
-- `Engine` main loop: fixed timestep (e.g. 60 Hz), one effect for now (a moving sine wave), `time.perf_counter`-based pacing.
-
-**Test on mac:**
-- `ledctl run` → open `http://localhost:8000` → see ~60 FPS animated dots in the browser.
-- Switch `transport.mode: ddp` and aim it at **wled-sim** running locally (port 4048) — confirms our DDP packets are valid.
-
-**Risks:**
-- DDP packet boundaries: only the *last* packet of a frame must have the PUSH bit set. Get this wrong and WLED holds the previous frame.
-- Sending too fast: cap at `target_fps`; never spin-loop. Drop frames if the encode/transport falls behind.
-
----
-
-### Phase 2 — Effect engine (1–2 days)
-
-**Goal:** a small library of parameterised effects + a way to layer/blend them.
-
-**Deliverables:**
-- `Effect` ABC with a `parameters: pydantic.BaseModel` class attr. The schema is what the REST API (and later, the LLM) sees.
-- A handful of effects whose parameter space is *expressive*, not exhaustive:
-  - `solid(color)`
-  - `gradient(stops, angle, speed)`
-  - `wave(color_a, color_b, wavelength, speed, direction, softness)` — covers the "morph orange→red, smooth wave, left→right" prompt directly.
-  - `sparkle(base, color, density, decay)`
-  - `chase(color, length, speed)`
-- `Mixer`: stack of effects with per-layer blend mode (`add`, `screen`, `multiply`, `mask`) and opacity. Crossfade between presets over N seconds.
-- Effects work in **normalised spatial coords** (`x ∈ [-1, 1]`, `y ∈ [-1, 1]`) using the topology's bounding box, so writing a "left→right" effect doesn't depend on LED count or strip lengths. This is the abstraction that makes the LLM's job tractable.
-- Gamma correction (2.2) before transport. WLED can also do this — pick one place, not both.
-
-**Test on mac:** crossfade between two effects in the browser; confirm a "wave" written in normalised space looks identical regardless of strip count or whether the layout is split into 4 strips or 1.
-
----
-
-### Phase 3 — REST control API (½ day)
-
-**Goal:** drive the engine from `curl` / a phone.
-
-**Endpoints (all JSON):**
-- `GET  /state` — current effect stack, FPS, transport status.
-- `GET  /effects` — list of effect names + their parameter schemas.
-- `POST /effects/{name}` — push an effect onto the stack with params.
-- `PATCH /layer/{i}` — tweak parameters live.
-- `DELETE /layer/{i}` — remove.
-- `POST /presets/{name}` — apply a saved preset (yaml file in `config/presets/`).
-- `POST /blackout` / `POST /resume`.
-- `GET  /topology` — strip + LED metadata, used by the editor UI.
-
-OpenAPI docs at `/docs` auto-generated by FastAPI. This becomes the contract for both the mobile UI and the MCP layer.
-
-**Test on mac:** drive a full show from `curl` while the simulator is open in the browser. No GUI needed yet.
-
----
-
-### Phase 4 — Spatial GUI (layout editor + live visualizer) (2–3 days)
-
-**Goal:** browser-based tool to (a) preview the live output and (b) edit `config.yaml` visually.
-
-**Two views, same page:**
-1. **Live view** — what we built in Phase 1, polished. Uses top-down 2D view. Hover an LED → tooltip with `global_index`, `strip_id`, `local_index`. Click → solo light it red (calibration mode for physical wiring).
-2. **Editor view** — drag strip endpoints on a 2D canvas; edit length/density/orientation in a side panel. "Save" writes a new `config.yaml` (with confirmation diff). Reload the engine without restarting the process.
-
-**Don't build from scratch if avoidable.** Concretely:
-- Look at **xLights**' layout import format and **LedMapper** — if either's export can feed our pydantic schema, we ship that pipeline and skip the editor for v1.
-- Otherwise build the minimal version: 2D canvas, drag endpoints, save YAML.
-
-**Calibration helper script** (`scripts/calibrate.py`): walks the strip lighting LEDs at indices 0, 100, 200, … in red while the GUI labels which logical strip each is on. Used during physical install to verify wiring matches the config.
-
----
-
-### Phase 5 — Audio analysis (1–2 days, mac-first)
-
-**Goal:** real-time audio features the effect engine can read.
-
-**Deliverables:**
-- `audio.capture` — `sounddevice.InputStream` callback into a ring buffer; identical interface on mac (built-in mic) and Pi (INMP441 via ALSA).
-- `audio.features` — RMS, broad-band energy (low/mid/high), onset flag, BPM (aubio).
-- A shared `AudioState` object the effect engine reads each frame. Effects can opt in via a `modulators` dict in their params — e.g. `wave.speed = "bpm"` instead of a fixed number.
-- Toggle in the GUI: input device, gain, AGC on/off, "tap tempo" override.
-
-**Test on mac:** point the laptop mic at a speaker, see BPM lock onto the track in the GUI, watch the wave effect snap to the beat.
-
-**Risks:**
-- I²S on Pi is its own configuration adventure (`dtoverlay=googlevoicehat-soundcard` or similar for INMP441 — verify on Pi early in Phase 8, not on demo day).
-- Latency: audio buffer + analysis hop + effect + DDP. Keep the audio buffer small (256–512 samples @ 48 kHz ≈ 5–10 ms) and analysis hop ≤ 1 frame.
-
----
-
-### Phase 6 — Language-driven control panel via OpenRouter (1–2 days)
-
-**Goal:** turn natural-language prompts into LED state changes as fast as possible. This is **not** an "agent loop" — there's no plan/observe/act cycle, no multi-tool orchestration. It's a thin language layer over the existing engine: the user types, the LLM emits **one** tool call describing the *complete* desired layer stack, the engine crossfades to it. Follow-ups like *"more red, slower"* work because the LLM is given a fresh, complete picture of the install on every turn.
-
-**The shape:**
-- **One tool: `update_leds`.** Its argument is a full `{layers, crossfade_seconds, blackout?}` spec — same shape as a preset YAML. The LLM never patches individual fields and never deletes single layers; every turn it emits the complete new state and the engine handles the morph. This makes "make it more red" simply: re-emit the current spec with redder colours.
-- **No `list_*` / `get_*` / `describe_*` tools.** Everything the LLM might ask for is **auto-injected into the system prompt every turn**, freshly. No round-trips wasted on discovery — by the time the LLM sees the user's message, it already knows what's running, what tools/effects exist, and what the room sounds like.
-- **Rolling buffer** of the last `N` messages (default **20**, `agent.history_max_messages`). Each user turn carries: `{user message}` + `{assistant tool call}` + `{tool result with the resulting state}`. The system prompt is regenerated fresh on every turn so the *current* state always reflects whatever the engine actually did, even if it differs from what the LLM intended (e.g. validation clamped a value).
-
-**The system prompt (regenerated per turn):**
-1. **Install description** — auto-summary of `Topology`: 1800 LEDs across 4 strips on two parallel rows, 30 m × 1 m, axis convention (`+x` stage-right, `+y` up, normalised coords).
-2. **Current LED state** — the active layer stack as JSON (`{effect, params, blend, opacity}` per layer), `blackout`, last `crossfade_seconds`, `fps` / drops.
-3. **Live audio reading** — `rms`, `peak`, and the three band levels with their **frequency ranges read from `config.audio.bands`** (e.g. *"low 20–250 Hz: 0.42 / mid 250–2000 Hz: 0.18 / high 2–12 kHz: 0.09"*). Snapshotted at the moment the user hits enter.
-4. **Control surface** — the full effect catalogue (every effect, every param: type, range, units, one-line description), the list of available presets by name, and a short rubric on blend modes and opacity.
-5. **Examples** — 3–5 example driving states across the design space (e.g. *"warm slow ambient: amber→red wave + sparkle on multiply"*, *"peak hour: fast fire-coloured chase + audio-pulse on add"*, *"blackout"*) so the model has anchors for what good output looks like.
-6. **Rubric** — emit one `update_leds` per turn; the spec is the *complete* new state, never a diff; pick a `crossfade_seconds` that fits ("snappy ~0.3 s, smooth ~1.5 s, slow drift ~5 s"); keep the assistant text terse — the user can see the lights.
-
-**The one tool:**
-```python
-update_leds(
-    layers: list[Layer],            # ordered, layer 0 renders onto black
-    crossfade_seconds: float = 1.0, # how fast to morph from old → new
-    blackout: bool = False,         # convenience: kill output, ignore layers
-)
-# Layer matches the preset YAML schema:
-# { effect: str, params: dict, blend: "normal"|"add"|"screen"|"multiply" = "normal", opacity: float = 1.0 }
-```
-Server-side, `update_leds` calls the existing `Mixer.crossfade_to(layers, duration)` — the same code path that powers `POST /presets/{name}`. Validation reuses each effect's pydantic schema; on failure the tool result contains the structured pydantic error, which the LLM sees on its next turn (via the buffer) and can correct.
-
-**New API endpoints:**
-- `POST   /agent/chat` — body `{message: str, session_id?: str}`. Streams (SSE) the assistant's tokens + the single tool call back to the browser. Creates a new session if `session_id` is omitted.
-- `GET    /agent/sessions/{id}` — full transcript for UI rehydration.
-- `DELETE /agent/sessions/{id}` — wipe.
-- `GET    /agent/config` — model id, history cap (read-only; tweaks via YAML).
-
-**New web view:** `/chat` — transcript on the left, input box at the bottom, "new session" + model dropdown at the top. Each assistant turn collapses the resulting `update_leds` payload under the bubble (so the operator can see exactly what was sent). The simulator stays on `/`; the operator can keep both tabs open.
-
-**Config (YAML):**
-```yaml
-agent:
-  enabled: true
-  provider: openrouter
-  model: anthropic/claude-sonnet-4-6      # any OpenRouter model id
-  history_max_messages: 20                 # rolling buffer size, excl. system prompt
-  request_timeout_seconds: 60
-  rate_limit_per_minute: 30
-  default_crossfade_seconds: 1.0           # used if the model omits the field
-  # OPENROUTER_API_KEY is read from .env, never YAML
-```
-(No `max_tool_rounds_per_turn` — by design the model emits exactly one `update_leds` per turn. If it skips the tool call entirely, that's fine: it just answered with text and didn't change the lights.)
-
-**Deps added:** `openai>=1.0` (OpenAI-compatible client; point `base_url` at `https://openrouter.ai/api/v1`), `python-dotenv`. **No FastMCP** in v1.
-
-**Safety rails:**
-- Per-effect param clamps come for free from the existing pydantic validation — same schemas the REST API already enforces.
-- `rate_limit_per_minute` on `/agent/chat`, keyed by session id.
-- If `OPENROUTER_API_KEY` is missing, `/agent/chat` returns a clear 503 with the cause; the render loop is unaffected.
-
-**Test on mac (golden flow):**
-1. *"warm slow wave, orange to red, drifting left"* → one `update_leds` call with one `wave` layer; engine crossfades.
-2. Same session: *"more red, slower drift"* → one `update_leds` call with `color_a`/`color_b` shifted toward red and `speed` reduced. The freshly-injected current-state in the system prompt + the buffered prior turn give the model everything it needs.
-3. *"add some sparkle on top"* → one `update_leds` call with a 2-layer spec (the wave from step 2 plus a sparkle layer).
-4. *"blackout"* → one `update_leds(blackout=true)`.
-5. Send 25 short messages; only the last 20 + the freshly-regenerated system prompt go to OpenRouter on turn 26.
-6. Send a deliberately-broken request ("cyan and fluorescent puce in 17D") — the model picks reasonable defaults instead of asking. If validation rejects something, the next turn auto-corrects from the error in the tool result.
-7. Disable the API key → endpoint returns 503 with a clear "missing OPENROUTER_API_KEY" message. `/state`, simulator, presets all keep working.
-
-**Risks / open questions:**
-- **System-prompt size.** Catalogue + current state + audio + examples is the heaviest part — probably 1.5–3k tokens. Comfortably within 20-message budget but worth measuring on the real model. Trim effect descriptions to one-liners and drop unused fields if it grows.
-- **Audio-snapshot staleness.** We sample `AudioState` at `/agent/chat` request time. If the model takes 2 s to respond, the reading is 2 s old. Worth saying so in the rubric so the model treats it as "the room a moment ago", not "the room right now".
-- **Persistence.** Sessions are in-memory for v1 — restart wipes them. Promote to disk (sqlite under `/var/lib/ledctl/sessions/`) once we know how it's used.
-- **Streaming.** SSE for the assistant text; the tool-call payload is small enough to deliver as a single event.
-- **Auth.** Same as the rest of the API — bind to `127.0.0.1` (or Tailscale only) until Phase 7 adds a shared password. OpenRouter key's blast radius is spend.
-- **MCP path is deferred, not deleted.** The same `update_leds` schema can be re-exposed via FastMCP later if we want Claude Desktop to drive the install directly — same shape, no rewrite.
-
----
-
-### Phase 7 — Operator mobile UI (1–2 days)
+## Phase 7 — Operator mobile UI (1–2 days)
 
 **Goal:** a phone-friendly page bar staff can pull up to change vibe quickly.
 
 - Single page, big buttons:
-  - All master sliders.
-  - Chat window
-- Auth: simple shared password "kaailed" on a query string (rotate per event). Behind Tailscale — never expose the Pi directly.
-- PWA manifest so it installs as an app icon on the bar staff's home screens.
+  - All master sliders (brightness, speed, audio_reactivity, saturation, freeze).
+  - Chat window (re-uses `/agent/chat` from Phase 6).
+  - A row of preset tiles (`default`, `chill`, `peak`, `cooldown` + any added during the build).
+  - Blackout / resume.
+- **Auth:** simple shared password "kaailed" (or whatever the event rotates to). **Landed early as part of the Phase 8 prep** — see `src/ledctl/api/auth.py`. Activated by setting `auth.password` in `config.pi.yaml`; off by default in `config.dev.yaml`. Cookie-based with a `?password=…` shortcut for first visit, gates HTTP via Starlette middleware and rejects WS upgrades pre-accept (close 4401). Still meant to live behind Tailscale — never expose the Pi directly.
+- **PWA manifest** so it installs as an app icon on the bar staff's home screens.
+- Touch-friendly: 44px minimum hit targets, no hover-only affordances, single-column layout, no horizontal scroll.
+
+**Test on mac:** open the page from a phone over Tailscale, drive the simulator from the phone while the laptop displays the LED viz.
 
 ---
 
-### Phase 8 — Move to the Pi (1 day on a quiet afternoon)
+## Phase 8 — Move to the Pi + on-site physical install (1 day SW + a build day)
 
-**Goal:** identical behaviour on the Pi, with INMP441 audio and Ethernet to the Gledopto.
+**Goal:** identical software behaviour on the Pi, with INMP441 audio and Ethernet to the Gledopto, and the physical install wired up to match `config.pi.yaml`.
 
-- `config.pi.yaml`: `transport.mode: ddp`, controller host `10.0.0.2`, audio device set to the I²S card.
-- Static IP on `eth0` = `10.0.0.1`, WLED static IP = `10.0.0.2` (matches the hardware doc).
-- **WLED LED Preferences:** set color order to **GRB** (WS2815 default — leaving it on RGB swaps red/green and is the #1 "wrong colors" support thread). Confirm with a `solid(red)` effect from the engine.
-- I²S setup (`/boot/firmware/config.txt`: `dtparam=i2s=on` + the right overlay for INMP441). Verify with `arecord -l` and a 3-second capture before plugging in to our pipeline.
-- Install as a **systemd service** (`ledctl.service`):
-  - `Restart=always`, `RestartSec=2`.
-  - `After=network-online.target sound.target`.
-  - `Nice=-5` (small priority bump; no real-time scheduling needed).
-- Logs to `journald`, not files (compatible with read-only rootfs).
-- **Read-only rootfs (overlayfs)** as in the hardware doc — flip on *after* everything works, not before. Anything we need to persist (presets, the active `config.yaml`) goes on a separate writable partition (e.g. `/var/lib/ledctl`).
-- **Tailscale** installed on the Pi → stable hostname for the operator UI from any phone.
+This phase is half software (provisioning + config) and half hardware (mounting, wiring, power injection, waterproofing). Both halves need to be sequenced carefully — most of what can go wrong here is physical, not code.
+
+### 8.1 Software cutover
+
+The digital pieces below are already in place — the Pi just needs to be flashed, joined to Tailscale, and pointed at `config.pi.yaml`.
+
+**Already landed (pre-build day):**
+
+- **`config/config.pi.yaml`** — `transport.mode: ddp`, `controllers.gledopto_main.host: 10.0.0.2`, `server.host: 0.0.0.0` so the venue WiFi can reach it, `auth.password: kaailed` to keep randoms out, full `masters:` block for parity with dev. `audio.device: null` is the only field the build day still has to fill in (the INMP441 ALSA card name from `arecord -l`; `/audio/select` persists it).
+- **Auth gate** (`src/ledctl/api/auth.py`) — Starlette middleware + `/login` (form post or `?password=…`) + `ledctl_auth` cookie + WS upgrade gate (close 4401). `/healthz`, `/login`, `/logout` are always public so a future watchdog can probe past the gate. Off automatically in `config.dev.yaml` (no `auth.password`).
+- **`/healthz`** endpoint — JSON `{ok, fps}`, public, suitable for a systemd watchdog ping.
+- **systemd unit** (`deploy/ledctl.service`) — `After=network-online.target sound.target`, `Restart=always`, `RestartSec=2`, `Nice=-5`, `audio` supplementary group for ALSA, `ProtectSystem=full` + `ProtectHome=read-only` so it plays well with overlayfs, journald logging only. Install: `sudo cp deploy/ledctl.service /etc/systemd/system/ && sudo systemctl enable --now ledctl`.
+- **`.env.example`** — template the Pi flow copies to `.env` (gitignored) for the OpenRouter key. `cli.py` already auto-loads it.
+- **Auth + healthz tests** (`tests/test_auth.py`, 11 cases) — cookie/query/POST/WS paths and confirmation that the dev config remains open.
+
+**Still to do on build day:**
+
+- **Pi networking:** static IP on `eth0 = 10.0.0.1/24`, no gateway on that interface (it's a private link to the Gledopto). Pi keeps its WiFi for venue access. WLED on the Gledopto is pre-set to static `10.0.0.2/24` on its Ethernet interface.
+- **WLED LED Preferences (per-Gledopto setup):**
+  - Color order: **GRB** (WS2815 default — RGB swaps red/green and is the #1 "wrong colors" support thread). Confirm with a `solid(red)` from the engine.
+  - Ethernet Type: `Gledopto Series with Ethernet` (or generic LAN8720 with correct clock pins) so the RJ45 port wakes up.
+  - Map the four GPIO outputs to four 450-LED segments matching the topology IDs in the config.
+  - WLED's own gamma off (the renderer is the single source — `output.gamma: 1.5`). If you must turn WLED gamma on, set `output.gamma: 1.0` in YAML to avoid double-gamma.
+- **I²S setup** (`/boot/firmware/config.txt`): `dtparam=i2s=on` plus the right overlay for INMP441 (e.g. `dtoverlay=googlevoicehat-soundcard` or a custom INMP441 overlay). Verify with `arecord -l` and a 3-second `arecord` capture **before** plugging into our pipeline. Then pick the device at `/audio` and click "apply & save" — `audio.device` gets persisted into `config.pi.yaml`.
+- **Read-only rootfs (overlayfs)** as in the hardware doc — flip on **after** everything works, not before. Persist presets and the active `config.yaml` on a separate writable partition (e.g. `/var/lib/ledctl`).
+- **Tailscale** on the Pi → stable hostname for the operator UI from any phone, no port-forwarding.
 - **mDNS** (`avahi`) so the Pi answers to `ledctl.local` on the venue WiFi.
 
-**Test on Pi:** repeat all the Phase 1–7 tests with `transport.mode: multi` so frames go to **both** the real LEDs and your laptop's browser simulator over Tailscale — invaluable for on-site debugging.
+**Test on Pi:** repeat all Phase 1–7 tests with `transport.mode: multi` so frames go to **both** the real LEDs and the laptop's browser simulator over Tailscale — invaluable for on-site debugging. Confirm the auth gate by hitting `http://ledctl.local:8000/?password=kaailed` from a phone once; subsequent loads skip the query string thanks to the cookie.
+
+### 8.2 Physical install — wiring & mounting
+
+The hardware doc covers the gear-list, power math, and waterproofing in full; this section is the install order, calling out the bits where software and hardware have to agree.
+
+**Topology to keep in mind while wiring:** 1800 WS2815 IP67 LEDs on two parallel 30 m rows (six 5 m strips per row). The Gledopto sits at the **15 m centre** of the scaffolding and feeds **four chain heads** — one per row-half (top-left, top-right, bottom-left, bottom-right), each 450 LEDs. The Pi is in a separate IP65 box ~10 m away under the DJ booth, connected to the Gledopto with a single Ethernet patch cable (Option 2 from the hardware doc — eliminates the data-run danger zone entirely).
+
+**Step-by-step:**
+
+1. **Mount the LED channels.** Aluminium channels with milky diffusers, zip-tied to the scaffolding with black UV-resistant ties. Two parallel 30 m runs, one above the other. Channels self-ground against the metal scaffolding.
+2. **Pre-label every strip.** Print stickers showing each strip's `global_index` range from the topology (e.g. `top_left_a: 0–149`, `top_left_b: 150–299`, …). Label both endpoints. Future-you on a ladder at midnight will be grateful.
+3. **Mind the strip direction at the centre.** Two of the six strips per row are flipped relative to "natural" left-to-right reading: the strips running from the 15 m mark outward toward 0 m must have their data-arrow pointing **away** from the centre. Same on the 15 m → 30 m side. Plan and label this **before** mounting — re-mounting silicone-sealed strips is miserable. The `reversed: true` flag on the relevant strips in `config.yaml` must match this physical reality, and the calibration helper (Phase 4) is what verifies it.
+4. **Run the 12 AWG power bus.** Centre-fed at the 15 m mark, **+12 V and GND as a twisted pair** to reduce noise coupling into data. PSU 1 powers one half (e.g. left of centre), PSU 2 powers the other. Both PSU negative terminals must be tied together with a heavy ground wire — without a common ground reference, the data signal between rows behaves unpredictably and ground loops cause flickering. **PSU V+ outputs must never touch each other.**
+5. **Inject power at every junction.** Tap into the 12 AWG bus at the 5 m, 15 m, and 25 m marks on each row, feeding 12 V + GND into the two neighbouring 5 m strips at each tap. Each 18 AWG injection line gets its own 5–7.5 A blade fuse on an automotive fuse-bus. A larger (~25–30 A) fuse on each PSU output protects against a bus short upstream of the branch fuses. During burn-in, watch the LEDs at 0 m and 30 m for visible drop — those endpoints sit a full 5 m of trace away from the nearest tap; add 0 m / 30 m taps if needed.
+6. **Power the Gledopto from one PSU's V+** (small 18 AWG pair to the Gledopto's `V+` / `GND` input terminals). The Gledopto's `GND` output terminal connects to the common ground bus. **Do not connect the Gledopto's `V+` output terminals to the LED strips at all** — all LED power comes straight from the external fuse blocks.
+7. **Run data lines from Gledopto to chain heads.** Four data outputs, each going to one of the four chain heads at the 15 m centre. Use the shielded 4-conductor alarm cable; inside it, twist Data + GND as one pair and Backup Data + GND as the other. **On every chain head's first pixel, tie BI (Backup In) to Ground** — if BI is left floating at the start of a chain it picks up interference and causes flickering. After the first pixel of each chain, BI just connects to the previous pixel's DI as normal.
+8. **Connect Pi → Gledopto via Ethernet.** ~10 m solid Ethernet patch cable from the Pi's IP65 box under the DJ booth straight to the Gledopto's RJ45 port on the scaffolding. Static `10.0.0.1` ↔ `10.0.0.2`. This is the data-integrity win that lets the Gledopto sit right next to the strips: Ethernet is balanced, differential, and noise-immune over far longer than 10 m.
+9. **Waterproof every cut and joint.** Pull back the silicone sleeve ~1 inch at every junction, solder pad-to-pad (or short bridging wires), solder the power injection leads to those same joints, inject neutral-cure silicone into the sleeve opening, slide marine-grade adhesive heat-shrink over the whole joint, hit with the heat gun. Drip loops on every cable entering an enclosure. Mean Well HLG-320H-12 PSUs mounted **terminals-down** under the scaffold so water doesn't pool on the housing.
+10. **Acoustic port for the INMP441.** Sealed in an IP65 box the mic can't hear anything. Either drill a small hole and cover it with a Gore-Tex / waterproof acoustic membrane, or mount the mic on the **outside** with a short cable through a sealed gland (wire run from mic to Pi GPIO must stay <15 cm).
+11. **Power the system off the long mains line.** 40 m H07RN-F 14 AWG run to the two PSUs from a single AC source so the team can kill power at night to drop the WS2815 idle draw.
+
+### 8.3 Bring-up order on-site
+
+Doing these in order avoids a bricked LED line on demo day.
+
+1. **No-LED Pi boot.** Pi up on Tailscale, `ledctl.service` running with `transport.mode: simulator`. Phone hits the operator UI. Confirm chat works (OpenRouter reachable from venue WiFi).
+2. **Gledopto-only test, no LEDs connected.** Pi → Gledopto Ethernet link up, ping `10.0.0.2`, WLED dashboard reachable from the Pi. Switch `transport.mode: ddp`, send a `solid(red)` — verify with WLED's own preview that DDP packets are arriving.
+3. **One strip live.** Connect the first 5 m strip on `top_left_a` only. Run the calibration script — first pixel should be bright red, no flicker. If you see green instead of red, fix WLED's color order to GRB (don't fix it in software). If you see flicker, BI is floating somewhere on that chain head.
+4. **Whole top row.** Add the rest of `top_left_*` and `top_right_*`. Run a horizontal-wave preset; verify both centre-out directions are correct. If a half runs backwards, flip `reversed:` on the affected strips in `config.pi.yaml`, not in the wiring.
+5. **Both rows + power injection burn-in.** All 1800 LEDs, full white, 5-minute hold. Watch the 0 m and 30 m endpoints for voltage drop. Watch each PSU's enclosure for warmth (rain-resistant, not heat-spec'd for sustained 27 A). Watch the Pi CPU temp (`vcgencmd measure_temp`) — sustained >75 °C means add the heatsink before the read-only flip.
+6. **Audio in the loop.** Point a speaker at the mic, run a peak-hour preset that maps `audio_band(band="low")` to brightness, watch reactivity. Adjust `RollingNormalizer` window if it auto-scales too slowly for the venue.
+7. **Power-cycle test.** Yank mains 5 times in a row. Pi must come back up cleanly each time (this is what the read-only rootfs is for). Flip overlayfs on **only after** this passes.
+8. **Image the SD card** the night before the event. Keep a spare card pre-flashed in the gig bag.
 
 ---
 
-### Phase 9 — On-site reliability (½ day)
+## Phase 9 — On-site reliability (½ day)
 
-- **Watchdog**: if frames-sent FPS drops below 10 for >2 s, log + try to reconnect DDP socket; if WLED is unreachable for >30 s, fall back to running its built-in effect via the JSON API so the LEDs aren't dead.
-- **Brownout behavior**: on startup, wait until WLED responds before pushing frames (`python-wled` has health checks).
-- **Power-cycle resilience**: read-only FS (already covered), `systemd` auto-start, no SD writes in our hot path.
-- **Heat**: Pi 4 in a sealed IP65 box doing audio FFTs — log CPU temp; if it sustains >75 °C, add the heatsink the hardware doc mentions (or a small thermal pad to the box wall).
-- **Time**: install `chrony` for NTP — log timestamps need to be useful post-event.
-- **Backups**: image the SD card the night before the event. Keep a spare card pre-flashed.
-
----
-
-## 6. What I think the brief was missing
-
-A few things worth deciding now rather than mid-build:
-
-1. **Latency budget.** Audio→light should land under ~30 ms to feel "tight" on beats. That constrains the audio buffer (≤256 samples @ 48 kHz) and the DDP send cadence. Worth measuring early, not at soundcheck.
-2. **Coordinate convention (decided).** `+x` = stage-right, `+y` = up, `+z` = out toward the audience (right-handed). Origin `(0, 0, 0)` is pinned to the **centre of the scaffolding** — i.e. the 15 m mark horizontally, midway between the top and bottom rows vertically. All effects work in **normalised** spatial coords (`x, y ∈ [-1, 1]`) derived from the topology's bounding box, so "left → right" is unambiguous regardless of how strips are split or reversed in `config.yaml`.
-3. **Per-LED ID labelling for physical install.** The calibration script (Phase 4) is the bridge between software IDs and physical strips — print a small sticker for each strip endpoint with its `global_index` range. Future-you on a ladder at midnight will be grateful.
-4. **Effect transitions.** Hard cuts look amateur. Build a crossfade primitive into the mixer from day one — much harder to retrofit.
-5. **Brightness ceiling = current ceiling.** WS2815 is 12 V with 3 LEDs in series per pixel and draws ~15 mA at full white, so 1800 px ≈ **27 A theoretical** — matching the hardware doc's number, not the 60 mA/pixel WS2812B figure. With 2× HLG-320H-12 (2× ~26.6 A capacity, split across the two halves) there's headroom, but the engine should still enforce a per-frame *power estimate* clamp (sum of channel values × calibration factor) and scale the whole frame down if it would exceed budget — cheap to add, prevents PSU foldback during a "all white" effect mistake.
-6. **Two PSUs / two halves.** If they ever boot at slightly different times, the data line can momentarily see a 12 V row next to a 0 V row. WLED handles this fine, but our effects shouldn't *assume* both halves are alive — always render the full frame and let any dark half just be dark.
-7. **Multi-controller future.** The schema supports multiple controllers from day one (`controllers:` is a dict, not a single entry). Adding a third row of LEDs later is then a config change.
-8. **LLM cost / rate limits.** OpenRouter bills per token. The system prompt (catalogue + state + audio + examples) is regenerated every turn — that's the dominant token cost, so keep effect descriptions one-liner-tight. The rolling-buffer cap is the secondary lever. The control panel is for "set the vibe" prompts and follow-up adjustments at human typing speed, not per-frame control — say so in the system prompt rubric so the model doesn't try to drive an animation by spamming turns.
-9. **Where logs go under read-only FS.** Pick: `journald` (volatile, fine for live), a writable `/var/lib/ledctl/logs` partition, or shipping to a remote endpoint (e.g. a free Logtail tier). Decide before flipping the FS to read-only.
-10. **Chat UI streaming.** SSE from the FastAPI app is the path of least resistance for token streaming — same host as the simulator/operator UI, so a single Tailscale hostname covers the whole control surface. (If we ever revive the MCP path for Claude Desktop, it would also speak SSE on the same host.)
+- **Watchdog:** if frames-sent FPS drops below 10 for >2 s, log + try to reconnect the DDP socket; if WLED is unreachable for >30 s, fall back to running its built-in effect via the JSON API (`python-wled`) so the LEDs aren't dead.
+- **Brownout behaviour:** on startup, wait until WLED responds before pushing frames (`python-wled` health check). Render loop should never block on a missing transport.
+- **Power-cycle resilience:** read-only FS (8.2 above), `systemd` auto-start, no SD writes in our hot path.
+- **Heat:** Pi 4 in a sealed IP65 box doing audio FFTs. Log CPU temp to journald; if it sustains >75 °C, add the heatsink the hardware doc mentions (or a small thermal pad to the box wall).
+- **Time:** install `chrony` for NTP — log timestamps need to be useful post-event for blame-the-bug investigations.
+- **Backups:** SD card image plus a printed copy of `config.pi.yaml` and the global-index sticker layout. If the Pi dies, a spare boots into the same install.
+- **Power-budget clamp** (worth adding to the engine, not just hoping no-one writes a "all white" preset by mistake): per-frame estimate `Σ channel × calibration_factor`, scale the whole frame down if it would exceed the PSU budget. Cheap to add, prevents PSU foldback during a "all white at 100 %" mistake.
 
 ---
 
-## 7. Will this work? A short answer
+## Cross-phase open questions (keep on the radar)
 
-**Yes — and almost all of it can be built and validated on the mac before any soldering.** The seams that genuinely require hardware are:
-
-- I²S microphone on the Pi (Phase 8 task; allow a buffer day for ALSA fiddling).
-- The first DDP packet to a real Gledopto (Phase 8 — but `wled-sim` and the in-browser visualizer cover ~95 % of the same testing on the mac).
-- Power-injection-induced data line behaviour — pure hardware, not in software's hands.
-
-The hardware-agnostic-core + transport-swap pattern means there's exactly one config line to flip when you go from "developing on the couch" to "running the festival": `transport.mode: simulator` → `multi` → `ddp`. Everything above it (effects, audio, REST, MCP, mobile UI) is identical code running on identical inputs.
-
----
-
-## 8. Suggested execution order if you only have a few evenings
-
-If you want a *visible result* fast and then iterate:
-
-1. **Evening 1**: Phase 0 + Phase 1 → wave animation in the browser at 60 FPS.
-2. **Evening 2**: Phase 2 + minimal Phase 3 → swap effects from `curl`.
-3. **Evening 3**: Phase 4 (live view first, editor later) → looks "real."
-4. **Evening 4**: Phase 5 → audio reactivity to a Spotify track playing through the laptop.
-5. **Evening 5**: Phase 6 → first language-driven session end-to-end (initial request *and* a "make it more X" follow-up that the model handles by re-emitting a refined `update_leds` spec — proving the rolling buffer + per-turn state injection actually carry context).
-6. **Weekend before the event**: Phase 7 (mobile UI) + Phase 8 (Pi cutover) + Phase 9 (reliability).
-
-That's a working show with weeks of margin to refine effects, build presets, and add bells and whistles.
+1. **System-prompt size.** Catalogue + current state + audio + examples is ~1.5–3 k tokens. Comfortable, but every new primitive added to `surface.py` widens the prompt — keep `Params` `description=` strings to one line.
+2. **Audio-snapshot staleness.** `AudioState` is sampled at `/agent/chat` request time; if the model takes 2 s to respond, the reading is 2 s old. The system prompt says "the room a moment ago", not "the room right now."
+3. **Session persistence.** In-memory for v1. Promote to sqlite under `/var/lib/ledctl/sessions/` once we know how the operators actually use chat.
+4. **Auth scope.** ~~Bind to `127.0.0.1` (or Tailscale-only) until the shared password lands in Phase 7.~~ Shared password landed early as part of Phase 8 prep (`auth.password` in YAML, `src/ledctl/api/auth.py`). Still recommended to keep the Pi behind Tailscale at the venue — the password is anti-randoms-on-LAN, not anti-determined-attacker. OpenRouter key blast radius remains spend; a leaked key = a bigger bill, not a hacked install.
+5. **MCP path is deferred, not deleted.** The same `update_leds` schema can be re-exposed via FastMCP later for Claude Desktop — same shape, no rewrite.
+6. **Multi-controller future.** `controllers:` is a dict, not a single entry. Adding a third row of LEDs is a config change, not a refactor.
+7. **Two-PSU boot skew.** If the two PSUs ever boot at slightly different times, the data line momentarily sees a 12 V row next to a 0 V row. WLED handles this fine, but our effects shouldn't *assume* both halves are alive — render the full frame and let any dark half just be dark.
+8. **Possible future improvement — biquad IIR filter bank** (already noted in `CLAUDE.md`): per-band band-pass filters for tighter transient response on mid/high bands. Park behind a config flag if reactivity feels sluggish on real DJ audio.

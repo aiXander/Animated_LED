@@ -25,6 +25,7 @@ from ..transports.base import Transport
 from ..transports.ddp import DDPTransport
 from ..transports.multi import MultiTransport
 from ..transports.simulator import SimulatorTransport
+from .auth import attach_password_auth, is_websocket_authenticated
 
 log = logging.getLogger(__name__)
 
@@ -272,6 +273,24 @@ def create_app(
     from .agent import install_agent_routes
 
     install_agent_routes(app, cfg.agent, presets_path)
+
+    # Always-public liveness probe — handy for systemd watchdogs and Phase 9
+    # reliability work. Returns 200 even when auth is enabled.
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz() -> dict:
+        return {"ok": True, "fps": round(engine.fps, 2)}
+
+    # Shared-password gate. Off in dev (no `auth.password`), on for the Pi.
+    # Attach AFTER routes/state so the middleware sees them, and so the login
+    # page can read `app.state.auth_password`.
+    auth_password = (cfg.auth.password or "").strip() if cfg.auth.password else ""
+    if auth_password:
+        attach_password_auth(
+            app, auth_password, cookie_max_age_days=cfg.auth.cookie_max_age_days
+        )
+        app.state.auth_password = auth_password
+    else:
+        app.state.auth_password = ""
 
     def current_topology() -> Topology:
         return engine.topology
@@ -715,8 +734,23 @@ def create_app(
 
     ws_path = cfg.transport.sim.ws_path
 
+    async def _ws_auth_or_close(websocket: WebSocket) -> bool:
+        """Reject the upgrade if auth is on and the cookie doesn't match.
+
+        Starlette's HTTP middleware doesn't run on WS upgrades, so we check
+        the same cookie here. Closing pre-accept gives the browser a clean
+        4401 without the server ever entering the message loop.
+        """
+        pw: str = app.state.auth_password
+        if pw and not is_websocket_authenticated(websocket, pw):
+            await websocket.close(code=4401)
+            return False
+        return True
+
     @app.websocket(ws_path)
     async def ws_frames(websocket: WebSocket) -> None:
+        if not await _ws_auth_or_close(websocket):
+            return
         await websocket.accept()
         await sim.add_client(websocket)
         try:
@@ -729,6 +763,8 @@ def create_app(
 
     @app.websocket("/ws/state")
     async def ws_state(websocket: WebSocket) -> None:
+        if not await _ws_auth_or_close(websocket):
+            return
         await websocket.accept()
         state_clients.add(websocket)
         try:

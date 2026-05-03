@@ -50,7 +50,8 @@ The system is a real-time LED controller for an 1800-LED festival install (4 × 
   - `system_prompt.py` — `build_system_prompt(...)` regenerated **fresh every turn**: install summary, current layer-stack JSON, audio snapshot, **read-only master values**, full primitive catalogue from `surface.generate_docs()`, anchor examples, anti-patterns. Dominant token cost — keep primitive `Params` `description=` strings tight.
   - `session.py` — in-memory `SessionStore` + `ChatSession` with `history_max`-capped rolling buffer (heals dangling `tool` messages after trim) and per-session rolling-window rate limit. Sessions wipe on restart (v1).
   - `client.py` — thin OpenAI-compatible wrapper aimed at OpenRouter. Imports `openai` lazily; `MissingApiKey` raised at first call.
-- `api/server.py` — FastAPI app. Endpoints: `/state`, `/topology`, `/config` (PUT for layout edits), `/surface/primitives`, `/layers` (POST/PATCH/DELETE), `/masters` (GET/PATCH), `/presets/{name}` (POST), `/blackout` + `/resume`, `/calibration/*`, `/audio/*`, `/ws/frames` (WebSocket frame broadcast). The landing page (`/`) hosts the LED viz, chat UI, and live status panel.
+- `api/server.py` — FastAPI app. Endpoints: `/state`, `/topology`, `/config` (PUT for layout edits), `/surface/primitives`, `/layers` (POST/PATCH/DELETE), `/masters` (GET/PATCH), `/presets/{name}` (POST), `/blackout` + `/resume`, `/calibration/*`, `/audio/*`, `/healthz`, `/ws/frames` (WebSocket frame broadcast). The landing page (`/`) hosts the LED viz, chat UI, and live status panel.
+- `api/auth.py` — optional shared-password gate for the entire HTTP/WS surface (Phase 8). Activated by setting `auth.password` in YAML; off by default for dev. Sets a `ledctl_auth` cookie via `/login` (form post) or `?password=…` query, gates HTTP via Starlette middleware, and rejects WS upgrades pre-accept with close code 4401 if the cookie is missing/wrong. `/login`, `/logout`, `/healthz` are always public. Render loop and DDP transport are unaffected — auth only protects the public-facing API surface.
 - `api/agent.py` — `/agent/chat` (synchronous LLM round-trip via `asyncio.to_thread`), `/agent/sessions/{id}` (GET/DELETE), `/agent/config` (read-only; never echoes the API key). 503 on disabled/missing key, 429 on rate-limit hit, 502 on LLM failure.
 
 **Config validation** (`config.py` Pydantic schemas): duplicate strip IDs, overlapping pixel ranges, and over-capacity caught at startup.
@@ -96,7 +97,16 @@ Right-handed: `+x` = stage-right, `+y` = up, `+z` = toward audience. Origin = ce
 
 Phases 0–6 are complete (topology, DDP transport, surface engine, REST API, browser simulator + layout editor, audio analysis, language-driven control panel).
 
-Phases 7–9 are planned: mobile operator UI, Pi I²S/systemd cutover, reliability/watchdog.
+Phase 8.1's digital prep also landed early — see "Auth + Pi deploy artefacts" below. Phase 7 (mobile operator UI), the rest of Phase 8 (INMP441 I²S setup, Tailscale, read-only rootfs, on-site bring-up), and Phase 9 (reliability/watchdog) are next.
+
+## Auth + Pi deploy artefacts
+
+- `src/ledctl/api/auth.py` — shared-password gate (off in dev, on for Pi). Activated by setting `auth.password` in YAML. The cookie is `ledctl_auth`; first-visit login via `/login` form post or `?password=…` query. WS upgrades reject pre-accept with close code 4401 if the cookie is missing/wrong. `/login`, `/logout`, `/healthz` are always public so future watchdogs can probe past the gate. Render loop and DDP transport are unaffected.
+- `config/config.pi.yaml` — `auth.password: kaailed`, `server.host: 0.0.0.0`, full `masters:` block. `audio.device: null` is the only field the build day fills in (`/audio/select` persists it).
+- `config/config.dev.yaml` — no `auth.password`, so the gate is off. Tests assert this.
+- `tests/test_auth.py` — 11 cases (cookie/query/POST/WS, public-path allow-list, dev-config still open).
+- `deploy/ledctl.service` — systemd unit. `After=network-online.target sound.target`, `Restart=always`, `RestartSec=2`, `Nice=-5`, `audio` supplementary group, `ProtectSystem=full` + `ProtectHome=read-only` so it cohabits with overlayfs. Install: `sudo cp deploy/ledctl.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now ledctl`.
+- `.env.example` — template; copy to `.env` (gitignored) for the OpenRouter key. `cli.py` auto-loads it.
 
 ## Agent (Phase 6)
 

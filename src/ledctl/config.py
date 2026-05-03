@@ -19,6 +19,35 @@ class ServerConfig(BaseModel):
     port: int = Field(8000, gt=0, lt=65536)
 
 
+class AuthConfig(BaseModel):
+    """Optional shared-password gate for the HTTP/WS surface.
+
+    Off by default (no `password` set). When a password is configured the
+    operator UI, REST endpoints, and websockets all require either:
+      - a `ledctl_auth` cookie matching the password, or
+      - a `?password=…` query param (cookie is then set automatically).
+
+    The render loop and DDP transport are unaffected — auth only gates the
+    public-facing API surface. On the Pi it's the difference between "anyone
+    on venue WiFi can blackout the rig" and "only people with the share-code
+    can". Comment the whole block out (or delete `password`) in dev configs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    password: str | None = Field(
+        None,
+        description=(
+            "Shared password for the operator UI. Null/empty = open server. "
+            "Plain string — no hashing v1; this isn't protecting secrets, "
+            "it's keeping randoms off the LED panel during a gig."
+        ),
+    )
+    cookie_max_age_days: int = Field(
+        30, ge=1, le=365,
+        description="How long the browser remembers the password after login.",
+    )
+
+
 class ControllerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["wled-ddp"]
@@ -240,6 +269,7 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project: ProjectConfig
     server: ServerConfig = ServerConfig()
+    auth: AuthConfig = AuthConfig()
     controllers: dict[str, ControllerConfig]
     strips: list[StripConfig]
     transport: TransportConfig = TransportConfig()

@@ -1,0 +1,51 @@
+[Unit]
+# systemd unit for the ledctl render loop on the Pi (Phase 8.1).
+#
+# Install:
+#   sudo cp deploy/ledctl.service /etc/systemd/system/ledctl.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ledctl.service
+#   journalctl -u ledctl -f
+#
+# Adjust `User`, `Group`, and the two paths below to match the on-disk layout:
+#   - `WorkingDirectory` = repo root on the Pi
+#   - `EnvironmentFile`  = where OPENROUTER_API_KEY lives (mode 0600, owned by User)
+#   - `ExecStart`        = the venv's `ledctl` entrypoint + the Pi config
+#
+# The service deliberately does not run as root: WS2815 LED control runs over
+# DDP/UDP and audio capture goes through ALSA — neither needs CAP_NET_RAW or
+# write access outside `WorkingDirectory`.
+
+Description=Audio-reactive LED controller (ledctl)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/animated_LED
+EnvironmentFile=-/home/pi/animated_LED/.env
+ExecStart=/home/pi/animated_LED/.venv/bin/ledctl run --config /home/pi/animated_LED/config/config.pi.yaml
+Restart=always
+RestartSec=2
+# Small priority bump — keeps the render loop ahead of background tasks
+# without going full real-time (which would need RT-priv setup).
+Nice=-5
+# Read-only rootfs / overlayfs (Phase 8.1): everything the engine writes
+# (presets, edited config, logs) goes through journald or
+# /var/lib/ledctl on a writable partition.
+ProtectSystem=full
+ProtectHome=read-only
+NoNewPrivileges=true
+# Hardware access we genuinely need:
+#   - ALSA capture for INMP441 (members of `audio` get this)
+#   - UDP socket to the Gledopto on the private 10.0.0.0/24 link
+SupplementaryGroups=audio
+# Logging — journald only; no on-disk files (read-only-rootfs friendly).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ledctl
+
+[Install]
+WantedBy=multi-user.target

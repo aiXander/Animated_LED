@@ -9,3 +9,6 @@ build/
 .DS_Store
 
 .claude-costs*
+
+# Secrets — `.env.example` is the template that's checked in.
+.env

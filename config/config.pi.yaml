@@ -6,6 +6,14 @@ server:
   host: 0.0.0.0
   port: 8000
 
+# Shared-password gate for the operator UI (Phase 7/8). Anyone on the venue
+# WiFi can reach the Pi at port 8000, so don't ship without this set. The
+# render loop and DDP path are not affected by auth — this only protects the
+# HTML/REST/WS surface. Comment the whole block out (or delete `password`)
+# during dev for an open server.
+auth:
+  password: kaailed
+
 controllers:
   gledopto_main:
     type: wled-ddp
@@ -52,13 +60,16 @@ transport:
     ws_path: /ws/frames
 
 output:
+  # If WLED's own gamma is on, set this to 1.0 to avoid double-gamma. With
+  # WLED gamma off (recommended), 1.5 keeps the renderer the single source.
   gamma: 1.5
   lut_size: 256
 
 audio:
   enabled: true
   # Set this to the INMP441 ALSA card name once Phase 8 wires it up
-  # (e.g. "snd_rpi_simple_card" or whatever `arecord -l` shows).
+  # (e.g. "snd_rpi_simple_card" or whatever `arecord -l` shows). Picking it
+  # interactively at /audio also persists the chosen name back here.
   device: null
   samplerate: 48000
   blocksize: 128
@@ -76,4 +87,13 @@ agent:
   rate_limit_per_minute: 10
   default_crossfade_seconds: 5.0
   api_key_env: OPENROUTER_API_KEY
-  retry_on_tool_error: 1
+  debug_logging: false
+  retry_on_tool_error: 2
+
+masters:
+  brightness: 1.0
+  speed: 1.0
+  audio_reactivity: 1.0
+  audio_feature_cleaning: 1.0
+  saturation: 1.0
+  freeze: false
