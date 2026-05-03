@@ -162,16 +162,15 @@ def test_cleaning_strength_zero_is_bit_exact_passthrough():
     )
     assert a.state.low_norm == 0.0
     assert a.state.high_norm == 0.0
-    # And a small but non-zero raw signal should NOT be gated — the noise
-    # floor only fires at strength>0.
+    # A small but non-zero raw signal should reach the bindings unchanged.
     quiet = _sine(1000.0, sr, bs, amp=0.02).astype(np.float32)
     src.push(quiet)
     # After 20 loud blocks, the rolling normalizer's ceiling is high, so this
     # quiet block normalises to a small positive value. Cleaner-off => that
     # small value reaches mid_norm verbatim. Cleaner-on (strength=1) would
-    # squash it to 0 via the noise gate.
+    # compress it strongly toward zero via y**p (p > 1).
     assert a.state.mid_norm > 0.0, (
-        f"strength=0 should not gate quiet signals; mid_norm={a.state.mid_norm}"
+        f"strength=0 should not compress quiet signals; mid_norm={a.state.mid_norm}"
     )
 
 

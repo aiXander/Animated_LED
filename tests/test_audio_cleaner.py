@@ -25,19 +25,54 @@ def test_strength_one_passes_full_signal_through():
     assert high > 0.9, f"high={high}"
 
 
-def test_strength_one_gates_below_floor():
-    """Input below every band's noise floor reads as exactly zero.
-
-    Uses 0.02 — below all three floors (~0.05 / 0.04 / 0.03).
+def test_strength_one_smoothly_compresses_small_values():
+    """No hard noise gate — small values are pulled toward zero by a power
+    compression curve (y**p, p > 1). The curve is monotonic and continuous,
+    so a value drifting around the noise level can't flicker on/off the way
+    a hard threshold would. Peaks at y=1 still map to 1; mid-range values
+    are noticeably attenuated.
     """
     c = FeatureCleaner(update_rate_hz=375.0, strength=1.0)
     # Warm up at zero so peak follower isn't carrying state from loud input.
     for _ in range(50):
         c.step(0.0, 0.0, 0.0)
-    low, mid, high = c.step(0.02, 0.02, 0.02)
-    assert low == 0.0
-    assert mid == 0.0
-    assert high == 0.0
+    low, mid, high = c.step(0.2, 0.2, 0.2)
+    # Each band should compress 0.2 measurably, with stronger compression
+    # on highs (p_high > p_low). Outputs strictly less than the input.
+    assert 0.0 < low < 0.2, f"low={low}"
+    assert 0.0 < mid < 0.2, f"mid={mid}"
+    assert 0.0 < high < 0.2, f"high={high}"
+    # Highs compress more than lows by design.
+    assert high < low, f"expected high < low (more compression), got {high} vs {low}"
+
+
+def test_compression_is_monotonic_no_hard_threshold():
+    """A small step in input must produce a small step in output — no
+    discontinuity around any noise level. Sweeps inputs 0.0 → 0.5 in fine
+    steps and asserts the output sequence is monotonically non-decreasing
+    with no jumps that would indicate a threshold.
+    """
+    c = FeatureCleaner(update_rate_hz=375.0, strength=1.0)
+    # Warm up at zero.
+    for _ in range(50):
+        c.step(0.0, 0.0, 0.0)
+    # Sweep slowly upwards; reset the peak follower between samples by
+    # hand-driving it down so each step's output is the rising-edge
+    # (instant-follow) value of the compression curve at that input.
+    outputs = []
+    for v in [i / 100.0 for i in range(0, 51)]:
+        c.reset()
+        low, _mid, _high = c.step(v, 0.0, 0.0)
+        outputs.append(low)
+    # Monotonically non-decreasing.
+    for i in range(1, len(outputs)):
+        assert outputs[i] >= outputs[i - 1] - 1e-9, (
+            f"non-monotonic at i={i}: {outputs[i-1]} → {outputs[i]}"
+        )
+    # No jump bigger than what a smooth curve would give. Largest expected
+    # step on y**1.7 between 0.50 and 0.49 is ~0.020; require well under that.
+    max_step = max(outputs[i] - outputs[i - 1] for i in range(1, len(outputs)))
+    assert max_step < 0.03, f"suspicious jump suggesting threshold: {max_step}"
 
 
 def test_release_decays_after_loud_input():
