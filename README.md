@@ -3,9 +3,9 @@
 Python control layer for a 1800-LED festival install (4 × 450 WS2815 strips fed by a centre-mounted Gledopto / WLED via DDP). Mac-first dev with a browser simulator; same code ships to the Pi at the venue with a one-line config flip.
 
 Design docs in repo root:
-- `Audio-Reactive LED installation.md` — hardware/electrical build (gear, power injection, waterproofing, signal integrity)
+- `Hardware_setup.md` — hardware/electrical build (gear, power injection, waterproofing, signal integrity)
 - `implementation_roadmap.md` — software roadmap, phases 0–9
-- `refactor_LED_control_surface.md` — in-progress refactor that collapses the effect / palette / modulator layer into a single compositional surface (`src/ledctl/surface.py`) plus an operator-owned `MasterControls` set; lands before Phase 7 (mobile UI)
+- `CLAUDE.md` — architecture cheatsheet for AI sessions; current phase status
 
 > **Refactor landed.** The effect / palette / modulator vocabulary now lives in
 > a single file (`src/ledctl/surface.py`) and the `update_leds` shape is a tree
@@ -62,12 +62,15 @@ To sanity-check the DDP packet shape without real hardware, run [`wled-sim`](htt
 ```
 animated_LED/
 ├── config/
-│   ├── config.dev.yaml      # mac/sim defaults (transport.mode = simulator)
-│   ├── config.pi.yaml       # on-site defaults (transport.mode = ddp, host 10.0.0.2)
-│   └── presets/             # YAML preset files: default, chill, peak, cooldown
+│   ├── config.dev.yaml      # mac/sim defaults (transport.mode = simulator, no auth)
+│   ├── config.pi.yaml       # on-site defaults (transport.mode = ddp, host 10.0.0.2, auth.password = CHANGE_ME)
+│   └── presets/             # YAML preset files: default, chill, peak, cooldown, …
+├── deploy/
+│   └── ledctl.service       # systemd unit for the Pi (Phase 8.1)
+├── .env.example             # OPENROUTER_API_KEY template; copy to .env (gitignored)
 ├── src/
 │   ├── ledctl/
-│   │   ├── config.py        # pydantic schema + load_config()
+│   │   ├── config.py        # pydantic schema + load_config() (now incl. AuthConfig)
 │   │   ├── topology.py      # per-LED (strip_id, local_index, global_index, x,y,z)
 │   │   ├── pixelbuffer.py   # float32 working buffer, uint8 + gamma at the boundary
 │   │   ├── surface.py       # primitives + compiler + generate_docs() (the single control surface)
@@ -79,7 +82,8 @@ animated_LED/
 │   │   ├── agent/           # Phase 6: client / session / tool / system_prompt
 │   │   ├── engine.py        # fixed-timestep async render loop, layer mutation API
 │   │   ├── api/
-│   │   │   ├── server.py    # FastAPI: /state, /topology, /surface/primitives, /layers, /masters, /presets, /blackout, /audio*, /ws/frames, / (landing)
+│   │   │   ├── server.py    # FastAPI: /state, /topology, /surface/primitives, /layers, /masters, /presets, /blackout, /audio*, /healthz, /ws/frames, / (landing)
+│   │   │   ├── auth.py      # shared-password gate (Phase 8.1) — middleware + /login + WS pre-accept check
 │   │   │   └── agent.py     # /agent/chat, /agent/sessions/*, /agent/config (Phase 6)
 │   │   └── cli.py           # `ledctl run` / `ledctl show-config`
 │   └── web/
@@ -171,6 +175,9 @@ OpenAPI docs at `http://127.0.0.1:8000/docs`. All JSON.
 | POST    | `/resume`           | leave blackout mode                                       |
 | GET     | `/presets`          | list of preset names found in the presets dir             |
 | POST    | `/presets/{name}`   | crossfade into the preset; body `{crossfade_seconds?}` overrides the preset's own duration |
+| GET     | `/healthz`          | `{ok, fps}` — always public (also when `auth.password` is set), suitable for systemd watchdogs |
+| GET/POST| `/login`            | enabled when `auth.password` is set — form post or `?password=…` query, sets `ledctl_auth` cookie |
+| POST    | `/logout`           | enabled when `auth.password` is set — clears the cookie   |
 
 Quick smoke test from a second terminal while `ledctl run` is up:
 
@@ -184,6 +191,38 @@ curl -s -X PATCH localhost:8000/masters \
   -H 'content-type: application/json' \
   -d '{"brightness":0.6,"speed":0.5}' | jq .
 curl -s -X POST localhost:8000/blackout && curl -s -X POST localhost:8000/resume
+```
+
+---
+
+## Auth (Phase 8.1)
+
+Optional shared-password gate for the entire HTTP/WS surface. Off by default in `config.dev.yaml`; on for `config.pi.yaml` so the venue WiFi can reach `0.0.0.0:8000` without inviting randoms onto the panel.
+
+```yaml
+# config/config.pi.yaml
+auth:
+  password: CHANGE_ME          # null/missing/empty = open server
+  cookie_max_age_days: 30    # how long the browser remembers after login
+```
+
+Behaviour when `auth.password` is set:
+
+- HTML navigation without a cookie → 200 + login page (Tailwind-free, ~2 KB inline).
+- JSON / fetch without a cookie → 401 with `WWW-Authenticate: Cookie`.
+- `?password=…` query on any request → cookie set, request continues. Lets you bookmark `http://ledctl.local:8000/?password=CHANGE_ME` once on the bar phone.
+- `POST /login` with `application/x-www-form-urlencoded` `password=…` → 303 redirect to `/` + cookie. (Form body is parsed manually; no `python-multipart` dep.)
+- `POST /logout` → 303 redirect to `/login` + cookie cleared.
+- WebSocket upgrades (`/ws/frames`, `/ws/state`) check the same cookie and reject with close code **4401** before accepting the upgrade.
+- `/login`, `/logout`, `/healthz` are always public.
+
+Render loop and DDP transport are unaffected — auth only protects the public-facing API surface. Still recommended to keep the Pi behind Tailscale at the venue: the password is anti-randoms-on-LAN, not anti-determined-attacker.
+
+```bash
+# manual smoke test
+curl -i localhost:8000/state                   # → 401 with auth on
+curl -c jar.txt 'localhost:8000/?password=CHANGE_ME' >/dev/null
+curl -b jar.txt localhost:8000/state | jq .fps # → 200
 ```
 
 ---
@@ -491,7 +530,7 @@ For centre-feed all 4 chain heads sit at `x=0`, so the dev/pi configs use `start
 8. **`asyncio.wait_for` on a stop-event** is how the engine paces sleep, so `engine.stop()` returns promptly without waiting for the next tick.
 9. **Engine drops frames rather than spiralling** if it falls behind (`engine.dropped_frames` is exposed via `/state`).
 10. **Default boot stack = single `scroll` layer** (the `default` preset) so the install isn't dark on startup. The API can replace it via `/presets/{name}` or `/effects/{name}` + `DELETE /layer/0`.
-11. **No auth on the REST API yet.** Phase 7 adds a shared password + Tailscale; until then, only bind to `127.0.0.1` (the default).
+11. **Shared-password gate landed early** (Phase 8.1, `src/ledctl/api/auth.py`). Off by default; activate by setting `auth.password` in YAML. `config.pi.yaml` ships with `CHANGE_ME` set; `config.dev.yaml` leaves the block off. Still pair with Tailscale at the venue.
 12. **No `git init`** yet. Repo is plain files; add when the user wants commits.
 13. **No tests for `MultiTransport`** because it instantiates a real DDP socket at app boot — needs a UDP listener fixture. Add when we exercise that path.
 
@@ -511,6 +550,7 @@ For centre-feed all 4 chain heads sit at `x=0`, so the dev/pi configs use `start
 - `tests/test_audio_normalizer.py` — rolling-window auto-gain produces `*_norm` ≈ [0, 1] regardless of input level
 - `tests/test_audio_api.py` — `/audio` endpoints with `AudioCapture.start` monkeypatched: `/state` audio block, device list, persisted YAML write on `/audio/select` (and the previous YAML survives a failed device switch)
 - `tests/test_agent.py` — Phase 6: system-prompt assembly (install + catalogue + audio snapshot), `update_leds` tool round-trip + structured errors, rolling buffer cap + dangling-`tool` heal, per-session rate limit, `/agent/chat` with `AgentClient.complete` mocked (engine actually morphs), 503 on missing API key, 503 when `agent.enabled = false`
+- `tests/test_auth.py` — Phase 8.1: HTML 200 / JSON 401 without cookie, query-string sets cookie, `POST /login` redirects + cookie, `/healthz` always public, WS upgrade rejected without cookie (4401) and accepted with one, dev config remains open
 
 ---
 
@@ -535,5 +575,5 @@ These are project-level reminders to apply when relevant; not everything is wire
 - [x] Phase 5 — audio analysis (capture, RMS / band features, rolling normaliser, `/audio` UI, audio-driven `bindings` on every field generator)
 - [x] Phase 6 — language-driven control panel via OpenRouter (single `update_leds` tool, fresh system prompt with current state + catalogue + audio every turn, rolling buffer, chat panel folded into the landing page)
 - [ ] Phase 7 — operator mobile UI
-- [ ] Phase 8 — Pi cutover
+- [~] Phase 8 — Pi cutover (8.1 digital prep landed: auth gate, `/healthz`, `deploy/ledctl.service`, `config.pi.yaml` synced; INMP441 I²S, Tailscale, overlayfs, on-site bring-up still to go)
 - [ ] Phase 9 — on-site reliability
