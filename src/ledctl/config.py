@@ -66,6 +66,15 @@ class OutputConfig(BaseModel):
             "Set 1.0 if WLED is also gamma-correcting."
         ),
     )
+    lut_size: int = Field(
+        256, ge=16, le=8192,
+        description=(
+            "Entries in the baked palette LUT. Larger = smoother colour ramps "
+            "at the cost of more memory per palette and a one-time bake cost. "
+            "256 is enough for the 1800-LED install; bump to 1024 if visible "
+            "stair-stepping appears on slow scalar gradients."
+        ),
+    )
 
 
 class AudioConfig(BaseModel):
@@ -213,6 +222,16 @@ class MastersConfig(BaseModel):
     brightness: float = Field(1.0, ge=0.0, le=1.0)
     speed: float = Field(1.0, ge=0.0, le=3.0)
     audio_reactivity: float = Field(1.0, ge=0.0, le=3.0)
+    audio_feature_cleaning: float = Field(
+        1.0, ge=0.0, le=1.0,
+        description=(
+            "Strength of the per-band envelope cleaner applied to the "
+            "normalised audio features (low/mid/high). 0 = raw FFT-derived "
+            "values (jittery on live music); 1 = peak-follower with exponential "
+            "release + soft noise gate (kicks ring as discrete pulses, hi-hat "
+            "outliers don't strobe). Adds zero latency on rising edges."
+        ),
+    )
     saturation: float = Field(1.0, ge=0.0, le=1.0)
     freeze: bool = False
 

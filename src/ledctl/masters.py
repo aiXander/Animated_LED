@@ -10,6 +10,7 @@ Bounds (enforced in `clamped()` and at the REST layer):
   - brightness ∈ [0, 1]
   - speed ∈ [0, 3]
   - audio_reactivity ∈ [0, 3]
+  - audio_feature_cleaning ∈ [0, 1]
   - saturation ∈ [0, 1]
   - freeze: bool
 
@@ -32,6 +33,7 @@ class MasterControls:
     brightness: float = 1.0
     speed: float = 1.0
     audio_reactivity: float = 1.0
+    audio_feature_cleaning: float = 1.0
     saturation: float = 1.0
     freeze: bool = False
 
@@ -40,6 +42,7 @@ class MasterControls:
             brightness=_clip(self.brightness, 0.0, 1.0),
             speed=_clip(self.speed, 0.0, 3.0),
             audio_reactivity=_clip(self.audio_reactivity, 0.0, 3.0),
+            audio_feature_cleaning=_clip(self.audio_feature_cleaning, 0.0, 1.0),
             saturation=_clip(self.saturation, 0.0, 1.0),
             freeze=bool(self.freeze),
         )
@@ -50,7 +53,14 @@ class MasterControls:
         Unknown keys raise — the REST layer already filters via pydantic, but
         this guards programmatic callers too.
         """
-        valid = {"brightness", "speed", "audio_reactivity", "saturation", "freeze"}
+        valid = {
+            "brightness",
+            "speed",
+            "audio_reactivity",
+            "audio_feature_cleaning",
+            "saturation",
+            "freeze",
+        }
         unknown = set(patch) - valid
         if unknown:
             raise ValueError(f"unknown master fields: {sorted(unknown)}")

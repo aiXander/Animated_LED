@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .audio.analyser import AudioAnalyser
 from .audio.state import AudioState
 from .config import AppConfig
 from .masters import MasterControls, RenderContext
@@ -16,6 +17,7 @@ from .surface import (
     LayerSpec,
     NodeSpec,
     UpdateLedsSpec,
+    set_lut_size,
 )
 from .topology import Topology
 from .transports.base import Transport
@@ -91,6 +93,9 @@ class Engine:
         self.mixer = Mixer(topology.pixel_count)
         self.target_fps = cfg.project.target_fps
         self.gamma = cfg.output.gamma
+        # Palette LUTs bake on first compile (after this returns), so set the
+        # configured size before any layer pushes happen.
+        set_lut_size(cfg.output.lut_size)
         self.fps: float = 0.0
         self.frame_count: int = 0
         self.dropped_frames: int = 0
@@ -100,12 +105,25 @@ class Engine:
         self._stop = asyncio.Event()
         self.calibration: CalibrationState | None = None
         self.audio_state: AudioState | None = None
+        self.audio_analyser: AudioAnalyser | None = None
         self.masters: MasterControls = masters or MasterControls()
 
-    def attach_audio(self, state: AudioState | None) -> None:
-        """Make an AudioState visible to audio_band primitives via ctx."""
+    def attach_audio(
+        self,
+        state: AudioState | None,
+        analyser: AudioAnalyser | None = None,
+    ) -> None:
+        """Make an AudioState visible to audio_band primitives via ctx.
+
+        The optional `analyser` is the live-music feature pipeline; when
+        attached, the engine pushes `masters.audio_feature_cleaning` into the
+        analyser's cleaner each tick so the operator slider feels live.
+        """
         self.audio_state = state
         self.topology.audio_state = state
+        self.audio_analyser = analyser
+        if analyser is not None:
+            analyser.cleaning_strength = self.masters.audio_feature_cleaning
 
     def set_masters(self, **patch: object) -> MasterControls:
         """Apply a partial master update; returns the post-clamp result."""
@@ -322,6 +340,14 @@ class Engine:
                 # Advance effective_t by dt × speed; freeze short-circuits to 0.
                 speed = 0.0 if self.masters.freeze else float(self.masters.speed)
                 self.effective_t += dt_wall * speed
+
+                # Publish operator-tunable audio cleaning strength to the
+                # analyser. The cleaner reads it once per audio block (atomic
+                # float assignment in CPython, no lock needed).
+                if self.audio_analyser is not None:
+                    self.audio_analyser.cleaning_strength = (
+                        self.masters.audio_feature_cleaning
+                    )
 
                 ctx = RenderContext(
                     t=self.effective_t,

@@ -396,6 +396,11 @@
           <span class="v" id="m-audio-reactivity-v">1.00</span>
         </div>
         <div class="master-row">
+          <label for="m-audio-feature-cleaning">audio cleanup</label>
+          <input type="range" id="m-audio-feature-cleaning" min="0" max="1" step="0.01" value="1" />
+          <span class="v" id="m-audio-feature-cleaning-v">1.00</span>
+        </div>
+        <div class="master-row">
           <label for="m-saturation">saturation</label>
           <input type="range" id="m-saturation" min="0" max="1" step="0.01" value="1" />
           <span class="v" id="m-saturation-v">1.00</span>
@@ -517,10 +522,20 @@
   const calText = $("cal-text");
   const calClear = $("cal-clear");
 
-  const LED_SIZE = 6;
-  const LED_HALF = LED_SIZE / 2;
+  // Per-LED rendering, NO interpolation: each LED is drawn as a discrete
+  // axis-aligned rectangle in DEVICE-pixel coordinates (the dpr transform is
+  // dropped for the LED loop), so every edge lands on a whole device pixel
+  // and the canvas never edge-AAs — no soft borders, no colour bleed between
+  // neighbours. Each LED is centred on its projected position; along-strip
+  // extent is `round(spacing * LED_WIDTH_SCALE)`.
+  const STRIP_THICKNESS  = 12;    // px, perpendicular to the strip
+  const LED_WIDTH_SCALE  = 1.0;   // along the strip, as fraction of LED spacing
+                                  // (1.0 = edge-to-edge tile, no gaps)
+  const HOVER_DOT = 8;
 
   let leds = [];
+  let strips = [];
+  let ledRects = null;      // Int32Array length = 4 * leds.length
   let bboxMin = [0, 0, 0];
   let bboxMax = [1, 1, 1];
   let lastFrame = null;
@@ -531,9 +546,11 @@
   let mouseAbsX = 0, mouseAbsY = 0;
   let mySolo = null;
   let canvasW = 1, canvasH = 1;
+  let canvasDpr = 1;
 
   function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
+    canvasDpr = dpr;
     const rect = canvas.getBoundingClientRect();
     canvasW = Math.max(1, Math.floor(rect.width));
     canvasH = Math.max(1, Math.floor(rect.height));
@@ -571,6 +588,54 @@
       projected[i * 2]     = cx + (leds[i].position[0] - ox) * s;
       projected[i * 2 + 1] = cy - (leds[i].position[1] - oy) * s;
     }
+    // Build per-LED INTEGER rects so fillRect never lands on a fractional
+    // coord (fractional fillRect causes edge anti-aliasing that visibly
+    // blends adjacent LED colours). Each LED's left edge = round(its float
+    // position); width = next LED's rounded position − this one's, so
+    // adjacent rects tile exactly. Strips are treated as axis-aligned along
+    // whichever axis dominates (the install's strips are horizontal); for
+    // arbitrary diagonal strips this would approximate.
+    ledRects = new Int32Array(leds.length * 4);
+    const dpr = canvasDpr;
+    const thickDev = Math.max(1, Math.round(STRIP_THICKNESS * dpr));
+    const halfThickDev = (thickDev / 2) | 0;
+    strips.forEach(strip => {
+      const off = strip.pixel_offset;
+      const n = strip.pixel_count;
+      if (n === 0) return;
+      const sx = projected[off * 2];
+      const sy = projected[off * 2 + 1];
+      const ex = projected[(off + n - 1) * 2];
+      const ey = projected[(off + n - 1) * 2 + 1];
+      const dx = ex - sx;
+      const dy = ey - sy;
+      const horizontal = Math.abs(dx) >= Math.abs(dy);
+      if (horizontal) {
+        const yTopDev = Math.round(sy * dpr) - halfThickDev;
+        const stepF = n > 1 ? dx / (n - 1) : 0;
+        const ledWdev = Math.max(1, Math.round(Math.abs(stepF || 1) * LED_WIDTH_SCALE * dpr));
+        for (let i = 0; i < n; i++) {
+          const cxDev = (sx + stepF * i) * dpr;
+          const idx = (off + i) * 4;
+          ledRects[idx]     = Math.round(cxDev - ledWdev / 2);
+          ledRects[idx + 1] = yTopDev;
+          ledRects[idx + 2] = ledWdev;
+          ledRects[idx + 3] = thickDev;
+        }
+      } else {
+        const xLeftDev = Math.round(sx * dpr) - halfThickDev;
+        const stepF = n > 1 ? dy / (n - 1) : 0;
+        const ledHdev = Math.max(1, Math.round(Math.abs(stepF || 1) * LED_WIDTH_SCALE * dpr));
+        for (let i = 0; i < n; i++) {
+          const cyDev = (sy + stepF * i) * dpr;
+          const idx = (off + i) * 4;
+          ledRects[idx]     = xLeftDev;
+          ledRects[idx + 1] = Math.round(cyDev - ledHdev / 2);
+          ledRects[idx + 2] = thickDev;
+          ledRects[idx + 3] = ledHdev;
+        }
+      }
+    });
   }
 
   function pickLED() {
@@ -589,24 +654,30 @@
   function draw() {
     ctx.fillStyle = "#050505";
     ctx.fillRect(0, 0, canvasW, canvasH);
-    if (leds.length && lastFrame && projected) {
-      for (let i = 0; i < leds.length; i++) {
-        const r = lastFrame[i * 3];
-        const g = lastFrame[i * 3 + 1];
-        const b = lastFrame[i * 3 + 2];
-        const x = projected[i * 2];
-        const y = projected[i * 2 + 1];
-        ctx.fillStyle = `rgb(${r},${g},${b})`;
-        ctx.fillRect(x - LED_HALF, y - LED_HALF, LED_SIZE, LED_SIZE);
+    if (ledRects && lastFrame && projected) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
+      // Drop the dpr transform: ledRects are device-pixel ints, so each
+      // fillRect lands exactly on whole device pixels and the canvas can't
+      // edge-AA the LEDs into a soft border or bleed across neighbours.
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      const n = leds.length;
+      for (let i = 0; i < n; i++) {
+        const src = i * 3;
+        const idx = i * 4;
+        ctx.fillStyle = `rgb(${lastFrame[src]},${lastFrame[src + 1]},${lastFrame[src + 2]})`;
+        ctx.fillRect(ledRects[idx], ledRects[idx + 1], ledRects[idx + 2], ledRects[idx + 3]);
       }
+      ctx.setTransform(canvasDpr, 0, 0, canvasDpr, 0, 0);
       const hit = pickLED();
       if (hit >= 0) {
         const x = projected[hit * 2], y = projected[hit * 2 + 1];
         ctx.strokeStyle = "#fbbf24";
         ctx.lineWidth = 1;
         ctx.strokeRect(
-          x - LED_HALF - 2, y - LED_HALF - 2,
-          LED_SIZE + 4, LED_SIZE + 4
+          x - HOVER_DOT / 2 - 2, y - HOVER_DOT / 2 - 2,
+          HOVER_DOT + 4, HOVER_DOT + 4,
         );
         const led = leds[hit];
         tooltip.style.display = "block";
@@ -899,10 +970,11 @@
   // Local edits PATCH /masters; incoming /ws/state echoes back and would
   // fight a dragging slider, so suppress sync for ~400ms after user input.
   const MASTER_FIELDS = [
-    { id: "m-brightness",       field: "brightness" },
-    { id: "m-speed",            field: "speed" },
-    { id: "m-audio-reactivity", field: "audio_reactivity" },
-    { id: "m-saturation",       field: "saturation" },
+    { id: "m-brightness",            field: "brightness" },
+    { id: "m-speed",                 field: "speed" },
+    { id: "m-audio-reactivity",      field: "audio_reactivity" },
+    { id: "m-audio-feature-cleaning", field: "audio_feature_cleaning" },
+    { id: "m-saturation",            field: "saturation" },
   ];
   const lastMasterEdit = new Map();
   const pendingMasters = {};
@@ -1052,6 +1124,7 @@
     const r = await fetch("/topology");
     const topo = await r.json();
     leds = topo.leds;
+    strips = topo.strips || [];
     bboxMin = topo.bbox_min;
     bboxMax = topo.bbox_max;
     $("leds").textContent = topo.pixel_count;

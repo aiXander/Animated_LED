@@ -134,6 +134,7 @@ class MastersPatchRequest(BaseModel):
     brightness: float | None = Field(None, ge=0.0, le=1.0)
     speed: float | None = Field(None, ge=0.0, le=3.0)
     audio_reactivity: float | None = Field(None, ge=0.0, le=3.0)
+    audio_feature_cleaning: float | None = Field(None, ge=0.0, le=1.0)
     saturation: float | None = Field(None, ge=0.0, le=1.0)
     freeze: bool | None = None
     persist: bool = False
@@ -204,6 +205,7 @@ def _masters_from_config(cfg: AppConfig) -> MasterControls:
         brightness=m.brightness,
         speed=m.speed,
         audio_reactivity=m.audio_reactivity,
+        audio_feature_cleaning=m.audio_feature_cleaning,
         saturation=m.saturation,
         freeze=m.freeze,
     )
@@ -233,7 +235,7 @@ def create_app(
     audio: AudioCapture = _build_capture(cfg.audio)
     if cfg.audio.enabled:
         audio.start()
-    engine.attach_audio(audio.state)
+    engine.attach_audio(audio.state, audio.analyser)
 
     state_clients: set[WebSocket] = set()
 
@@ -620,10 +622,10 @@ def create_app(
         if not new_cap.state.enabled:
             err = new_cap.state.error or "audio capture failed to start"
             prev.start()
-            engine.attach_audio(prev.state)
+            engine.attach_audio(prev.state, prev.analyser)
             raise HTTPException(status_code=422, detail=err)
         app.state.audio = new_cap
-        engine.attach_audio(new_cap.state)
+        engine.attach_audio(new_cap.state, new_cap.analyser)
 
         saved_to: str | None = None
         if body.persist and app.state.config_path is not None:

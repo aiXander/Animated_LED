@@ -50,6 +50,7 @@ class PresetMasters(BaseModel):
     brightness: float = Field(1.0, ge=0.0, le=1.0)
     speed: float = Field(1.0, ge=0.0, le=3.0)
     audio_reactivity: float = Field(1.0, ge=0.0, le=3.0)
+    audio_feature_cleaning: float = Field(1.0, ge=0.0, le=1.0)
     saturation: float = Field(1.0, ge=0.0, le=1.0)
     freeze: bool = False
 

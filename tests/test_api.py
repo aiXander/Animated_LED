@@ -223,6 +223,7 @@ def test_get_masters_returns_defaults(client: TestClient):
         "brightness": 1.0,
         "speed": 1.0,
         "audio_reactivity": 1.0,
+        "audio_feature_cleaning": 1.0,
         "saturation": 1.0,
         "freeze": False,
     }

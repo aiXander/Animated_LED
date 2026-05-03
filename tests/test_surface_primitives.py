@@ -15,6 +15,7 @@ from ledctl.surface import (
     CompileError,
     LayerSpec,
     NodeSpec,
+    _lut_from_hsv_stops,
     _lut_from_named,
     _lut_from_stops,
     compile_layers,
@@ -48,8 +49,8 @@ def test_registry_contains_core_primitives():
     expected = {
         "wave", "radial", "noise", "sparkles", "lfo", "audio_band",
         "envelope", "constant", "palette_named", "palette_stops",
-        "palette_lookup", "solid", "mix", "mul", "add", "screen",
-        "max", "min", "remap", "threshold", "trail", "position",
+        "palette_hsv", "palette_lookup", "solid", "mix", "mul", "add",
+        "screen", "max", "min", "remap", "threshold", "trail", "position",
         "gradient", "clamp", "range_map",
     }
     assert expected.issubset(set(REGISTRY))
@@ -89,7 +90,38 @@ def test_palette_stops_interp():
         {"pos": 0.0, "color": "#000000"},
         {"pos": 1.0, "color": "#ffffff"},
     ])
-    assert 0.4 < lut[128, 0] < 0.6
+    assert 0.4 < lut[LUT_SIZE // 2, 0] < 0.6
+
+
+def test_palette_lookup_respects_configured_lut_size(topo: Topology):
+    # The palette LUT size is configurable (`output.lut_size`). On a smooth
+    # 2-stop black->white gradient across 1800 pixels, the per-LED quantization
+    # ceiling is exactly LUT_SIZE: each LED snaps to one of LUT_SIZE entries.
+    # Bumping the LUT past the default must lift that ceiling, restoring
+    # smoothness when an operator turns the knob up to chase visible banding.
+    from ledctl.surface import set_lut_size
+
+    def distinct_reds() -> int:
+        layers = compile_layers([LayerSpec(node=_wrap_palette_lookup(
+            {"kind": "gradient", "params": {"axis": "x"}},
+            palette={"kind": "palette_stops", "params": {"stops": [
+                {"pos": 0.0, "color": "#000000"},
+                {"pos": 1.0, "color": "#ffffff"},
+            ]}},
+        ))], topo)
+        out = layers[0].node.render(
+            RenderContext(t=0.0, wall_t=0.0, masters=MasterControls())
+        )
+        return len(np.unique(out[:, 0]))
+
+    original = LUT_SIZE
+    try:
+        set_lut_size(256)
+        assert distinct_reds() <= 256
+        set_lut_size(1024)
+        assert distinct_reds() > 256
+    finally:
+        set_lut_size(original)
 
 
 def test_palette_named_palettes_all_compile():
@@ -97,6 +129,81 @@ def test_palette_named_palettes_all_compile():
         lut = _lut_from_named(name)
         assert lut.shape == (LUT_SIZE, 3)
         assert (lut >= 0.0).all() and (lut <= 1.0 + 1e-5).all()
+
+
+def test_rainbow_uses_hsv_uniform_brightness():
+    # rainbow now bakes via HSV interp at S=V=1, so every entry should sit on
+    # the saturated chromatic surface — max-channel == 1 across the LUT, no
+    # muddy/dim midpoints between complementary colours that the old RGB
+    # lerp produced (e.g. red->cyan midpoint was grey 0.5,0.5,0.5).
+    lut = _lut_from_named("rainbow")
+    max_channel = lut.max(axis=1)
+    min_channel = lut.min(axis=1)
+    assert max_channel.min() > 0.99, (
+        f"rainbow has dim entry: min(max-channel)={max_channel.min():.3f}"
+    )
+    assert min_channel.min() < 0.01, (
+        f"rainbow desaturated: max(min-channel)={min_channel.max():.3f} "
+        f"— a saturated colour should always have at least one near-zero channel"
+    )
+
+
+def test_palette_hsv_endpoint_colours_match_hue_degrees():
+    lut = _lut_from_hsv_stops([
+        {"pos": 0.0, "hue": 0.0},
+        {"pos": 1.0, "hue": 360.0},
+    ])
+    assert np.allclose(lut[0], [1.0, 0.0, 0.0], atol=1e-3)   # red at hue 0
+    assert np.allclose(lut[LUT_SIZE // 6], [1.0, 1.0, 0.0], atol=2e-2)   # yellow ~60
+    assert np.allclose(lut[LUT_SIZE // 3], [0.0, 1.0, 0.0], atol=2e-2)   # green ~120
+    assert np.allclose(lut[LUT_SIZE // 2], [0.0, 1.0, 1.0], atol=2e-2)   # cyan ~180
+    assert np.allclose(lut[(2 * LUT_SIZE) // 3], [0.0, 0.0, 1.0], atol=2e-2)  # blue ~240
+
+
+def test_palette_hsv_signed_hue_picks_direction():
+    # 0->180 sweeps through yellow/green; 0->-180 sweeps through magenta/blue.
+    forward = _lut_from_hsv_stops([
+        {"pos": 0.0, "hue": 0.0}, {"pos": 1.0, "hue": 180.0},
+    ])
+    reverse = _lut_from_hsv_stops([
+        {"pos": 0.0, "hue": 0.0}, {"pos": 1.0, "hue": -180.0},
+    ])
+    mid = LUT_SIZE // 2
+    # forward midpoint is hue 90 (yellow-green) — green > blue
+    assert forward[mid, 1] > forward[mid, 2]
+    # reverse midpoint is hue -90 = 270 (magenta-blue) — blue > green
+    assert reverse[mid, 2] > reverse[mid, 1]
+
+
+def test_palette_hsv_compiles_via_primitive(topo: Topology):
+    layers = compile_layers([LayerSpec(node=NodeSpec(
+        kind="palette_lookup",
+        params={
+            "scalar": {"kind": "constant", "params": {"value": 0.0}},
+            "palette": {"kind": "palette_hsv", "params": {"stops": [
+                {"pos": 0.0, "hue": 240.0},
+                {"pos": 1.0, "hue": 360.0},
+            ]}},
+        },
+    ))], topo)
+    out = layers[0].node.render(
+        RenderContext(t=0.0, wall_t=0.0, masters=MasterControls())
+    )
+    # constant 0 → first stop (hue 240 = blue)
+    assert np.allclose(out[0], [0.0, 0.0, 1.0], atol=2e-2)
+
+
+def test_palette_hsv_val_below_one_dims_palette():
+    bright = _lut_from_hsv_stops([
+        {"pos": 0.0, "hue": 0.0, "val": 1.0},
+        {"pos": 1.0, "hue": 360.0, "val": 1.0},
+    ])
+    dim = _lut_from_hsv_stops([
+        {"pos": 0.0, "hue": 0.0, "val": 0.5},
+        {"pos": 1.0, "hue": 360.0, "val": 0.5},
+    ])
+    assert dim.max() < bright.max()
+    assert np.allclose(dim, bright * 0.5, atol=1e-3)
 
 
 def test_invalid_hex_in_stops_rejected(topo: Topology):
