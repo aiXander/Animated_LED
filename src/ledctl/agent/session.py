@@ -102,9 +102,6 @@ class SessionStore:
     def delete(self, session_id: str) -> bool:
         return self._sessions.pop(session_id, None) is not None
 
-    def list_ids(self) -> list[str]:
-        return list(self._sessions.keys())
-
 
 def _new_session_id() -> str:
     return uuid.uuid4().hex

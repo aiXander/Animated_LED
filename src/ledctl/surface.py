@@ -631,11 +631,6 @@ def compile_layers(
 # ---------------------------------------------------------------------------
 
 
-def _kind_priority(kind: str) -> int:
-    # Higher = wins. rgb_field beats scalar_field beats scalar_t.
-    return {"scalar_t": 0, "scalar_field": 1, "rgb_field": 2}.get(kind, -1)
-
-
 def _primitives_producing(kind: str) -> list[str]:
     """Return the kinds of primitives that produce `kind` directly.
 
