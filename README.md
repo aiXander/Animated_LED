@@ -1,5 +1,7 @@
 # ledctl — audio-reactive LED installation
 
+![ledctl browser UI — LED simulator, layer stack, masters, chat panel](docs/ui-screenshot.jpg)
+
 Python control layer for a 1800-LED festival install (4 × 450 WS2815 strips fed by a centre-mounted Gledopto / WLED via DDP). Mac-first dev with a browser simulator; same code ships to the Pi at the venue with a one-line config flip.
 
 Design docs in repo root:
