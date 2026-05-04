@@ -1,22 +1,24 @@
 # ledctl — audio-reactive LED installation
 
+# Wifi: WLED-AP
+pw: wled1234
 
-# SSH into the Pi from Mac:
-ssh xander@XanderPi.local
-CHANGE_ME
-
-# Connect to Pi server UI:
-http://****:8000/?password=CHANGE_ME
 
 # Copy files to the Pi:
 scp .env xander@****:/home/xander/audio_LED/Animated_LED
 
-# Wifi: WLED-AP
-pw: wled1234
+-----
+
+# SSH into the Pi from Mac:
+ssh xander@XanderPi.local
 
 # Fire up the server:
 cd /home/xander/audio_LED/Animated_LED
 .venv/bin/ledctl run --config config/config.pi.yaml
+
+# Connect to Pi server UI:
+http://****:8000/?password=CHANGE_ME
+
 
 # Connect to Gledopto config:
 ssh -L 8080:10.0.0.2:80 xander@XanderPi.local
