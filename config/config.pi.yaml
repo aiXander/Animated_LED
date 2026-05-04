@@ -55,7 +55,10 @@ strips:
     geometry: { type: line, start: [0.0, -0.5, 0.0], end: [15.0, -0.5, 0.0] }
 
 transport:
-  mode: ddp
+  # `multi` fans every frame to both the browser simulator (so the operator UI
+  # at :8000 keeps showing a live preview) and the Gledopto over DDP. Switch
+  # to `ddp` only if the sim WS broadcast ever shows up as a measurable cost.
+  mode: multi
   sim:
     ws_path: /ws/frames
 
@@ -67,9 +70,12 @@ output:
 
 audio:
   enabled: true
-  # Set this to the INMP441 ALSA card name once Phase 8 wires it up
-  # (e.g. "snd_rpi_simple_card" or whatever `arecord -l` shows). Picking it
-  # interactively at /audio also persists the chosen name back here.
+  # `null` = system default input (ALSA's `default` device). On the Pi this
+  # picks up whatever is configured as the default capture source — the
+  # built-in/USB mic is fine for now. Once the INMP441 I²S mic is wired up,
+  # set this to its ALSA card name (e.g. "snd_rpi_simple_card", or whatever
+  # `arecord -l` reports). Picking interactively at /audio persists the
+  # chosen name back here.
   device: null
   samplerate: 48000
   blocksize: 128
