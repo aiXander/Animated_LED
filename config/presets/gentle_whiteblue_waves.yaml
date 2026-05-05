@@ -29,4 +29,3 @@ layers:
             color: '#4090c0'
           - pos: 1
             color: '#ffffff'
-      brightness: 0.8

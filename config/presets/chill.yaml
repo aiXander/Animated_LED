@@ -22,13 +22,10 @@ layers:
             cross_phase: [0.0, 0.05, 0.0]
         palette: ocean
         brightness:
-          kind: range_map
+          kind: pulse
           params:
-            input: {kind: audio_band, params: {band: low}}
-            in_min: 0.0
-            in_max: 1.0
-            out_min: 0.6
-            out_max: 1.0
+            by: { kind: audio_band, params: { band: low } }
+            floor: 0.6
   - blend: add
     opacity: 0.5
     node:

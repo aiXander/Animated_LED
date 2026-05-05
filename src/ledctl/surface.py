@@ -887,6 +887,65 @@ class RangeMap(Primitive):
         return _CompiledRangeMap(child, params)
 
 
+class _PulseParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    by: Any = Field(
+        ...,
+        description=(
+            "Modulator (scalar_t / scalar_field). Usually `audio_band` for "
+            "audio-reactive pulsing or `lfo` for shape-driven breathing. "
+            "Inputs are clipped to [0, 1] before scaling."
+        ),
+    )
+    floor: float = Field(
+        0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Always-visible baseline in [0, 1]. Output = floor when `by` is "
+            "0; output = 1.0 when `by` is at peak. floor=0 → full dynamic "
+            "range (silence = dark); floor=0.6 → gentle pulse with the "
+            "effect always visible; floor=0.9 → barely-there reactivity. "
+            "Pick higher floors when you need the layer to stay legible "
+            "during quiet passages."
+        ),
+    )
+
+
+class _CompiledPulse(CompiledNode):
+    def __init__(self, child: CompiledNode, floor: float):
+        self._child = child
+        self._floor = float(floor)
+        self._span = 1.0 - self._floor
+        self.output_kind = child.output_kind  # type: ignore[assignment]
+
+    def render(self, ctx: RenderContext) -> Any:
+        v = self._child.render(ctx)
+        if isinstance(v, np.ndarray):
+            return self._floor + self._span * np.clip(v, 0.0, 1.0)
+        return self._floor + self._span * _clip_scalar(float(v), 0.0, 1.0)
+
+
+@primitive
+class Pulse(Primitive):
+    kind = "pulse"
+    output_kind = None
+    summary = (
+        "Sugar for the canonical audio-reactive shape: `floor + (1-floor) * "
+        "clip(by, 0, 1)`. Output is `floor` when `by` is 0 and 1.0 at peak — "
+        "keeps the effect visible on silence while letting peaks reach "
+        "100%. Two params instead of `range_map`'s five. Drop into "
+        "`palette_lookup.brightness`, `sparkles.brightness`, or any other "
+        "scalar slot you'd otherwise feed a raw modulator into."
+    )
+    Params = _PulseParams
+
+    @classmethod
+    def compile(cls, params, topology, compiler):
+        child = compiler.compile_child(params.by, expect="scalar_field", path="by")
+        return _CompiledPulse(child, params.floor)
+
+
 # ---------------------------------------------------------------------------
 # Primitives — scalar_field (spatial)
 # ---------------------------------------------------------------------------
@@ -1365,8 +1424,10 @@ class _PaletteHsvStop(BaseModel):
     val: float = Field(
         1.0, ge=0.0, le=1.0,
         description=(
-            "HSV value/brightness (default 1 = max). Keep at 1 if you want "
-            "the master + per-LED brightness controls to do all the dimming."
+            "HSV value (default 1 = max). Use < 1 only when you want this "
+            "specific stop in the palette to be intrinsically darker than "
+            "another. Layer opacity and the master brightness slider handle "
+            "runtime dimming — there is no per-primitive brightness knob."
         ),
     )
 
@@ -1395,8 +1456,8 @@ class PaletteHsv(Primitive):
         "LUT walks the chromatic surface so brightness stays uniform and "
         "complementary-colour midpoints stay saturated (no muddy/grey runs "
         "you'd get from RGB-space lerp). Prefer this over `palette_stops` "
-        "whenever the palette is meant to encode colour and you want "
-        "master/per-LED brightness controls to handle all the dimming."
+        "whenever the palette is meant to encode colour at uniform brightness — "
+        "the master slider and layer opacity handle dimming."
     )
     Params = _PaletteHsvParams
 
@@ -1422,7 +1483,13 @@ class _PaletteLookupParams(BaseModel):
     )
     brightness: Any = Field(
         1.0,
-        description="Multiplier on output (scalar_t or scalar_field). Default 1.",
+        description=(
+            "Brightness multiplier in [0, 1]. Default 1.0 = full. For "
+            "audio-reactive pulsing, use `pulse(by=audio_band(low|mid|high), "
+            "floor=...)` so silence keeps a baseline and peaks reach 1.0. "
+            "Avoid raw `audio_band` (silence = dark) and avoid static < 1 "
+            "(use layer `opacity` for static dimming, master for global)."
+        ),
     )
     hue_shift: Any = Field(
         0.0,
@@ -1482,8 +1549,9 @@ class PaletteLookup(Primitive):
     kind = "palette_lookup"
     output_kind = "rgb_field"
     summary = (
-        "Sample a palette LUT with a scalar field. Per-LED brightness and "
-        "hue_shift are accepted (broadcast scalar_t for whole-frame variation)."
+        "Sample a palette LUT with a scalar field. For audio reactivity wrap "
+        "the modulator in `pulse(by, floor)` and pass that to `brightness` — "
+        "static dimming is owned by layer `opacity` and the master slider."
     )
     Params = _PaletteLookupParams
 
@@ -1569,7 +1637,13 @@ class _SparklesParams(BaseModel):
     )
     brightness: Any = Field(
         1.0,
-        description="Output multiplier (scalar_t or scalar_field).",
+        description=(
+            "Brightness multiplier in [0, 1]. Default 1.0 = full. For "
+            "audio-reactive sparkles, use `pulse(by=audio_band(...), "
+            "floor=...)` so silent passages still twinkle and peaks pop. "
+            "Avoid raw `audio_band` (silence = invisible) and avoid static "
+            "< 1 (use layer `opacity` for static dimming)."
+        ),
     )
     seed: int | None = Field(None, description="RNG seed; None = unpredictable.")
 
@@ -1652,7 +1726,8 @@ class Sparkles(Primitive):
         "Poisson-stamped twinkles with exponential decay. Layer leaf — each "
         "stamp samples a colour from the palette window (default white). "
         "Stack via blend modes (`add` / `screen` to overlay a base layer). "
-        "Stateful, uses ctx.t (so freeze halts decay too)."
+        "Stateful, uses ctx.t (so freeze halts decay too). For audio-reactive "
+        "twinkle, set `brightness` to `pulse(audio_band(...), floor)`."
     )
     Params = _SparklesParams
 
@@ -1963,13 +2038,10 @@ EXAMPLE_TREES: dict[str, dict[str, Any]] = {
                 },
             },
             "brightness": {
-                "kind": "range_map",
+                "kind": "pulse",
                 "params": {
-                    "input": {"kind": "audio_band", "params": {"band": "low"}},
-                    "in_min": 0.0,
-                    "in_max": 1.0,
-                    "out_min": 0.5,
-                    "out_max": 1.0,
+                    "by": {"kind": "audio_band", "params": {"band": "low"}},
+                    "floor": 0.6,
                 },
             },
         },
@@ -1980,13 +2052,10 @@ EXAMPLE_TREES: dict[str, dict[str, Any]] = {
             "scalar": {"kind": "wave", "params": {"axis": "x", "speed": 1.5, "wavelength": 0.5}},
             "palette": "fire",
             "brightness": {
-                "kind": "range_map",
+                "kind": "pulse",
                 "params": {
-                    "input": {"kind": "audio_band", "params": {"band": "low"}},
-                    "in_min": 0.0,
-                    "in_max": 1.0,
-                    "out_min": 0.3,
-                    "out_max": 1.0,
+                    "by": {"kind": "audio_band", "params": {"band": "low"}},
+                    "floor": 0.3,
                 },
             },
         },
@@ -1997,8 +2066,11 @@ EXAMPLE_TREES: dict[str, dict[str, Any]] = {
             "scalar": {"kind": "constant", "params": {"value": 0.5}},
             "palette": "mono_ff0000",
             "brightness": {
-                "kind": "lfo",
-                "params": {"shape": "sin", "period_s": 0.8},
+                "kind": "pulse",
+                "params": {
+                    "by": {"kind": "lfo", "params": {"shape": "sin", "period_s": 0.8}},
+                    "floor": 0.4,
+                },
             },
         },
     },
@@ -2047,9 +2119,20 @@ EXAMPLE_TREES: dict[str, dict[str, Any]] = {
 
 ANTI_PATTERNS: list[str] = [
     "There is no top-level `bindings` — modulation lives ON the parameter as "
-    "a node. To modulate brightness, set `palette_lookup.brightness` to an "
-    "audio_band/lfo node (optionally wrapped in `range_map` for floor/ceiling), "
-    "not a `bindings.brightness` block.",
+    "a node. To modulate brightness, set `palette_lookup.brightness` (or "
+    "`sparkles.brightness`) to a `pulse(by, floor)` node. There is no "
+    "`bindings.brightness` block.",
+    "Audio-reactive brightness wants `pulse(by=audio_band(...), floor=…)`, "
+    "NOT a raw `audio_band`. Raw `audio_band` returns 0 on silence so the "
+    "effect goes invisible whenever the music dips; `pulse` gives you a "
+    "configurable floor (effect stays visible) while peaks still reach 1.0. "
+    "Pick floor ≈ 0.5–0.7 for a clear pulse, ≈ 0.3 for dramatic dynamics, "
+    "≈ 0.9 for very subtle reactivity, 0.0 only when the layer is *meant* "
+    "to disappear on silence (e.g. an additive accent on top of another "
+    "always-visible base layer).",
+    "Static `brightness < 1` is wrong — that bakes a ceiling that prevents "
+    "peaks reaching 100%. For static dimming, use the layer's `opacity`; "
+    "for global dimming, the master brightness slider.",
     "`palette` is itself a node: bare strings (\"fire\") are sugar for "
     "`palette_named`. There is no `palette: \"red\"` — use `mono_ff0000`.",
     "`mix` is polymorphic; do not reach for a separate `palette_mix` — "

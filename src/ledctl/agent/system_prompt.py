@@ -81,9 +81,9 @@ def _summarise_audio(audio_state: AudioState | None) -> str:
         return (
             "AUDIO\n"
             "External audio-feature server is disconnected. audio_band "
-            "primitives will return 0; prefer non-reactive specs (constant "
-            "brightness, lfo modulators) until the operator restarts it from "
-            "the audio panel."
+            "primitives will return 0 — leave `brightness` at its default "
+            "(1.0) or modulate it with an `lfo` instead, until the operator "
+            "restarts the audio server from the audio panel."
         )
     bands = (
         (audio_state.low_lo, audio_state.low_hi),

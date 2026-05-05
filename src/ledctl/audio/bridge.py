@@ -26,6 +26,7 @@ import contextlib
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -33,6 +34,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from ..config import AudioServerConfig
@@ -50,6 +52,29 @@ DEFAULT_STALE_AFTER_S: float = 1.5
 # log a "failed to start" warning. We don't actually block startup on this —
 # the LED render loop is decoupled.
 DEFAULT_BOOT_TIMEOUT_S: float = 5.0
+
+
+def _audio_server_already_running(ui_url: str, timeout_s: float = 0.5) -> bool:
+    """TCP-probe the audio-server's UI port to detect a pre-existing instance.
+
+    The audio-server binds an HTTP/WS UI (default 8766). If something is
+    already listening there we assume the server is up — spawning a second
+    one would just race for the same audio device and UI port. Returns False
+    on any error so detection failures fall through to the normal spawn path.
+    """
+    try:
+        parsed = urlparse(ui_url)
+    except Exception:  # noqa: BLE001
+        return False
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port
+    if port is None:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
 
 
 class OscFeatureListener:
@@ -385,7 +410,14 @@ class AudioBridge:
         # Listener first so we don't miss the audio-server's first /audio/meta.
         self.listener.start()
         if self.supervisor is not None:
-            self.supervisor.start()
+            if _audio_server_already_running(self.ui_url):
+                log.info(
+                    "audio-server already running at %s — attaching to it "
+                    "instead of spawning a new subprocess",
+                    self.ui_url,
+                )
+            else:
+                self.supervisor.start()
 
     def stop(self) -> None:
         if self.supervisor is not None:
