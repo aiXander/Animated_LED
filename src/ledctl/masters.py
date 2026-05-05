@@ -7,11 +7,16 @@ loop reads them through `RenderContext`; the REST surface in `api/server.py`
 exposes `GET /masters` and `PATCH /masters` for the UI.
 
 Bounds (enforced in `clamped()` and at the REST layer):
-  - brightness ∈ [0, 1]
+  - brightness ∈ [0, 2]
   - speed ∈ [0, 3]
   - audio_reactivity ∈ [0, 3]
   - saturation ∈ [0, 1]
   - freeze: bool
+
+`brightness > 1.0` activates an adaptive headroom mode in `Mixer._apply_master_output`:
+the gain is derived from a rolling peak of the post-saturation stack so the recent
+brightest pixel is pushed toward 1.0. `brightness ≤ 1.0` is exact linear gain — old
+presets and existing UI behaviour stay identical. See `mixer.py` for the curve.
 
 A frozen pattern still breathes with the room, by design: `freeze` zeroes
 `effective_t` accumulation but `audio_band` reads `AudioState` directly,
@@ -37,7 +42,7 @@ class MasterControls:
 
     def clamped(self) -> MasterControls:
         return MasterControls(
-            brightness=_clip(self.brightness, 0.0, 1.0),
+            brightness=_clip(self.brightness, 0.0, 2.0),
             speed=_clip(self.speed, 0.0, 3.0),
             audio_reactivity=_clip(self.audio_reactivity, 0.0, 3.0),
             saturation=_clip(self.saturation, 0.0, 1.0),

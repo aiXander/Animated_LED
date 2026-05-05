@@ -121,7 +121,7 @@ class MastersPatchRequest(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
-    brightness: float | None = Field(None, ge=0.0, le=1.0)
+    brightness: float | None = Field(None, ge=0.0, le=2.0)
     speed: float | None = Field(None, ge=0.0, le=3.0)
     audio_reactivity: float | None = Field(None, ge=0.0, le=3.0)
     saturation: float | None = Field(None, ge=0.0, le=1.0)

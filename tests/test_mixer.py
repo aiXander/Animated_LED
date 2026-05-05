@@ -193,6 +193,72 @@ def test_master_brightness_zero_blacks_out(topo: Topology):
     assert (out == 0.0).all()
 
 
+def test_master_brightness_above_one_lifts_dim_stack_to_full_range(topo: Topology):
+    """brightness=2.0 with a stack whose peak is 0.5 should adapt and push the
+    peak toward 1.0 — the headroom-fit use case from the user's request."""
+    m = Mixer(topo.pixel_count)
+    m.layers.append(_solid_layer(topo, "#808080"))   # ~0.5 grey
+    out = np.zeros((topo.pixel_count, 3), dtype=np.float32)
+    m.render(
+        RenderContext(t=0.0, wall_t=0.0, masters=MasterControls(brightness=2.0)),
+        out,
+    )
+    # Envelope snaps to current peak on the very first frame, then gain =
+    # target/peak with target=1.0 lifts the whole stack uniformly to ~1.0.
+    assert np.max(out) >= 0.99
+    assert np.max(out) <= 1.0
+
+
+def test_master_brightness_above_one_does_not_blow_up_full_white(topo: Topology):
+    """brightness=2.0 on an already-saturated stack must not amplify past 1.0
+    — the adaptive gain collapses to ~1.0 when recent_peak is already 1.0."""
+    m = Mixer(topo.pixel_count)
+    m.layers.append(_solid_layer(topo, "#ffffff"))
+    out = np.zeros((topo.pixel_count, 3), dtype=np.float32)
+    m.render(
+        RenderContext(t=0.0, wall_t=0.0, masters=MasterControls(brightness=2.0)),
+        out,
+    )
+    assert np.allclose(out, 1.0, atol=1e-5)
+
+
+def test_master_brightness_one_is_identity_even_with_envelope(topo: Topology):
+    """The envelope updates every frame, but brightness=1.0 must still be
+    pure passthrough — no quiet drift in legacy presets."""
+    m = Mixer(topo.pixel_count)
+    m.layers.append(_solid_layer(topo, "#404040"))
+    out = np.zeros((topo.pixel_count, 3), dtype=np.float32)
+    for i in range(5):
+        m.render(
+            RenderContext(
+                t=0.0, wall_t=float(i) / 60.0, masters=MasterControls(brightness=1.0)
+            ),
+            out,
+        )
+    expected = 64.0 / 255.0
+    assert np.allclose(out, expected, atol=1e-5)
+
+
+def test_master_brightness_above_one_intermediate_partial_lift(topo: Topology):
+    """brightness=1.5 lifts a peak-0.5 stack halfway between 0.5 and 1.0 (≈0.75)."""
+    m = Mixer(topo.pixel_count)
+    m.layers.append(_solid_layer(topo, "#808080"))
+    out = np.zeros((topo.pixel_count, 3), dtype=np.float32)
+    m.render(
+        RenderContext(t=0.0, wall_t=0.0, masters=MasterControls(brightness=1.5)),
+        out,
+    )
+    # peak=128/255≈0.502; target = peak + 0.5*(1-peak) ≈ 0.751; gain ≈ 1.498
+    # output ≈ 0.502 * 1.498 ≈ 0.751
+    assert np.max(out) == pytest.approx(0.751, abs=0.01)
+
+
+def test_master_brightness_above_two_is_clamped(topo: Topology):
+    """clamped() pins brightness to 2.0; the slider can't ask for more."""
+    masters = MasterControls(brightness=5.0).clamped()
+    assert masters.brightness == 2.0
+
+
 def test_master_speed_does_not_affect_crossfade_alpha(topo: Topology):
     """speed=0 should freeze pattern motion but the crossfade still runs on
     wall_t. (The mixer test here directly drives wall_t.)"""

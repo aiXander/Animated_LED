@@ -10,6 +10,16 @@ Crossfade alpha is computed against `ctx.wall_t` — operator direction
 ("switch to peak preset over 1 s") must not be slowed by `speed=0.5` or
 frozen by `freeze=true`. Per-layer rendering uses `ctx.t` (the
 master-speed-scaled effective time).
+
+Brightness master has two regimes:
+  - `brightness ≤ 1.0`: pure linear gain + clip (legacy behaviour).
+  - `brightness > 1.0`: adaptive headroom. The mixer tracks a rolling peak of
+    the post-saturation stack (fast attack, slow release) and derives a gain
+    that pushes that peak toward 1.0 — so a stack whose loudest pixel only
+    reaches 0.7 can be lifted to use the full output range without harshly
+    crushing peaks. brightness=1.0 → no extra gain, brightness=2.0 → full
+    auto-fit. A final hard clip absorbs the small transients that can punch
+    above the recent-peak estimate between frames.
 """
 
 from dataclasses import dataclass, field
@@ -25,6 +35,15 @@ BLEND_MODES: tuple[str, ...] = ("normal", "add", "screen", "multiply")
 
 # Rec. 709 luminance weights — used by the saturation master.
 _LUM = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+
+# Adaptive-brightness peak envelope (engaged when masters.brightness > 1.0):
+#   - fast attack (snap up immediately when a peak appears)
+#   - exponential release with this halflife (don't pump on quiet frames)
+#   - floor on the tracked peak so dark stacks don't ask for absurd gain
+#   - hard cap on derived gain as a final safety
+_PEAK_RELEASE_HALFLIFE = 0.5   # seconds
+_PEAK_FLOOR = 0.1              # treat tracked peak below this as 0.1
+_MAX_ADAPTIVE_GAIN = 6.0       # safety cap on the gain we will ever apply
 
 
 @dataclass
@@ -84,6 +103,11 @@ class Mixer:
         self._from_layers: list[Layer] | None = None
         self._cf_start: float = 0.0
         self._cf_duration: float = 0.0
+        # Adaptive-brightness peak envelope. Updated every non-blackout frame
+        # in _apply_master_output, regardless of slider position, so flipping
+        # brightness above 1.0 doesn't have to wait for the envelope to warm up.
+        self._recent_peak: float = 0.0
+        self._last_peak_wall_t: float = -1.0  # sentinel: no prior frame yet
 
     @property
     def is_crossfading(self) -> bool:
@@ -149,7 +173,51 @@ class Mixer:
             np.subtract(rgb, grey, out=rgb)
             rgb *= sat
             rgb += grey
-        if bright != 1.0:
-            rgb *= bright
-        # Final clamp so subsequent gamma never sees out-of-range values.
+
+        # Update the rolling-peak envelope on the post-saturation stack. We do
+        # this on every non-blackout frame so the headroom estimate is already
+        # warm if the operator pushes brightness above 1.0.
+        if not self.blackout and rgb.size:
+            self._update_peak_envelope(float(np.max(rgb)), float(ctx.wall_t))
+
+        if bright <= 1.0:
+            if bright != 1.0:
+                rgb *= bright
+        else:
+            # Adaptive headroom: target_peak interpolates from current recent
+            # peak (at brightness=1) to 1.0 (at brightness=2). gain is the
+            # uniform multiplier needed to lift recent_peak to target_peak.
+            peak = max(self._recent_peak, _PEAK_FLOOR)
+            target = peak + (bright - 1.0) * (1.0 - peak)
+            gain = min(target / peak, _MAX_ADAPTIVE_GAIN)
+            if gain != 1.0:
+                rgb *= gain
+        # Final clamp so subsequent gamma never sees out-of-range values; also
+        # absorbs the small transients that punch past recent_peak between frames.
         np.clip(rgb, 0.0, 1.0, out=rgb)
+
+    def _update_peak_envelope(self, current_peak: float, wall_t: float) -> None:
+        """Fast-attack, slow-release max-follower used by the brightness master.
+
+        Tracks the per-frame max of the post-saturation stack. Peaks snap up
+        immediately so we never under-estimate headroom; quiet stretches decay
+        toward the new floor with `_PEAK_RELEASE_HALFLIFE`, slow enough that
+        a one-beat dip in audio doesn't pump the boost up and back.
+        """
+        last = self._last_peak_wall_t
+        # Initialise / detect a non-monotonic wall_t (e.g. fresh process). When
+        # the very first frame arrives, snap straight to current_peak instead
+        # of sliding up from zero — the boost is correct from frame 1.
+        if last < 0.0 or wall_t < last:
+            self._recent_peak = current_peak
+            self._last_peak_wall_t = wall_t
+            return
+        dt = wall_t - last
+        self._last_peak_wall_t = wall_t
+        if current_peak >= self._recent_peak:
+            self._recent_peak = current_peak
+        else:
+            decay = 0.5 ** (dt / _PEAK_RELEASE_HALFLIFE)
+            self._recent_peak *= decay
+            if self._recent_peak < current_peak:
+                self._recent_peak = current_peak

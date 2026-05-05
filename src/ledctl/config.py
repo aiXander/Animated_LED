@@ -274,7 +274,7 @@ class MastersConfig(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
-    brightness: float = Field(1.0, ge=0.0, le=1.0)
+    brightness: float = Field(1.0, ge=0.0, le=2.0)
     speed: float = Field(1.0, ge=0.0, le=3.0)
     audio_reactivity: float = Field(1.0, ge=0.0, le=3.0)
     saturation: float = Field(1.0, ge=0.0, le=1.0)
