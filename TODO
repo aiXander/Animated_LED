@@ -1,15 +1,19 @@
 
-Single LED driving setup:
+Setup SSH keys on Pi
 
-- power gledopto with 12V power supply
-- connect Pi to Gledopto via ethernet cable
-- setup static IP
-- connect single LED strip to gledopto
+
+ssh-keygen -t ed25519 -C "your_email@example.com"
 
 
 Later:
-Setup auto-boot automation
+Setup auto-boot automation and make sure it works every single time
 
-
+Donderdag:
+Buy usb microphone
 Turn on both at the same time
 Auto-turn off LEDs when server is disconnected?
+
+Friday:
+- properly align LEDs and spatial config
+- test effects
+- optimize audio settings
