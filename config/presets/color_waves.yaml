@@ -11,27 +11,18 @@ layers:
   node:
     kind: palette_lookup
     params:
-      brightness:
-        params:
-          input:
-            params:
-              band: low
-            kind: audio_band
-          in_min: 0.0
-          in_max: 1.0
-          out_min: 0.65
-          out_max: 1.0
-        kind: range_map
       palette: rainbow
       scalar:
-        params:
-          softness: 1
-          speed: 0.3
-          shape: cosine
-          wavelength: 1
-          cross_phase:
-          - 0
-          - 0.15
-          - 0
-          axis: x
         kind: wave
+        params:
+          axis: x
+          speed: 0.3
+          wavelength: 1
+          shape: cosine
+          softness: 1
+          cross_phase: [0, 0.15, 0]
+      brightness:
+        kind: pulse
+        params:
+          by: { kind: audio_band, params: { band: low } }
+          floor: 0.65

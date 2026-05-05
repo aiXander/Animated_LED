@@ -39,7 +39,8 @@ def test_state_reports_default_layer(client: TestClient):
     assert body["target_fps"] > 0
     assert body["transport_mode"] == "simulator"
     assert body["blackout"] is False
-    # Default boot stack is a single palette_lookup(wave + palette_stops).
+    # Default boot stack: single palette_lookup with audio-reactive
+    # brightness via `pulse` (silence keeps a baseline; peaks reach 1.0).
     assert len(body["layers"]) == 1
     layer = body["layers"][0]
     assert layer["node"]["kind"] == "palette_lookup"
@@ -49,9 +50,10 @@ def test_state_reports_default_layer(client: TestClient):
     assert scalar["params"]["speed"] == 0.15
     assert scalar["params"]["cross_phase"] == [0.0, 0.075, 0.0]
     brightness = layer["node"]["params"]["brightness"]
-    assert brightness["kind"] == "range_map"
-    assert brightness["params"]["out_min"] == 0.65
-    assert brightness["params"]["out_max"] == 1.0
+    assert brightness["kind"] == "pulse"
+    assert brightness["params"]["floor"] == 0.65
+    assert brightness["params"]["by"]["kind"] == "audio_band"
+    assert brightness["params"]["by"]["params"]["band"] == "low"
 
 
 def test_surface_primitives_lists_catalogue(client: TestClient):

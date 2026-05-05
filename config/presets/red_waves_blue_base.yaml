@@ -3,7 +3,6 @@ masters:
   brightness: 1.0
   speed: 0.68
   audio_reactivity: 1.62
-  audio_feature_cleaning: 1.0
   saturation: 0.74
   freeze: false
 layers:
@@ -13,47 +12,33 @@ layers:
     kind: palette_lookup
     params:
       scalar:
+        kind: wave
         params:
           shape: cosine
           axis: x
           speed: 0.1
           wavelength: 1
-          cross_phase:
-          - 0
-          - 0.5
-          - 0
-        kind: wave
-      brightness: 1
+          cross_phase: [0, 0.5, 0]
       palette:
         kind: palette_stops
         params:
           stops:
-          - color: '#000000'
-            pos: 0
-          - color: '#ff0000'
-            pos: 0.5
-          - pos: 1
-            color: '#000000'
+          - { pos: 0, color: '#000000' }
+          - { pos: 0.5, color: '#ff0000' }
+          - { pos: 1, color: '#000000' }
       hue_shift: 0
 - blend: add
-  opacity: 1.0
+  opacity: 0.45
   node:
     kind: palette_lookup
     params:
       palette: mono_0000ff
-      brightness:
-        kind: range_map
-        params:
-          input:
-            kind: audio_band
-            params:
-              band: low
-          in_min: 0.0
-          in_max: 1.0
-          out_min: 0.0
-          out_max: 0.45
-      hue_shift: 0
       scalar:
-        params:
-          value: 1
         kind: constant
+        params: { value: 1 }
+      brightness:
+        kind: pulse
+        params:
+          by: { kind: audio_band, params: { band: low } }
+          floor: 0.0
+      hue_shift: 0
