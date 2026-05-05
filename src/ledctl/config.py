@@ -153,7 +153,11 @@ class AudioServerConfig(BaseModel):
         None,
         description=(
             "cwd for the audio-server subprocess. Optional. Useful when "
-            "launching via `python -m server.main` from a clone."
+            "launching via `python -m server.main` from a clone. Relative "
+            "paths are resolved against the directory containing the YAML "
+            "config file (so '../../Realtime_PyAudio_FFT' from "
+            "config/config.pi.yaml points at the sibling clone in the "
+            "repo's parent directory)."
         ),
     )
     osc_listen_host: str = Field(
@@ -344,6 +348,18 @@ class AppConfig(BaseModel):
 
 
 def load_config(path: str | Path) -> AppConfig:
-    text = Path(path).read_text()
+    config_path = Path(path).resolve()
+    text = config_path.read_text()
     data = yaml.safe_load(text)
-    return AppConfig.model_validate(data)
+    cfg = AppConfig.model_validate(data)
+    # Resolve a relative audio_server.working_dir against the config file's
+    # directory so YAML can stay portable (e.g. "../Realtime_PyAudio_FFT"
+    # works on any host that mirrors the repo layout, with no hardcoded
+    # absolute paths).
+    wd = cfg.audio_server.working_dir
+    if wd:
+        wd_path = Path(wd)
+        if not wd_path.is_absolute():
+            wd_path = (config_path.parent / wd_path).resolve()
+        cfg.audio_server.working_dir = str(wd_path)
+    return cfg
