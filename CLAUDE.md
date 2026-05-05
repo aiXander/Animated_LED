@@ -35,22 +35,20 @@ The system is a real-time LED controller for an 1800-LED festival install (4 × 
 **Key layers:**
 - `topology.py` — Spatial model of all 1800 LEDs. Normalised positions (each axis in [-1, 1]) derived from `config.yaml` strip geometries. Primitives must use `topology.normalised_positions`, never raw indices.
 - `surface.py` — **The single control surface.** Owns the entire visual vocabulary: colour/shape utilities, the primitive registry, every primitive's pydantic `Params` + `compile()`, named palettes, the spec types (`NodeSpec`, `LayerSpec`, `UpdateLedsSpec`), the compiler (`compile(spec, topology) → CompiledNode`), and `generate_docs()` for the prompt-ready CONTROL SURFACE block. **Adding a new visual idea is a one-place change**: write a `@primitive` class — the agent prompt and operator UI both pick it up via `generate_docs()` / `GET /surface/primitives` automatically. This module never imports from `engine.py` or `mixer.py` (they import it).
-- `masters.py` — Operator-owned `MasterControls` (`brightness`, `speed`, `audio_reactivity`, `saturation`, `freeze`) and per-frame `RenderContext`. Deliberately kept out of the DSL — the LLM never produces or alters them. Bounds enforced in `clamped()`: brightness/saturation ∈ [0, 1], speed/audio_reactivity ∈ [0, 3], freeze: bool.
+- `masters.py` — Operator-owned `MasterControls` (`brightness`, `speed`, `audio_reactivity`, `saturation`, `freeze`) and per-frame `RenderContext`. Deliberately kept out of the DSL — the LLM never produces or alters them. Bounds enforced in `clamped()`: brightness/saturation ∈ [0, 1], speed/audio_reactivity ∈ [0, 3], freeze: bool. Audio reactivity is a single multiplier applied to the band scalars from the external feed; there is no in-process feature cleaning slider.
 - `mixer.py` — Stack of `Layer(node, blend, opacity)` with blend modes (normal/add/screen/multiply), crossfade between stacks, master output stage. Crossfade alpha uses `ctx.wall_t` so operator direction isn't slowed by `speed=0.5` or stopped by `freeze=true`. Per-layer rendering uses `ctx.t` (master-speed-scaled).
 - `pixelbuffer.py` — Float32 working buffer in [0, 1]. Gamma (default 2.2) applied once here, not in WLED.
 - `transports/` — Pluggable output: `simulator` (WebSocket to browser), `ddp` (UDP to WLED, 480 px/packet, PUSH on the final packet only), `multi` (both). Swapped via `config.transport.mode`.
-- `audio/` — Three-piece split so swapping the input source is a one-class change:
-  - `source.py` — `AudioSource` ABC + `SoundDeviceSource` (PortAudio).
-  - `analyser.py` — `AudioAnalyser` consumes blocks, maintains an FFT ring buffer, computes RMS / peak / band features. `blocksize` (HW capture latency) and `fft_window` (FFT length) are independent.
-  - `state.py` — `AudioState` is **raw and instantaneous** (no EMA, no peak hold). Single writer (callback thread), many readers, no locks.
-  - `normalizer.py` — `RollingNormalizer` per-feature rolling-window auto-gain. Bindings consume `*_norm`, not raw values, so they auto-scale to room loudness.
-  - `capture.py` — Thin convenience wrapper that pre-wires source + analyser.
+- `audio/` — Thin bridge to the external [Realtime_PyAudio_FFT](https://github.com/Jaymon/Realtime_PyAudio_FFT) audio-feature server. The LED controller does **not** capture or analyse audio itself — it spawns the audio-server as a subprocess and consumes its OSC feed:
+  - `state.py` — `AudioState` holds the latest `low/mid/high` band energies (already auto-scaled to ~[0, 1] on the audio server side), plus device name, samplerate, blocksize, band cutoffs, and a `connected` flag. Single writer (the OSC listener thread), many lock-free readers.
+  - `bridge.py` — `OscFeatureListener` (UDP socket on port 9000 by default; `/audio/lmh` + `/audio/meta` handlers; staleness watchdog), `AudioServerSupervisor` (launches the `audio-server` console script as a subprocess, pipes its stdout into the LED logger, terminates cleanly on shutdown), and `AudioBridge` that owns both. Failures are deliberately soft: if the binary is missing, port is taken, or packets stop arriving, the LED render loop keeps going with `audio_band` returning 0 and a warning in the terminal.
+  - The audio-server's own browser UI (default `http://127.0.0.1:8766`) is the canonical place to pick the input device, retune band cutoffs, and save presets. The 'audio' link in the LED operator UI opens that URL in a new tab.
 - `agent/` — Phase 6 language-driven control panel. Thin layer over OpenRouter, NOT a multi-tool agent loop:
   - `tool.py` — single `update_leds(layers, crossfade_seconds, blackout)` tool. The argument is the *complete* new layer stack as a tree of `{kind, params}` primitives, never a diff. The surface compiler type-checks the tree (palette in a scalar slot is rejected, leaf must be `rgb_field`, etc.); on failure the tool result carries a structured `{path, msg, valid_kinds}` error which the LLM sees on the next turn (via the rolling buffer) and self-corrects. Calls `Engine.crossfade_to` — same code path as `POST /presets/{name}`.
   - `system_prompt.py` — `build_system_prompt(...)` regenerated **fresh every turn**: install summary, current layer-stack JSON, audio snapshot, **read-only master values**, full primitive catalogue from `surface.generate_docs()`, anchor examples, anti-patterns. Dominant token cost — keep primitive `Params` `description=` strings tight.
   - `session.py` — in-memory `SessionStore` + `ChatSession` with `history_max`-capped rolling buffer (heals dangling `tool` messages after trim) and per-session rolling-window rate limit. Sessions wipe on restart (v1).
   - `client.py` — thin OpenAI-compatible wrapper aimed at OpenRouter. Imports `openai` lazily; `MissingApiKey` raised at first call.
-- `api/server.py` — FastAPI app. Endpoints: `/state`, `/topology`, `/config` (PUT for layout edits), `/surface/primitives`, `/layers` (POST/PATCH/DELETE), `/masters` (GET/PATCH), `/presets/{name}` (POST), `/blackout` + `/resume`, `/calibration/*`, `/audio/*`, `/healthz`, `/ws/frames` (WebSocket frame broadcast). The landing page (`/`) hosts the LED viz, chat UI, and live status panel.
+- `api/server.py` — FastAPI app. Endpoints: `/state`, `/topology`, `/config` (PUT for layout edits), `/surface/primitives`, `/layers` (POST/PATCH/DELETE), `/masters` (GET/PATCH), `/presets/{name}` (POST), `/blackout` + `/resume`, `/calibration/*`, `/audio/state` + `/audio/ui` (read-only — device picking lives on the external audio-server), `/healthz`, `/ws/frames` (WebSocket frame broadcast). The landing page (`/`) hosts the LED viz, chat UI, and live status panel.
 - `api/auth.py` — optional shared-password gate for the entire HTTP/WS surface (Phase 8). Activated by setting `auth.password` in YAML; off by default for dev. Sets a `ledctl_auth` cookie via `/login` (form post) or `?password=…` query, gates HTTP via Starlette middleware, and rejects WS upgrades pre-accept with close code 4401 if the cookie is missing/wrong. `/login`, `/logout`, `/healthz` are always public. Render loop and DDP transport are unaffected — auth only protects the public-facing API surface.
 - `api/agent.py` — `/agent/chat` (synchronous LLM round-trip via `asyncio.to_thread`), `/agent/sessions/{id}` (GET/DELETE), `/agent/config` (read-only; never echoes the API key). 503 on disabled/missing key, 429 on rate-limit hit, 502 on LLM failure.
 
@@ -67,7 +65,7 @@ Every visual primitive lives in `surface.py`. There are no named effects — a l
 | kind            | what it produces                       | typical primitives                                                |
 | --------------- | -------------------------------------- | ----------------------------------------------------------------- |
 | `scalar_field`  | per-LED scalar in [0, 1]               | `wave`, `radial`, `noise2d`, `sparkles`, `position`, `gradient`   |
-| `scalar_t`      | one scalar per frame                   | `lfo`, `audio_band`, `envelope`, `constant`                       |
+| `scalar_t`      | one scalar per frame                   | `lfo`, `audio_band`, `constant`                                   |
 | `palette`       | 256-entry RGB LUT                      | `palette_named`, `palette_stops`                                  |
 | `rgb_field`     | per-LED RGB (the layer leaf)           | `palette_lookup`, `solid`                                         |
 
@@ -77,7 +75,7 @@ Polymorphic combinators (`mix`, `mul`, `add`, `screen`, `max`, `min`, `remap`, `
 - a bare number anywhere a node is expected becomes a `constant` (so `"speed": 0.3` is fine);
 - a bare palette string becomes a `palette_named` (so `"palette": "fire"` is fine).
 
-**Modulation lives directly on the parameter.** Instead of an old-style `bindings.brightness` slot, you pass an `envelope(audio_band(...))` node into `palette_lookup.brightness`. Audio reactivity is composable: `audio_band(band="rms"|"low"|"mid"|"high"|"peak")` returns a `scalar_t`; wrap it in `envelope(input=..., attack_ms, release_ms, gain, floor, ceiling)` for smooth attack/release.
+**Modulation lives directly on the parameter.** Instead of an old-style `bindings.brightness` slot, you pass an `audio_band(...)` node into `palette_lookup.brightness`. Audio reactivity is composable: `audio_band(band="low"|"mid"|"high")` returns a `scalar_t` sourced from the external audio-feature server (already smoothed and auto-scaled to ~[0, 1] — all attack/release/shaping live upstream and are tuned in the audio server's UI, not here). Wrap an `audio_band` in `range_map(in_min=0, in_max=1, out_min=floor, out_max=ceiling)` if you need a baseline glow or soft cap.
 
 **Adding a new primitive:**
 1. Write a `@primitive` class in `surface.py` with a pydantic `Params` model and a `compile()` that returns a `CompiledNode` of the right `output_kind`.
@@ -102,7 +100,7 @@ Phase 8.1's digital prep also landed early — see "Auth + Pi deploy artefacts" 
 ## Auth + Pi deploy artefacts
 
 - `src/ledctl/api/auth.py` — shared-password gate (off in dev, on for Pi). Activated by setting `auth.password` in YAML. The cookie is `ledctl_auth`; first-visit login via `/login` form post or `?password=…` query. WS upgrades reject pre-accept with close code 4401 if the cookie is missing/wrong. `/login`, `/logout`, `/healthz` are always public so future watchdogs can probe past the gate. Render loop and DDP transport are unaffected.
-- `config/config.pi.yaml` — `auth.password: kaailed`, `server.host: 0.0.0.0`, full `masters:` block. `audio.device: null` is the only field the build day fills in (`/audio/select` persists it).
+- `config/config.pi.yaml` — `auth.password: kaailed`, `server.host: 0.0.0.0`, full `masters:` block, `audio_server:` block (autostart=true, OSC port 9000, UI at :8766). The audio device picked at the audio-server's UI is persisted in *its* config.yaml — the LED config has no device field.
 - `config/config.dev.yaml` — no `auth.password`, so the gate is off. Tests assert this.
 - `tests/test_auth.py` — 11 cases (cookie/query/POST/WS, public-path allow-list, dev-config still open).
 - `deploy/ledctl.service` — systemd unit. `After=network-online.target sound.target`, `Restart=always`, `RestartSec=2`, `Nice=-5`, `audio` supplementary group, `ProtectSystem=full` + `ProtectHome=read-only` so it cohabits with overlayfs. Install: `sudo cp deploy/ledctl.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now ledctl`.
@@ -126,6 +124,8 @@ The OpenRouter API key is read from `OPENROUTER_API_KEY` (env var name configura
 - `config/config.dev.yaml` for Mac dev (transport=simulator); `config/config.pi.yaml` for Pi (transport=ddp).
 - LedFx and `ledctl` cannot both talk to the same WLED at once.
 
-## Possible future improvement — biquad IIR filter bank
+## External audio dependency
 
-Today's analyser does block-rate FFT-based band detection. For tighter transient response on mid/high bands, a per-band biquad band-pass filter running sample-by-sample (with a short sliding RMS) would track onsets faster than block-FFT — roughly 3–8 ms better on hi-hats / snare; bass is physics-bound either way. Trade-off: more moving parts and per-band coefficient design (`scipy.signal.butter`). Park behind a config flag if reactivity ever feels sluggish on real DJ audio.
+Audio capture / FFT / band-energy extraction is owned by [Realtime_PyAudio_FFT](https://github.com/Jaymon/Realtime_PyAudio_FFT). Install that package alongside `ledctl` so its `audio-server` console script is on PATH; ledctl will spawn it as a subprocess on boot (`audio_server.autostart: true`). If you'd rather run it manually (e.g. tuning bands via its UI on a different machine), set `audio_server.autostart: false` and start it however you like — the LED server will still happily consume the OSC feed.
+
+The audio-server stores its own settings in its own `config.yaml` (device, band cutoffs, smoothing, autoscale window). Tune those from its browser UI at `http://127.0.0.1:8766` — the 'audio' link in the LED operator UI opens it in a new tab. Soft-fail behaviour: if the audio-server isn't running, the OSC port is taken, or packets stop arriving, the LED render loop keeps going with `audio_band` returning 0 and a warning in the terminal.

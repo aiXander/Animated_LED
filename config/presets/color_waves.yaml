@@ -13,15 +13,15 @@ layers:
     params:
       brightness:
         params:
-          floor: 0.65
-          attack_ms: 30
           input:
             params:
               band: low
             kind: audio_band
-          ceiling: 1
-          release_ms: 500
-        kind: envelope
+          in_min: 0.0
+          in_max: 1.0
+          out_min: 0.65
+          out_max: 1.0
+        kind: range_map
       palette: rainbow
       scalar:
         params:

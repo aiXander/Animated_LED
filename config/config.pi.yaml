@@ -68,20 +68,22 @@ output:
   gamma: 1.5
   lut_size: 256
 
-audio:
+audio_server:
+  # External audio-feature server (Realtime_PyAudio_FFT). On boot ledctl
+  # spawns the `audio-server` console script (installed via `pip install -e
+  # ".[dev]"` in that repo). Device picking, band cutoffs, smoothing, and
+  # save/load presets live in the audio server's own UI at
+  # http://<pi>:8766. The 'audio' link in the LED operator UI opens that.
+  # If the subprocess fails (e.g. the package isn't installed yet on the
+  # Pi), the LED render loop keeps running with audio_band returning 0.
   enabled: true
-  # `null` = system default input (ALSA's `default` device). On the Pi this
-  # picks up whatever is configured as the default capture source — the
-  # built-in/USB mic is fine for now. Once the INMP441 I²S mic is wired up,
-  # set this to its ALSA card name (e.g. "snd_rpi_simple_card", or whatever
-  # `arecord -l` reports). Picking interactively at /audio persists the
-  # chosen name back here.
-  device: null
-  samplerate: 48000
-  blocksize: 128
-  fft_window: 512
-  channels: 1
-  gain: 1.0
+  autostart: true
+  command: ["audio-server"]
+  working_dir: null
+  osc_listen_host: 127.0.0.1
+  osc_listen_port: 9000
+  ui_url: http://127.0.0.1:8766
+  stale_after_s: 1.5
 
 agent:
   enabled: true
@@ -100,6 +102,5 @@ masters:
   brightness: 1.0
   speed: 1.0
   audio_reactivity: 1.0
-  audio_feature_cleaning: 1.0
   saturation: 1.0
   freeze: false

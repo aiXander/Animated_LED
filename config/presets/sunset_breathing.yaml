@@ -26,14 +26,13 @@ layers:
           - 0.0
       palette: sunset
       brightness:
-        kind: envelope
+        kind: range_map
         params:
           input:
             kind: audio_band
             params:
               band: low
-          attack_ms: 30
-          release_ms: 1200
-          gain: 2.0
-          floor: 0.6
-          ceiling: 1.0
+          in_min: 0.0
+          in_max: 1.0
+          out_min: 0.6
+          out_max: 1.0

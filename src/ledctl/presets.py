@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .mixer import BLEND_MODES
 from .surface import LayerSpec
@@ -50,9 +50,18 @@ class PresetMasters(BaseModel):
     brightness: float = Field(1.0, ge=0.0, le=1.0)
     speed: float = Field(1.0, ge=0.0, le=3.0)
     audio_reactivity: float = Field(1.0, ge=0.0, le=3.0)
-    audio_feature_cleaning: float = Field(1.0, ge=0.0, le=1.0)
     saturation: float = Field(1.0, ge=0.0, le=1.0)
     freeze: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_fields(cls, data: object) -> object:
+        # `audio_feature_cleaning` was a knob into the old in-process FFT
+        # cleaner; the external audio server owns smoothing now. Drop the key
+        # silently so existing preset YAMLs keep loading after the rip-out.
+        if isinstance(data, dict) and "audio_feature_cleaning" in data:
+            data = {k: v for k, v in data.items() if k != "audio_feature_cleaning"}
+        return data
 
 
 class Preset(BaseModel):

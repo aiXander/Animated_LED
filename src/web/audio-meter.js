@@ -1,6 +1,8 @@
-// Shared audio level meter, used by /index and /audio.
-// Renders three band bars (low, mid, high) bound to the rolling-window-
-// normalised audio fields (`*_norm`) — same values modulators consume.
+// Shared audio level meter — renders three band bars (low, mid, high) bound
+// to the auto-scaled feed published over OSC by the external audio-feature
+// server. The status payload (`/audio/state`) carries `low/mid/high` already
+// in ~[0, 1] (post-autoscale on the audio server side); the LED engine then
+// multiplies them by `masters.audio_reactivity` for visual modulation.
 (() => {
   const KEYS = ["low", "mid", "high"];
   const STYLE_ID = "audio-meter-styles";
@@ -55,7 +57,7 @@
       update(audio) {
         if (!audio) return;
         for (const k of KEYS) {
-          const v = audio[k + "_norm"];
+          const v = audio[k];
           bars[k].style.width = pct(v);
           nums[k].textContent = fmt(v);
         }

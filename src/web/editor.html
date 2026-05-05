@@ -84,9 +84,18 @@
   <nav id="viz-nav">
     <a href="/">main</a>
     <a href="/editor" class="active">layout</a>
-    <a href="/audio">audio</a>
+    <a href="#" id="audio-ui-link" target="_blank" rel="noopener" title="opens the audio-feature server UI in a new tab">audio</a>
     <a href="/docs">api docs</a>
   </nav>
+  <script>
+    // Resolve the external audio-server UI URL once on load so the link works.
+    fetch("/audio/ui").then(r => r.json()).then(body => {
+      if (body && body.ui_url) {
+        const a = document.getElementById("audio-ui-link");
+        if (a) a.href = body.ui_url;
+      }
+    }).catch(() => { /* leave as # */ });
+  </script>
   <div id="app">
     <div id="canvas-wrap">
       <canvas id="canvas"></canvas>

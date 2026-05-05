@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import surface
-from ..audio.features import DEFAULT_BANDS
 from ..masters import MasterControls
 from ..mixer import BLEND_MODES
 
@@ -81,27 +80,29 @@ def _summarise_audio(audio_state: AudioState | None) -> str:
     if audio_state is None or not audio_state.enabled:
         return (
             "AUDIO\n"
-            "Audio capture is OFF. audio_band primitives will return 0; "
-            "prefer non-reactive specs (constant brightness, lfo modulators) "
-            "until the operator enables capture at /audio."
+            "External audio-feature server is disconnected. audio_band "
+            "primitives will return 0; prefer non-reactive specs (constant "
+            "brightness, lfo modulators) until the operator restarts it from "
+            "the audio panel."
         )
-    bands = DEFAULT_BANDS  # ((20, 250), (250, 2000), (2000, 12000))
+    bands = (
+        (audio_state.low_lo, audio_state.low_hi),
+        (audio_state.mid_lo, audio_state.mid_hi),
+        (audio_state.high_lo, audio_state.high_hi),
+    )
     low_lo, low_hi = bands[0]
     mid_lo, mid_hi = bands[1]
     hi_lo, hi_hi = bands[2]
     return (
         f"AUDIO (snapshot at request time — treat as 'the room a moment ago')\n"
         f"  device: {audio_state.device_name or 'default'}\n"
-        f"  low  ({low_lo:.0f}–{low_hi:.0f} Hz): {audio_state.low:.3f} "
-        f"(norm {audio_state.low_norm:.2f})\n"
-        f"  mid  ({mid_lo:.0f}–{mid_hi:.0f} Hz): {audio_state.mid:.3f} "
-        f"(norm {audio_state.mid_norm:.2f})\n"
-        f"  high ({hi_lo:.0f}–{hi_hi:.0f} Hz): {audio_state.high:.3f} "
-        f"(norm {audio_state.high_norm:.2f})\n"
-        f"  audio_band reads the *_norm values (rolling-window auto-scaled to "
-        f"~[0, 1]; multiplied by masters.audio_reactivity at the engine). "
-        f"Pick the band that matches the musical element you want to track — "
-        f"there is no full-band loudness primitive."
+        f"  low  ({low_lo:.0f}–{low_hi:.0f} Hz): {audio_state.low:.3f}\n"
+        f"  mid  ({mid_lo:.0f}–{mid_hi:.0f} Hz): {audio_state.mid:.3f}\n"
+        f"  high ({hi_lo:.0f}–{hi_hi:.0f} Hz): {audio_state.high:.3f}\n"
+        f"  audio_band returns these auto-scaled values (~[0, 1]; multiplied "
+        f"by masters.audio_reactivity at the engine). Pick the band that "
+        f"matches the musical element you want to track — there is no "
+        f"full-band loudness primitive."
     )
 
 
@@ -118,11 +119,9 @@ def _summarise_masters(
             f"  speed:             {masters.speed:.2f}   (time multiplier on motion)",
             f"  audio_reactivity:  {masters.audio_reactivity:.2f}   "
             "(multiplier on every audio_band)",
-            f"  audio_feature_cleaning: {masters.audio_feature_cleaning:.2f}   "
-            "(0 = raw jittery features, 1 = musical envelopes)",
             f"  saturation:        {masters.saturation:.2f}   (1 = full colour, 0 = greyscale)",
             f"  freeze:            {str(bool(masters.freeze)).lower()}   "
-            "(true = effective time stops; envelope/audio still update)",
+            "(true = effective time stops; audio still updates)",
         ])
     if crossfade_seconds is not None:
         lines.append(

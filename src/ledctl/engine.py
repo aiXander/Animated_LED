@@ -6,7 +6,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from .audio.analyser import AudioAnalyser
 from .audio.state import AudioState
 from .config import AppConfig
 from .masters import MasterControls, RenderContext
@@ -74,9 +73,10 @@ class Engine:
     catching up — better to skip a frame than queue them.
 
     `effective_t` is master-speed-scaled monotonic time; primitives read
-    `ctx.t` (which is effective_t). Crossfade alpha and `envelope` smoothing
-    use `ctx.wall_t` (raw monotonic) so operator direction never gets slowed
-    by `masters.speed` and a frozen pattern still breathes with the room.
+    `ctx.t` (which is effective_t). Crossfade alpha uses `ctx.wall_t` (raw
+    monotonic) so operator direction never gets slowed by `masters.speed`,
+    and a frozen pattern still breathes with the room because `audio_band`
+    reads the externally-smoothed feed directly.
     """
 
     def __init__(
@@ -105,25 +105,18 @@ class Engine:
         self._stop = asyncio.Event()
         self.calibration: CalibrationState | None = None
         self.audio_state: AudioState | None = None
-        self.audio_analyser: AudioAnalyser | None = None
         self.masters: MasterControls = masters or MasterControls()
 
-    def attach_audio(
-        self,
-        state: AudioState | None,
-        analyser: AudioAnalyser | None = None,
-    ) -> None:
+    def attach_audio(self, state: AudioState | None) -> None:
         """Make an AudioState visible to audio_band primitives via ctx.
 
-        The optional `analyser` is the live-music feature pipeline; when
-        attached, the engine pushes `masters.audio_feature_cleaning` into the
-        analyser's cleaner each tick so the operator slider feels live.
+        The state is owned by the external-audio bridge — this method just
+        wires the reference into the render loop and topology. Updates flow
+        in continuously via OSC; the render loop reads the latest scalars
+        each tick.
         """
         self.audio_state = state
         self.topology.audio_state = state
-        self.audio_analyser = analyser
-        if analyser is not None:
-            analyser.cleaning_strength = self.masters.audio_feature_cleaning
 
     def set_masters(self, **patch: object) -> MasterControls:
         """Apply a partial master update; returns the post-clamp result."""
@@ -298,13 +291,13 @@ class Engine:
     # ---- per-frame audio scaling ----
 
     def _build_audio_view(self) -> AudioState | None:
-        """Apply masters.audio_reactivity to the *_norm fields once per tick.
+        """Apply masters.audio_reactivity to the band fields once per tick.
 
-        Raw fields are passed through unchanged. The doc behind this
-        (refactor §7.2 audio stage) is that the master applies uniformly
-        regardless of how many `audio_band` references the tree holds, and a
-        future second audio primitive doesn't have to re-implement the
-        multiply.
+        The external audio-server publishes low/mid/high already auto-scaled
+        to ~[0, 1]. The reactivity master applies uniformly regardless of how
+        many `audio_band` references the tree holds. When the bridge is
+        disconnected we still hand the AudioState through (zeros) so the
+        render loop has a stable contract.
         """
         s = self.audio_state
         if s is None:
@@ -314,9 +307,9 @@ class Engine:
             return s
         return dataclasses.replace(
             s,
-            low_norm=s.low_norm * gain,
-            mid_norm=s.mid_norm * gain,
-            high_norm=s.high_norm * gain,
+            low=s.low * gain,
+            mid=s.mid * gain,
+            high=s.high * gain,
         )
 
     # ---- main loop ----
@@ -340,14 +333,6 @@ class Engine:
                 # Advance effective_t by dt × speed; freeze short-circuits to 0.
                 speed = 0.0 if self.masters.freeze else float(self.masters.speed)
                 self.effective_t += dt_wall * speed
-
-                # Publish operator-tunable audio cleaning strength to the
-                # analyser. The cleaner reads it once per audio block (atomic
-                # float assignment in CPython, no lock needed).
-                if self.audio_analyser is not None:
-                    self.audio_analyser.cleaning_strength = (
-                        self.masters.audio_feature_cleaning
-                    )
 
                 ctx = RenderContext(
                     t=self.effective_t,

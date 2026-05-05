@@ -49,9 +49,9 @@ def test_state_reports_default_layer(client: TestClient):
     assert scalar["params"]["speed"] == 0.15
     assert scalar["params"]["cross_phase"] == [0.0, 0.075, 0.0]
     brightness = layer["node"]["params"]["brightness"]
-    assert brightness["kind"] == "envelope"
-    assert brightness["params"]["floor"] == 0.65
-    assert brightness["params"]["ceiling"] == 1.0
+    assert brightness["kind"] == "range_map"
+    assert brightness["params"]["out_min"] == 0.65
+    assert brightness["params"]["out_max"] == 1.0
 
 
 def test_surface_primitives_lists_catalogue(client: TestClient):
@@ -61,7 +61,7 @@ def test_surface_primitives_lists_catalogue(client: TestClient):
     # Every registered primitive shows up
     expected_subset = {
         "wave", "radial", "noise", "sparkles", "lfo", "audio_band",
-        "envelope", "constant", "palette_named", "palette_stops",
+        "constant", "palette_named", "palette_stops",
         "palette_lookup", "solid", "mix", "mul", "add",
     }
     assert expected_subset.issubset(set(body))
@@ -183,7 +183,7 @@ def test_presets_list_includes_seed_files(client: TestClient):
     r = client.get("/presets")
     assert r.status_code == 200
     names = set(r.json()["presets"])
-    assert {"chill", "peak", "cooldown"}.issubset(names)
+    assert {"chill", "peak", "default"}.issubset(names)
 
 
 def test_apply_preset_replaces_stack(client: TestClient):
@@ -223,7 +223,6 @@ def test_get_masters_returns_defaults(client: TestClient):
         "brightness": 1.0,
         "speed": 1.0,
         "audio_reactivity": 1.0,
-        "audio_feature_cleaning": 1.0,
         "saturation": 1.0,
         "freeze": False,
     }
