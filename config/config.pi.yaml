@@ -1,59 +1,90 @@
 project:
   name: festival_scaffold
   target_fps: 40
-
 server:
   host: 0.0.0.0
   port: 8000
-
 # Shared-password gate for the operator UI (Phase 7/8). Anyone on the venue
 # WiFi can reach the Pi at port 8000, so don't ship without this set. The
 # render loop and DDP path are not affected by auth — this only protects the
-# HTML/REST/WS surface. Comment the whole block out (or delete `password`)
-# during dev for an open server.
+# HTML/REST/WS surface.
 auth:
   password: kaailed
-
 controllers:
   gledopto_main:
     type: wled-ddp
     host: 10.0.0.2
     port: 4048
     pixel_count: 1800
-
 strips:
-  - id: top_left
-    controller: gledopto_main
-    output: 1
-    pixel_offset: 0
-    pixel_count: 450
-    leds_per_meter: 30
-    geometry: { type: line, start: [0.0, 0.5, 0.0], end: [-15.0, 0.5, 0.0] }
-
-  - id: top_right
-    controller: gledopto_main
-    output: 2
-    pixel_offset: 450
-    pixel_count: 450
-    leds_per_meter: 30
-    geometry: { type: line, start: [0.0, 0.5, 0.0], end: [15.0, 0.5, 0.0] }
-
-  - id: bottom_left
-    controller: gledopto_main
-    output: 3
-    pixel_offset: 900
-    pixel_count: 450
-    leds_per_meter: 30
-    geometry: { type: line, start: [0.0, -0.5, 0.0], end: [-15.0, -0.5, 0.0] }
-
-  - id: bottom_right
-    controller: gledopto_main
-    output: 4
-    pixel_offset: 1350
-    pixel_count: 450
-    leds_per_meter: 30
-    geometry: { type: line, start: [0.0, -0.5, 0.0], end: [15.0, -0.5, 0.0] }
-
+- id: top_left
+  controller: gledopto_main
+  output: 1
+  pixel_offset: 0
+  pixel_count: 450
+  leds_per_meter: 30.0
+  geometry:
+    type: line
+    start:
+    - 0.0
+    - 0.5
+    - 0.0
+    end:
+    - -15.0
+    - 0.5
+    - 0.0
+  reversed: false
+- id: top_right
+  controller: gledopto_main
+  output: 2
+  pixel_offset: 450
+  pixel_count: 450
+  leds_per_meter: 30.0
+  geometry:
+    type: line
+    start:
+    - 0.0
+    - 0.5
+    - 0.0
+    end:
+    - 15.0
+    - 0.5
+    - 0.0
+  reversed: false
+- id: bottom_left
+  controller: gledopto_main
+  output: 3
+  pixel_offset: 900
+  pixel_count: 450
+  leds_per_meter: 30.0
+  geometry:
+    type: line
+    start:
+    - 0.0
+    - -0.5
+    - 0.0
+    end:
+    - -15.0
+    - -0.5
+    - 0.0
+  reversed: false
+- id: bottom_right
+  controller: gledopto_main
+  output: 4
+  pixel_offset: 1350
+  pixel_count: 450
+  leds_per_meter: 30.0
+  geometry:
+    type: line
+    start:
+    - 0.0
+    - -0.5
+    - 0.0
+    end:
+    - 15.0
+    - -0.5
+    - 0.0
+  reversed: false
 transport:
   # `multi` fans every frame to both the browser simulator (so the operator UI
   # at :8000 keeps showing a live preview) and the Gledopto over DDP. Switch
@@ -61,13 +92,11 @@ transport:
   mode: multi
   sim:
     ws_path: /ws/frames
-
 output:
   # If WLED's own gamma is on, set this to 1.0 to avoid double-gamma. With
   # WLED gamma off (recommended), 1.5 keeps the renderer the single source.
   gamma: 1.5
   lut_size: 256
-
 audio_server:
   # External audio-feature server (Realtime_PyAudio_FFT). On boot ledctl
   # spawns the `audio-server` console script (installed via `pip install -e
@@ -84,20 +113,18 @@ audio_server:
   osc_listen_port: 9000
   ui_url: http://127.0.0.1:8766
   stale_after_s: 1.5
-
 agent:
   enabled: true
   provider: openrouter
   base_url: https://openrouter.ai/api/v1
   model: google/gemini-3.1-flash-lite-preview
   history_max_messages: 5
-  request_timeout_seconds: 20
+  request_timeout_seconds: 20.0
   rate_limit_per_minute: 10
   default_crossfade_seconds: 5.0
   api_key_env: OPENROUTER_API_KEY
-  debug_logging: false
+  debug_logging: true
   retry_on_tool_error: 2
-
 masters:
   brightness: 1.0
   speed: 1.0
