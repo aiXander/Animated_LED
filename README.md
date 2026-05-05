@@ -1,5 +1,6 @@
 # ledctl — audio-reactive LED installation
 
+test
 # Wifi: WLED-AP
 pw: wled1234
 
