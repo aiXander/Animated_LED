@@ -13,8 +13,8 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ..audio import AudioCapture, list_input_devices
-from ..config import AppConfig, AudioConfig, StripConfig
+from ..audio import AudioBridge
+from ..config import AppConfig, AudioServerConfig, StripConfig
 from ..engine import Engine
 from ..masters import MasterControls
 from ..mixer import BLEND_MODES
@@ -113,29 +113,17 @@ class UpdateLayoutRequest(BaseModel):
     strips: list[StripConfig] = Field(..., min_length=1)
 
 
-class AudioSelectRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    device: str | int | None = Field(
-        None, description="Device index, name (substring ok), or null for system default"
-    )
-    persist: bool = Field(
-        True, description="If true and a config_path is known, write the new device to YAML"
-    )
-
-
 class MastersPatchRequest(BaseModel):
     """Partial update for the operator master row.
 
-    Mirrors `/audio/select`'s `persist` flag — when true and a config_path is
-    known, the post-merge values are written into the `masters:` block of
-    config.yaml (atomic with `.bak`).
+    With `persist=true` and a known config_path the post-merge values are
+    written into the `masters:` block of config.yaml (atomic with `.bak`).
     """
 
     model_config = ConfigDict(extra="forbid")
     brightness: float | None = Field(None, ge=0.0, le=1.0)
     speed: float | None = Field(None, ge=0.0, le=3.0)
     audio_reactivity: float | None = Field(None, ge=0.0, le=3.0)
-    audio_feature_cleaning: float | None = Field(None, ge=0.0, le=1.0)
     saturation: float | None = Field(None, ge=0.0, le=1.0)
     freeze: bool | None = None
     persist: bool = False
@@ -183,21 +171,16 @@ def _config_to_yaml_dict(cfg: AppConfig) -> dict[str, Any]:
         "strips": _strips_to_yaml_dicts(list(cfg.strips)),
         "transport": cfg.transport.model_dump(),
         "output": cfg.output.model_dump(),
-        "audio": cfg.audio.model_dump(),
+        "audio_server": cfg.audio_server.model_dump(),
         "agent": cfg.agent.model_dump(),
         "masters": cfg.masters.model_dump(),
     }
 
 
-def _build_capture(audio_cfg: AudioConfig) -> AudioCapture:
-    return AudioCapture(
-        device=audio_cfg.device,
-        samplerate=audio_cfg.samplerate,
-        blocksize=audio_cfg.blocksize,
-        fft_window=audio_cfg.fft_window,
-        channels=audio_cfg.channels,
-        gain=audio_cfg.gain,
-    )
+def _build_audio_bridge(cfg: AudioServerConfig) -> AudioBridge | None:
+    if not cfg.enabled:
+        return None
+    return AudioBridge.from_config(cfg)
 
 
 def _masters_from_config(cfg: AppConfig) -> MasterControls:
@@ -206,7 +189,6 @@ def _masters_from_config(cfg: AppConfig) -> MasterControls:
         brightness=m.brightness,
         speed=m.speed,
         audio_reactivity=m.audio_reactivity,
-        audio_feature_cleaning=m.audio_feature_cleaning,
         saturation=m.saturation,
         freeze=m.freeze,
     )
@@ -233,10 +215,12 @@ def create_app(
             opacity=_layer.opacity,
         )
 
-    audio: AudioCapture = _build_capture(cfg.audio)
-    if cfg.audio.enabled:
-        audio.start()
-    engine.attach_audio(audio.state, audio.analyser)
+    audio_bridge: AudioBridge | None = _build_audio_bridge(cfg.audio_server)
+    if audio_bridge is not None:
+        audio_bridge.start()
+        engine.attach_audio(audio_bridge.state)
+    else:
+        engine.attach_audio(None)
 
     state_clients: set[WebSocket] = set()
 
@@ -254,9 +238,9 @@ def create_app(
             with contextlib.suppress(asyncio.CancelledError):
                 await broadcaster
             await engine.stop()
-            cap: AudioCapture | None = app.state.audio
-            if cap is not None:
-                cap.stop()
+            bridge: AudioBridge | None = app.state.audio_bridge
+            if bridge is not None:
+                bridge.stop()
             await transport.close()
             if transport is not sim:
                 await sim.close()
@@ -268,7 +252,7 @@ def create_app(
     app.state.config = cfg
     app.state.presets_dir = presets_path
     app.state.config_path = config_path
-    app.state.audio = audio
+    app.state.audio_bridge = audio_bridge
 
     from .agent import install_agent_routes
 
@@ -307,10 +291,6 @@ def create_app(
     async def editor() -> FileResponse:
         return FileResponse(WEB_DIR / "editor.html", headers=_NO_CACHE_HEADERS)
 
-    @app.get("/audio")
-    async def audio_page() -> FileResponse:
-        return FileResponse(WEB_DIR / "audio.html", headers=_NO_CACHE_HEADERS)
-
     @app.get("/audio-meter.js")
     async def audio_meter_js() -> FileResponse:
         return FileResponse(
@@ -320,26 +300,39 @@ def create_app(
         )
 
     def _audio_state_payload() -> dict[str, Any]:
-        cap: AudioCapture | None = app.state.audio
-        if cap is None:
-            return {"enabled": False, "error": "audio not initialised"}
-        s = cap.state
+        bridge: AudioBridge | None = app.state.audio_bridge
+        if bridge is None:
+            return {
+                "enabled": False,
+                "connected": False,
+                "device": "",
+                "ui_url": app.state.config.audio_server.ui_url,
+                "error": "audio_server.enabled is false",
+                "low": 0.0,
+                "mid": 0.0,
+                "high": 0.0,
+            }
+        s = bridge.state
+        supervisor_error = (
+            bridge.supervisor.error if bridge.supervisor is not None else ""
+        )
         return {
-            "enabled": s.enabled,
+            "enabled": s.connected,
+            "connected": s.connected,
             "device": s.device_name,
-            "configured_device": app.state.config.audio.device,
             "samplerate": s.samplerate,
             "blocksize": s.blocksize,
-            "fft_window": s.fft_window,
-            "channels": s.channels,
-            "block_count": s.block_count,
-            "error": s.error,
+            "n_fft_bins": s.n_fft_bins,
+            "bands": {
+                "low": [s.low_lo, s.low_hi],
+                "mid": [s.mid_lo, s.mid_hi],
+                "high": [s.high_lo, s.high_hi],
+            },
+            "ui_url": bridge.ui_url,
+            "error": s.error or supervisor_error,
             "low": round(s.low, 5),
             "mid": round(s.mid, 5),
             "high": round(s.high, 5),
-            "low_norm": round(s.low_norm, 5),
-            "mid_norm": round(s.mid_norm, 5),
-            "high_norm": round(s.high_norm, 5),
         }
 
     def _masters_payload() -> dict[str, Any]:
@@ -615,69 +608,25 @@ def create_app(
         engine.clear_calibration()
         return {"calibration": None}
 
-    # ---- audio (Phase 5) ----
-
-    @app.get("/audio/devices")
-    async def get_audio_devices() -> dict:
-        return {"devices": list_input_devices()}
+    # ---- audio (external feature server bridge) ----
 
     @app.get("/audio/state")
     async def get_audio_state() -> dict:
         return _audio_state_payload()
 
-    @app.post("/audio/select")
-    async def post_audio_select(body: AudioSelectRequest) -> dict:
-        prev: AudioCapture = app.state.audio
-        prev.stop()
-        new_cap = AudioCapture(
-            device=body.device,
-            samplerate=app.state.config.audio.samplerate,
-            blocksize=app.state.config.audio.blocksize,
-            fft_window=app.state.config.audio.fft_window,
-            channels=app.state.config.audio.channels,
-            gain=app.state.config.audio.gain,
-        )
-        new_cap.start()
-        if not new_cap.state.enabled:
-            err = new_cap.state.error or "audio capture failed to start"
-            prev.start()
-            engine.attach_audio(prev.state, prev.analyser)
-            raise HTTPException(status_code=422, detail=err)
-        app.state.audio = new_cap
-        engine.attach_audio(new_cap.state, new_cap.analyser)
+    @app.get("/audio/ui")
+    async def get_audio_ui() -> dict:
+        """Return where to open the audio-server's browser UI.
 
-        saved_to: str | None = None
-        if body.persist and app.state.config_path is not None:
-            try:
-                new_cfg = AppConfig.model_validate(
-                    {
-                        **app.state.config.model_dump(),
-                        "audio": {
-                            **app.state.config.audio.model_dump(),
-                            "device": body.device,
-                            "enabled": True,
-                        },
-                    }
-                )
-            except ValidationError as e:
-                raise HTTPException(
-                    status_code=422,
-                    detail=e.errors(include_url=False, include_context=False),
-                ) from e
-            try:
-                _write_config_yaml(Path(app.state.config_path), new_cfg)
-            except OSError as e:
-                raise HTTPException(
-                    status_code=500, detail=f"could not write config: {e}"
-                ) from e
-            app.state.config = new_cfg
-            saved_to = str(app.state.config_path)
-        return {
-            "device": new_cap.state.device_name,
-            "configured_device": body.device,
-            "samplerate": new_cap.state.samplerate,
-            "saved_to": saved_to,
-        }
+        The 'audio' link in the operator UI hits this and redirects the user.
+        Centralised so the URL is sourced from config rather than hard-coded
+        on the client.
+        """
+        bridge: AudioBridge | None = app.state.audio_bridge
+        url = (
+            bridge.ui_url if bridge is not None else app.state.config.audio_server.ui_url
+        )
+        return {"ui_url": url, "enabled": app.state.config.audio_server.enabled}
 
     # ---- live config view + write-back (Phase 4 editor) ----
 

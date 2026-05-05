@@ -14,16 +14,16 @@ layers:
       density: 0.5
       seed: 42
       brightness:
-        kind: envelope
+        kind: range_map
         params:
-          release_ms: 200
-          floor: 0
-          attack_ms: 10
           input:
             kind: audio_band
             params:
               band: high
-          ceiling: 2
+          in_min: 0.0
+          in_max: 1.0
+          out_min: 0.0
+          out_max: 2.0
       palette:
         kind: palette_stops
         params:

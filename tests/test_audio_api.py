@@ -1,4 +1,10 @@
-import shutil
+"""HTTP-surface tests for the external-audio bridge integration.
+
+The OSC listener is exercised in tests/test_audio_bridge.py — here we just
+prove the FastAPI app stitches the bridge into /state, /audio/state, and
+/audio/ui correctly, and that boot still works when the bridge is disabled.
+"""
+
 from pathlib import Path
 
 import pytest
@@ -6,152 +12,124 @@ import yaml
 from fastapi.testclient import TestClient
 
 from ledctl.api.server import create_app
-from ledctl.audio.capture import AudioCapture
+from ledctl.audio.bridge import AudioBridge, AudioServerSupervisor
 from ledctl.config import load_config
 from tests.test_api import DEV, PRESETS
 
 
-@pytest.fixture
-def audio_off_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    """Client that doesn't open a real audio stream — `start()` is a no-op.
-
-    Lets us exercise the /audio endpoints, the engine plumbing, and config
-    persistence without depending on whatever input device the host has.
-    """
-
-    def _noop_start(self: AudioCapture) -> None:
-        self.state.enabled = False
-        self.state.error = "disabled in tests"
-
-    monkeypatch.setattr(AudioCapture, "start", _noop_start)
-    cfg = load_config(DEV)
-    app = create_app(cfg, presets_dir=PRESETS)
-    with TestClient(app) as c:
-        yield c
+def _load_dev_audio_disabled(tmp_path: Path) -> tuple[Path, "load_config"]:
+    """Materialise a copy of config.dev.yaml with audio_server.enabled = false
+    so create_app() runs without trying to spawn or bind anything."""
+    base = yaml.safe_load(DEV.read_text())
+    base.setdefault("audio_server", {})
+    base["audio_server"]["enabled"] = False
+    base["audio_server"]["autostart"] = False
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(base))
+    return p, load_config(p)
 
 
 @pytest.fixture
-def audio_writable_client(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> TestClient:
-    """Same as audio_off_client but with a copy of config.yaml so PUT writes are safe."""
-
-    def _noop_start(self: AudioCapture) -> None:
-        self.state.enabled = False
-
-    monkeypatch.setattr(AudioCapture, "start", _noop_start)
-    cfg_path = tmp_path / "config.yaml"
-    shutil.copy(DEV, cfg_path)
-    cfg = load_config(cfg_path)
+def disabled_bridge_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """Client with audio_server.enabled = false. The engine still boots and
+    the API still serves /audio/state — the payload just shows 'disabled'."""
+    cfg_path, cfg = _load_dev_audio_disabled(tmp_path)
     app = create_app(cfg, presets_dir=PRESETS, config_path=cfg_path)
     with TestClient(app) as c:
         c.app.state._cfg_path = cfg_path
         yield c
 
 
-def test_audio_state_endpoint(audio_off_client: TestClient):
-    r = audio_off_client.get("/audio/state")
-    assert r.status_code == 200
-    body = r.json()
-    for key in ("enabled", "device", "samplerate", "low", "mid", "high"):
-        assert key in body
-    # No real device opened, so capture is idle.
-    assert body["enabled"] is False
-    assert body["low"] == 0.0
+@pytest.fixture
+def bridge_no_subprocess_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """Client where the audio bridge is created but the supervisor's spawn is
+    a no-op. Lets us drive AudioState directly and assert /audio/state echoes
+    it back without needing a real audio-server on the host."""
 
+    def _noop_start(self: AudioServerSupervisor) -> None:
+        # Mark as 'didn't start' but no error — caller asserts the soft path.
+        self._proc = None
 
-def test_audio_devices_endpoint(audio_off_client: TestClient):
-    r = audio_off_client.get("/audio/devices")
-    assert r.status_code == 200
-    body = r.json()
-    assert "devices" in body and isinstance(body["devices"], list)
-    # Field shape (when devices exist on this host).
-    for d in body["devices"]:
-        assert {"index", "name", "max_input_channels"}.issubset(d)
-
-
-def test_audio_html_served(audio_off_client: TestClient):
-    r = audio_off_client.get("/audio")
-    assert r.status_code == 200
-    assert "ledctl · audio input" in r.text
-
-
-def test_state_includes_audio(audio_off_client: TestClient):
-    r = audio_off_client.get("/state")
-    assert r.status_code == 200
-    body = r.json()
-    assert "audio" in body
-    assert body["audio"]["enabled"] is False
-
-
-def test_audio_select_persists_to_yaml(
-    audio_writable_client: TestClient, monkeypatch: pytest.MonkeyPatch
-):
-    cfg_path: Path = audio_writable_client.app.state._cfg_path
-
-    # Force the new capture's `start()` to "succeed" so /audio/select
-    # commits the config write. The default monkeypatch sets enabled=False
-    # which would short-circuit with a 422.
-    def _ok_start(self: AudioCapture) -> None:
-        self.state.enabled = True
-        self.state.device_name = "fake-mic"
-        self.state.error = ""
-
-    monkeypatch.setattr(AudioCapture, "start", _ok_start)
-
-    r = audio_writable_client.post(
-        "/audio/select",
-        json={"device": "BlackHole", "persist": True},
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["device"] == "fake-mic"
-    assert body["configured_device"] == "BlackHole"
-    assert body["saved_to"] is not None
-
-    # Disk reflects the change.
-    on_disk = yaml.safe_load(cfg_path.read_text())
-    assert on_disk["audio"]["device"] == "BlackHole"
-    assert on_disk["audio"]["enabled"] is True
-    assert cfg_path.with_suffix(cfg_path.suffix + ".bak").exists()
-
-
-def test_audio_select_rejects_failed_device(
-    audio_writable_client: TestClient, monkeypatch: pytest.MonkeyPatch
-):
-    cfg_path: Path = audio_writable_client.app.state._cfg_path
-    original = cfg_path.read_text()
-
-    def _fail_start(self: AudioCapture) -> None:
-        self.state.enabled = False
-        self.state.error = "synthetic failure"
-
-    monkeypatch.setattr(AudioCapture, "start", _fail_start)
-    r = audio_writable_client.post(
-        "/audio/select",
-        json={"device": "no-such-device", "persist": True},
-    )
-    assert r.status_code == 422
-    assert "synthetic failure" in r.text
-    # Config on disk is untouched (we never reach the write path).
-    assert cfg_path.read_text() == original
-
-
-def test_config_yaml_includes_audio_block(audio_off_client: TestClient):
-    r = audio_off_client.get("/config")
-    assert r.status_code == 200
-    body = r.json()
-    assert "audio" in body
-    assert "device" in body["audio"]
-    assert body["audio"]["enabled"] is True
-
-
-def test_audio_config_defaults_when_missing():
-    """A YAML without an `audio:` block should still load (defaults applied)."""
+    monkeypatch.setattr(AudioServerSupervisor, "start", _noop_start)
     cfg = load_config(DEV)
-    # The dev config has an explicit audio block — verify the new defaults
-    # (blocksize=128, fft_window=512) survive the round-trip.
-    assert cfg.audio.samplerate == 48000
-    assert cfg.audio.blocksize == 128
-    assert cfg.audio.fft_window == 512
-    assert cfg.audio.enabled is True
+    app = create_app(cfg, presets_dir=PRESETS)
+    with TestClient(app) as c:
+        yield c
+
+
+def test_audio_state_payload_when_disabled(disabled_bridge_client: TestClient):
+    r = disabled_bridge_client.get("/audio/state")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["enabled"] is False
+    assert body["connected"] is False
+    assert body["low"] == 0.0
+    # ui_url should still come from config so the UI can offer the link if
+    # the operator wants to flip the server back on.
+    assert "ui_url" in body
+    assert body["ui_url"].startswith("http://")
+
+
+def test_audio_state_endpoint_includes_bridge_fields(bridge_no_subprocess_client: TestClient):
+    r = bridge_no_subprocess_client.get("/audio/state")
+    assert r.status_code == 200
+    body = r.json()
+    for key in ("enabled", "connected", "low", "mid", "high", "device", "ui_url", "bands"):
+        assert key in body
+    bands = body["bands"]
+    assert set(bands.keys()) == {"low", "mid", "high"}
+
+
+def test_audio_state_reflects_synthetic_lmh_packet(bridge_no_subprocess_client: TestClient):
+    """Writing into AudioState directly is what the OSC listener does in prod.
+    The HTTP payload must mirror the latest scalars without lag."""
+    bridge: AudioBridge = bridge_no_subprocess_client.app.state.audio_bridge
+    bridge.state.mark_packet()
+    bridge.state.low = 0.4
+    bridge.state.mid = 0.6
+    bridge.state.high = 0.8
+    bridge.state.device_name = "fake-mic"
+    body = bridge_no_subprocess_client.get("/audio/state").json()
+    assert body["connected"] is True
+    assert body["low"] == 0.4
+    assert body["mid"] == 0.6
+    assert body["high"] == 0.8
+    assert body["device"] == "fake-mic"
+
+
+def test_audio_ui_endpoint_returns_configured_url(disabled_bridge_client: TestClient):
+    r = disabled_bridge_client.get("/audio/ui")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["enabled"] is False
+    assert body["ui_url"].startswith("http://")
+
+
+def test_state_includes_audio_block(bridge_no_subprocess_client: TestClient):
+    r = bridge_no_subprocess_client.get("/state")
+    assert r.status_code == 200
+    body = r.json()
+    assert "audio" in body
+    assert "low" in body["audio"]
+
+
+def test_legacy_audio_yaml_block_is_silently_dropped(tmp_path: Path):
+    """An older config.yaml shipping the deprecated `audio:` block must still
+    load. The before-validator on AppConfig drops the legacy key so users
+    don't have to edit YAMLs by hand after upgrading."""
+    base = yaml.safe_load(DEV.read_text())
+    base["audio"] = {"enabled": True, "device": "BlackHole"}  # deprecated block
+    p = tmp_path / "legacy.yaml"
+    p.write_text(yaml.safe_dump(base))
+    cfg = load_config(p)
+    assert not hasattr(cfg, "audio")
+    assert cfg.audio_server.enabled is True
+
+
+def test_config_yaml_includes_audio_server_block(bridge_no_subprocess_client: TestClient):
+    r = bridge_no_subprocess_client.get("/config")
+    assert r.status_code == 200
+    body = r.json()
+    assert "audio_server" in body
+    assert body["audio_server"]["enabled"] is True
+    assert body["audio_server"]["osc_listen_port"] == 9000

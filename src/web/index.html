@@ -327,7 +327,7 @@
       <nav id="viz-nav">
         <a href="/" class="active">main</a>
         <a href="/editor">layout</a>
-        <a href="/audio">audio</a>
+        <a href="#" id="audio-ui-link" title="opens the audio-feature server UI in a new tab">audio</a>
         <a href="/docs">api docs</a>
       </nav>
       <div id="cal-banner">
@@ -396,11 +396,6 @@
           <span class="v" id="m-audio-reactivity-v">1.00</span>
         </div>
         <div class="master-row">
-          <label for="m-audio-feature-cleaning">audio cleanup</label>
-          <input type="range" id="m-audio-feature-cleaning" min="0" max="1" step="0.01" value="1" />
-          <span class="v" id="m-audio-feature-cleaning-v">1.00</span>
-        </div>
-        <div class="master-row">
           <label for="m-saturation">saturation</label>
           <input type="range" id="m-saturation" min="0" max="1" step="0.01" value="1" />
           <span class="v" id="m-saturation-v">1.00</span>
@@ -416,6 +411,7 @@
         </div>
 
         <h3>audio</h3>
+        <div class="stat"><span class="k">status</span><span class="v dim" id="audio-status">—</span></div>
         <div class="stat"><span class="k">device</span><span class="v dim" id="audio-device">—</span></div>
         <div id="audio-meter"></div>
 
@@ -777,6 +773,7 @@
     frames: $("frames"), dropped: $("dropped"), elapsed: $("elapsed"),
     transport: $("transport"), simClients: $("sim-clients"), gamma: $("gamma"),
     audioDevice: $("audio-device"),
+    audioStatus: $("audio-status"),
     layersList: $("layers-list"),
     freezeBtn: $("m-freeze"),
     blackoutBtn: $("m-blackout"),
@@ -784,6 +781,31 @@
     crossfadeVal: $("m-crossfade-v"),
   };
   const audioMeter = window.AudioMeter.mount($("audio-meter"));
+
+  // The 'audio' link in the top nav opens the external audio-feature server's
+  // UI in a new tab. We re-resolve the URL via /audio/state's `ui_url` field
+  // each time `applyState` runs so a config edit shows up without reload.
+  let audioUiUrl = "";
+  (function wireAudioUiLink() {
+    const link = $("audio-ui-link");
+    if (!link) return;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.addEventListener("click", async (e) => {
+      // If we already have the URL, let the anchor navigate naturally.
+      if (audioUiUrl) return;
+      e.preventDefault();
+      try {
+        const r = await fetch("/audio/ui");
+        const body = await r.json();
+        if (body && body.ui_url) {
+          audioUiUrl = body.ui_url;
+          link.href = audioUiUrl;
+          window.open(audioUiUrl, "_blank", "noopener");
+        }
+      } catch (_) { /* ignore */ }
+    });
+  })();
 
   function fmtNum(v, digits = 3) { return v == null ? "—" : Number(v).toFixed(digits); }
   function pct(v) { return Math.max(0, Math.min(100, (v || 0) * 100)).toFixed(1) + "%"; }
@@ -871,10 +893,10 @@
   // Walk a layer's node tree and pull out a short, ordered list of the
   // identifiers a human cares about: the rgb_field leaf, scalar field
   // generators, the palette name, and any audio-band reactivity. Skips
-  // pure plumbing (constant, envelope, mix, math ops, remap, …) since
-  // they don't help recognise what the layer is doing.
+  // pure plumbing (constant, mix, math ops, remap, …) since they don't
+  // help recognise what the layer is doing.
   const SUMMARY_SKIP = new Set([
-    "constant", "envelope", "mix", "mul", "add", "screen", "max", "min",
+    "constant", "mix", "mul", "add", "screen", "max", "min",
     "remap", "threshold", "clamp", "range_map",
   ]);
   const SUMMARY_MAX_TOKENS = 5;
@@ -1010,7 +1032,6 @@
     { id: "m-brightness",            field: "brightness" },
     { id: "m-speed",                 field: "speed" },
     { id: "m-audio-reactivity",      field: "audio_reactivity" },
-    { id: "m-audio-feature-cleaning", field: "audio_feature_cleaning" },
     { id: "m-saturation",            field: "saturation" },
   ];
   const lastMasterEdit = new Map();
@@ -1098,7 +1119,17 @@
     applyMasters(s.masters);
 
     const a = s.audio || {};
-    setText(els.audioDevice, a.device || (a.enabled === false ? "(disabled)" : "—"));
+    setText(els.audioDevice, a.device || "—");
+    let statusText;
+    if (a.connected) statusText = "connected";
+    else if (a.error) statusText = "disconnected · " + a.error;
+    else statusText = "disconnected";
+    setText(els.audioStatus, statusText);
+    if (a.ui_url && audioUiUrl !== a.ui_url) {
+      audioUiUrl = a.ui_url;
+      const link = $("audio-ui-link");
+      if (link) link.href = a.ui_url;
+    }
     audioMeter.update(a);
 
     // Calibration banner — text rarely changes; setText guards it.

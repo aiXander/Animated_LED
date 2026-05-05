@@ -18,7 +18,7 @@ from ledctl.agent import (
 from ledctl.agent.client import AgentClient, CompletionResult, MissingApiKey
 from ledctl.agent.session import ChatSession, SessionStore
 from ledctl.api.server import create_app
-from ledctl.audio.capture import AudioCapture
+from ledctl.audio.bridge import AudioServerSupervisor
 from ledctl.config import load_config
 from ledctl.surface import REGISTRY
 from tests.test_api import DEV, PRESETS
@@ -26,12 +26,15 @@ from tests.test_api import DEV, PRESETS
 
 @pytest.fixture
 def agent_client_app(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    """TestClient with audio stubbed out so the engine boots in tests."""
+    """TestClient with the audio-server supervisor stubbed (no real subprocess)
+    so the engine boots in tests without depending on Realtime_PyAudio_FFT
+    being installed. The OSC listener still starts on a localhost port; we
+    don't push anything into it from these tests."""
 
-    def _noop_start(self: AudioCapture) -> None:
-        self.state.enabled = False
+    def _noop_start(self: AudioServerSupervisor) -> None:
+        self._proc = None
 
-    monkeypatch.setattr(AudioCapture, "start", _noop_start)
+    monkeypatch.setattr(AudioServerSupervisor, "start", _noop_start)
     cfg = load_config(DEV)
     app = create_app(cfg, presets_dir=PRESETS)
     with TestClient(app) as c:
@@ -53,7 +56,7 @@ def test_build_system_prompt_contains_install_and_catalogue(agent_client_app: Te
     assert "1800 LEDs" in prompt
     assert "CONTROL SURFACE" in prompt
     # Core primitives appear
-    for kind in ("wave", "radial", "noise", "sparkles", "audio_band", "envelope",
+    for kind in ("wave", "radial", "noise", "sparkles", "audio_band",
                  "palette_lookup", "palette_named"):
         assert kind in prompt
     assert "fire" in prompt and "mono_<hex>" in prompt
@@ -63,8 +66,8 @@ def test_build_system_prompt_contains_install_and_catalogue(agent_client_app: Te
     # Anti-patterns block + rubric
     assert "ANTI-PATTERNS" in prompt
     assert "RUBRIC" in prompt
-    # Audio off in tests; prompt should say so
-    assert "Audio capture is OFF" in prompt
+    # External audio bridge isn't fed in tests; the prompt should say so.
+    assert "audio-feature server is disconnected" in prompt
     # Masters block present
     assert "OPERATOR MASTERS" in prompt
 
@@ -72,10 +75,11 @@ def test_build_system_prompt_contains_install_and_catalogue(agent_client_app: Te
 def test_build_system_prompt_includes_audio_when_enabled(agent_client_app: TestClient):
     engine = agent_client_app.app.state.engine
     audio = engine.audio_state
-    audio.enabled = True
+    audio.mark_packet()  # connected = True
     audio.device_name = "fake-mic"
     audio.low = 0.42
-    audio.low_norm = 0.55
+    audio.low_lo = 30.0
+    audio.low_hi = 250.0
     prompt = build_system_prompt(
         topology=engine.topology,
         engine=engine,

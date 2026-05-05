@@ -10,13 +10,12 @@ Bounds (enforced in `clamped()` and at the REST layer):
   - brightness ∈ [0, 1]
   - speed ∈ [0, 3]
   - audio_reactivity ∈ [0, 3]
-  - audio_feature_cleaning ∈ [0, 1]
   - saturation ∈ [0, 1]
   - freeze: bool
 
 A frozen pattern still breathes with the room, by design: `freeze` zeroes
-`effective_t` accumulation but `audio_band` reads `AudioState` directly, and
-`envelope` smooths against wall-clock dt. See refactor doc §7.2.
+`effective_t` accumulation but `audio_band` reads `AudioState` directly,
+and the audio server keeps publishing smoothed band energies regardless.
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ class MasterControls:
     brightness: float = 1.0
     speed: float = 1.0
     audio_reactivity: float = 1.0
-    audio_feature_cleaning: float = 1.0
     saturation: float = 1.0
     freeze: bool = False
 
@@ -42,7 +40,6 @@ class MasterControls:
             brightness=_clip(self.brightness, 0.0, 1.0),
             speed=_clip(self.speed, 0.0, 3.0),
             audio_reactivity=_clip(self.audio_reactivity, 0.0, 3.0),
-            audio_feature_cleaning=_clip(self.audio_feature_cleaning, 0.0, 1.0),
             saturation=_clip(self.saturation, 0.0, 1.0),
             freeze=bool(self.freeze),
         )
@@ -57,7 +54,6 @@ class MasterControls:
             "brightness",
             "speed",
             "audio_reactivity",
-            "audio_feature_cleaning",
             "saturation",
             "freeze",
         }
@@ -82,10 +78,10 @@ class RenderContext:
     """Per-frame snapshot threaded through every primitive.
 
     `t` is *effective* time (master-speed-scaled, frozen if `freeze`). `wall_t`
-    is raw monotonic time — the mixer's crossfade alpha and `envelope`'s
-    smoothing dt both use wall_t so they keep working under speed/freeze.
+    is raw monotonic time — the mixer's crossfade alpha uses wall_t so it
+    keeps progressing under speed/freeze.
     `audio` is a possibly-pre-scaled view of the current AudioState (the
-    `*_norm` fields are multiplied by `masters.audio_reactivity` once per
+    low/mid/high fields are multiplied by `masters.audio_reactivity` once per
     tick, so individual primitives stay pure).
     """
 

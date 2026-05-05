@@ -635,7 +635,7 @@ def _primitives_producing(kind: str) -> list[str]:
     """Return the kinds of primitives that produce `kind` directly.
 
     Used by `_check_kind` to turn "expected scalar_t, got scalar_field" into
-    actionable advice ("use audio_band, constant, envelope, lfo"). Polymorphic
+    actionable advice ("use audio_band, constant, lfo"). Polymorphic
     combinators are excluded from the suggestion — they could match, but the
     LLM does better with concrete leaf primitives in front of it.
     """
@@ -774,7 +774,7 @@ class _CompiledAudioBand(CompiledNode):
     output_kind: ClassVar[OutputKind] = "scalar_t"
 
     def __init__(self, band: str):
-        self._field = f"{band}_norm"
+        self._field = band
 
     def render(self, ctx: RenderContext) -> float:
         if ctx.audio is None:
@@ -787,92 +787,18 @@ class AudioBand(Primitive):
     kind = "audio_band"
     output_kind = "scalar_t"
     summary = (
-        "Rolling-normalised frequency band (low/mid/high) — ~[0, 1] under "
-        "typical room loudness; may exceed 1 when masters.audio_reactivity > 1 "
-        "(clip downstream if needed). Always pick a band that matches the "
-        "musical element you want; full-band loudness is intentionally not "
-        "exposed."
+        "Auto-scaled frequency band (low/mid/high) from the external audio "
+        "server — already smoothed and ~[0, 1] under typical room loudness; "
+        "may exceed 1 when masters.audio_reactivity > 1 (clip downstream if "
+        "needed). Pick a band that matches the musical element you want; "
+        "full-band loudness is intentionally not exposed. All attack/release "
+        "and shaping happen upstream in the audio server's UI."
     )
     Params = _AudioBandParams
 
     @classmethod
     def compile(cls, params, topology, compiler):
         return _CompiledAudioBand(params.band)
-
-
-class _EnvelopeParams(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    input: Any = Field(
-        ...,
-        description="A scalar_t node (audio_band, lfo, constant, …) to smooth",
-    )
-    attack_ms: float = Field(60.0, ge=0.0, description="Rise smoothing tau")
-    release_ms: float = Field(250.0, ge=0.0, description="Fall smoothing tau")
-    gain: float = Field(1.0, ge=0.0, description="Multiplier before clamping")
-    curve: Literal["linear", "sqrt", "square"] = Field(
-        "linear",
-        description="Perceptual shape: sqrt = punchier on quiet input, square = lazier",
-    )
-    floor: float = Field(0.0, description="Output value when source is at minimum")
-    ceiling: float = Field(1.0, description="Output value when source is at maximum")
-
-
-class _CompiledEnvelope(CompiledNode):
-    output_kind: ClassVar[OutputKind] = "scalar_t"
-
-    def __init__(self, child: CompiledNode, params: _EnvelopeParams):
-        self._child = child
-        self._attack_s = float(params.attack_ms) / 1000.0
-        self._release_s = float(params.release_ms) / 1000.0
-        self._gain = float(params.gain)
-        self._curve = params.curve
-        self._floor = float(params.floor)
-        self._ceiling = float(params.ceiling)
-        self._value = 0.0
-        self._last_wall: float | None = None
-
-    def render(self, ctx: RenderContext) -> float:
-        raw = float(self._child.render(ctx))
-        wall = ctx.wall_t
-        if self._last_wall is None or wall < self._last_wall:
-            self._value = raw
-        else:
-            dt = wall - self._last_wall
-            tau = self._attack_s if raw > self._value else self._release_s
-            if tau > 0.0 and dt > 0.0:
-                k = math.exp(-dt / tau)
-                self._value = self._value * k + raw * (1.0 - k)
-            else:
-                self._value = raw
-        self._last_wall = wall
-
-        v = self._value * self._gain
-        if self._curve == "sqrt":
-            v = math.sqrt(v) if v > 0.0 else 0.0
-        elif self._curve == "square":
-            v = v * v
-        if v < 0.0:
-            v = 0.0
-        elif v > 1.0:
-            v = 1.0
-        return self._floor + (self._ceiling - self._floor) * v
-
-
-@primitive
-class Envelope(Primitive):
-    kind = "envelope"
-    output_kind = "scalar_t"
-    summary = (
-        "Smooth a scalar_t with asymmetric attack/release, then map "
-        "[0,1] → [floor, ceiling] via gain + curve. Smoothing dt is "
-        "wall-clock — a frozen pattern still breathes with the room."
-    )
-    Params = _EnvelopeParams
-
-    @classmethod
-    def compile(cls, params, topology, compiler):
-        child = compiler.compile_child(params.input, expect="scalar_t", path="input")
-        return _CompiledEnvelope(child, params)
 
 
 class _ClampParams(BaseModel):
@@ -2037,13 +1963,13 @@ EXAMPLE_TREES: dict[str, dict[str, Any]] = {
                 },
             },
             "brightness": {
-                "kind": "envelope",
+                "kind": "range_map",
                 "params": {
                     "input": {"kind": "audio_band", "params": {"band": "low"}},
-                    "attack_ms": 30,
-                    "release_ms": 500,
-                    "floor": 0.5,
-                    "ceiling": 1.0,
+                    "in_min": 0.0,
+                    "in_max": 1.0,
+                    "out_min": 0.5,
+                    "out_max": 1.0,
                 },
             },
         },
@@ -2054,14 +1980,13 @@ EXAMPLE_TREES: dict[str, dict[str, Any]] = {
             "scalar": {"kind": "wave", "params": {"axis": "x", "speed": 1.5, "wavelength": 0.5}},
             "palette": "fire",
             "brightness": {
-                "kind": "envelope",
+                "kind": "range_map",
                 "params": {
                     "input": {"kind": "audio_band", "params": {"band": "low"}},
-                    "attack_ms": 30,
-                    "release_ms": 300,
-                    "gain": 4.0,
-                    "floor": 0.3,
-                    "ceiling": 1.0,
+                    "in_min": 0.0,
+                    "in_max": 1.0,
+                    "out_min": 0.3,
+                    "out_max": 1.0,
                 },
             },
         },
@@ -2123,7 +2048,8 @@ EXAMPLE_TREES: dict[str, dict[str, Any]] = {
 ANTI_PATTERNS: list[str] = [
     "There is no top-level `bindings` — modulation lives ON the parameter as "
     "a node. To modulate brightness, set `palette_lookup.brightness` to an "
-    "envelope/audio_band/lfo node, not a `bindings.brightness` block.",
+    "audio_band/lfo node (optionally wrapped in `range_map` for floor/ceiling), "
+    "not a `bindings.brightness` block.",
     "`palette` is itself a node: bare strings (\"fire\") are sugar for "
     "`palette_named`. There is no `palette: \"red\"` — use `mono_ff0000`.",
     "`mix` is polymorphic; do not reach for a separate `palette_mix` — "
@@ -2133,13 +2059,14 @@ ANTI_PATTERNS: list[str] = [
     "Discrete params (`axis`, `shape`, `band`, `direction`) are baked at compile "
     "time and cannot be modulated. Numeric params are `NumberOrNode` and accept "
     "either a literal or a scalar_t/scalar_field node.",
-    "Audio is read via `audio_band` with band ∈ {low, mid, high} (rolling-"
-    "normalised). Pick the band that matches the musical element you want to "
-    "track (low=kick, mid=vocals/snare, high=hats). Wrap in `envelope` for "
-    "smooth attack/release; raw `audio_band` is jagged on purpose.",
+    "Audio is read via `audio_band` with band ∈ {low, mid, high}. Values come "
+    "from the external audio-feature server, already smoothed and auto-scaled "
+    "to ~[0, 1]. Pick the band that matches the musical element you want to "
+    "track (low=kick, mid=vocals/snare, high=hats). All attack/release and "
+    "smoothing live upstream — retune them in the audio server's UI, not here.",
     "`mix.t` is the lerp factor — it is a `scalar_t` (one number per frame), "
-    "not a `scalar_field`. Feed it `lfo`, `audio_band`, `envelope`, or a literal "
-    "0..1 number; do NOT feed it `position`/`wave`/`noise` (those are per-LED).",
+    "not a `scalar_field`. Feed it `lfo`, `audio_band`, or a literal 0..1 "
+    "number; do NOT feed it `position`/`wave`/`noise` (those are per-LED).",
     "To split the install spatially (top half vs bottom half, etc.) use a "
     "`scalar_field` like `position` as the `palette_lookup.scalar` directly, or "
     "build it via `add`/`mul`/`mix` of two `scalar_field`s — `mix.t` cannot "

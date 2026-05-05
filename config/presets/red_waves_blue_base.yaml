@@ -42,17 +42,16 @@ layers:
     params:
       palette: mono_0000ff
       brightness:
-        kind: envelope
+        kind: range_map
         params:
           input:
             kind: audio_band
             params:
               band: low
-          release_ms: 500
-          ceiling: 0.45
-          curve: sqrt
-          gain: 1.5
-          attack_ms: 50
+          in_min: 0.0
+          in_max: 1.0
+          out_min: 0.0
+          out_max: 0.45
       hue_shift: 0
       scalar:
         params:

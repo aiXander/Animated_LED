@@ -86,14 +86,29 @@ transport:
 output:
   gamma: 1.5
   lut_size: 256
-audio:
+audio_server:
+  # External audio-feature server (Realtime_PyAudio_FFT). On boot ledctl
+  # spawns the `audio-server` console script and listens for /audio/lmh on
+  # OSC. Pick the input device, retune bands, save presets at the audio
+  # server's UI (default http://127.0.0.1:8766) — there is no LED-side mic
+  # config any more. If the subprocess fails or the OSC stream stops, the
+  # render loop keeps running with audio_band returning 0 + a warning in
+  # this terminal.
   enabled: true
-  device: null
-  samplerate: 48000
-  blocksize: 128
-  fft_window: 512
-  channels: 1
-  gain: 1.0
+  autostart: true
+  # Launch via `python -m server.main` from the Realtime_PyAudio_FFT
+  # checkout — the bridge rewrites a bare `python` token to sys.executable,
+  # so this always uses the same interpreter (and its installed deps) that
+  # ledctl itself is running under, regardless of PATH / venv activation.
+  command: ["python", "-m", "server.main"]
+  # The audio-server reads + writes its own config.yaml next to its cwd.
+  # Point at the source checkout so its on-disk settings (device, band
+  # cutoffs, smoothing) persist there instead of polluting this repo.
+  working_dir: /Users/xandersteenbrugge/Documents/GitHub/Realtime_PyAudio_FFT
+  osc_listen_host: 127.0.0.1
+  osc_listen_port: 9000
+  ui_url: http://127.0.0.1:8766
+  stale_after_s: 1.5
 agent:
   enabled: true
   provider: openrouter
@@ -110,6 +125,5 @@ masters:
   brightness: 1.0
   speed: 1.0
   audio_reactivity: 1.0
-  audio_feature_cleaning: 1.0
   saturation: 1.0
   freeze: false

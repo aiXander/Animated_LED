@@ -20,7 +20,9 @@ def test_dev_config_loads():
 
 def test_pi_config_loads():
     cfg = load_config(PI)
-    assert cfg.transport.mode == "ddp"
+    # Pi runs `multi` so the operator UI keeps a live preview while DDP fans
+    # frames out to the WLED controller.
+    assert cfg.transport.mode == "multi"
     assert cfg.controllers["gledopto_main"].host == "10.0.0.2"
 
 

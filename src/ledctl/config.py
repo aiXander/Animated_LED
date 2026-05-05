@@ -106,64 +106,90 @@ class OutputConfig(BaseModel):
     )
 
 
-class AudioConfig(BaseModel):
-    """Audio capture settings (Phase 5).
+class AudioServerConfig(BaseModel):
+    """External audio-feature server bridge.
 
-    `device` is the input source the install listens to. Save by name (string)
-    rather than index — indices reshuffle between sessions and machines, names
-    don't (within a host). The /audio web route is the canonical way to pick it.
+    The LED controller no longer captures or analyses audio itself. Instead it
+    auto-starts the
+    [Realtime_PyAudio_FFT](https://github.com/Jaymon/Realtime_PyAudio_FFT)
+    subprocess and listens for `/audio/lmh` + `/audio/meta` over OSC. Device
+    selection, smoothing, band cutoffs etc. are all owned by that server's UI
+    (default: http://127.0.0.1:8766) — there is no LED-side mic config.
+
+    Fail modes are deliberately soft. If the subprocess fails to start, the
+    OSC port is in use, or the bridge goes silent for `stale_after_s`, the
+    LED render loop keeps running with `audio_band` returning 0 and a warning
+    in the terminal. Re-enable reactivity by fixing the underlying issue
+    (install the audio-server package, free the port, restart the LED server).
     """
 
     model_config = ConfigDict(extra="forbid")
-    enabled: bool = Field(True, description="Whether to start the capture stream on boot")
-    device: str | int | None = Field(
+    enabled: bool = Field(
+        True,
+        description=(
+            "Master switch. When false the bridge isn't started; audio_band "
+            "primitives return 0 and the operator UI shows 'audio off'."
+        ),
+    )
+    autostart: bool = Field(
+        True,
+        description=(
+            "Whether ledctl spawns the external audio-server as a subprocess "
+            "on boot. Set False if you'd rather run it manually (handy when "
+            "tuning bands via its UI on a different machine)."
+        ),
+    )
+    command: list[str] = Field(
+        default_factory=lambda: ["audio-server"],
+        description=(
+            "argv passed to subprocess.Popen for the audio-server. Default "
+            "expects the `audio-server` console script from the "
+            "Realtime_PyAudio_FFT package on PATH. Override with e.g. "
+            "['python', '-m', 'server.main'] alongside `working_dir` if you "
+            "run it from a checkout."
+        ),
+    )
+    working_dir: str | None = Field(
         None,
         description=(
-            "Input device — name (preferred), index, or null for the system default. "
-            "Edit interactively at /audio."
+            "cwd for the audio-server subprocess. Optional. Useful when "
+            "launching via `python -m server.main` from a clone."
         ),
     )
-    samplerate: int = Field(48000, gt=0, description="Capture sample rate in Hz")
-    blocksize: int = Field(
-        128, gt=0,
+    osc_listen_host: str = Field(
+        "127.0.0.1",
         description=(
-            "Frames per PortAudio callback. Sets the HW capture latency floor; "
-            "smaller = lower latency, slightly more callbacks/sec. 128 @ 48 kHz "
-            "≈ 2.67 ms is comfortable on M-series Macs."
+            "Local interface the OSC listener binds to. The audio-server "
+            "ships `/audio/lmh` to this host:port; keep loopback unless "
+            "you've moved the audio-server to another machine."
         ),
     )
-    fft_window: int = Field(
-        512, gt=0,
+    osc_listen_port: int = Field(
+        9000, gt=0, lt=65536,
         description=(
-            "FFT length over the most-recent samples; sets frequency resolution. "
-            "Must be >= blocksize. Larger windows give finer bins but slower "
-            "transient response (a kick ramps in over multiple updates)."
+            "UDP port for the OSC listener. Must match `osc.destinations` "
+            "in the audio-server's config.yaml (default 9000)."
         ),
     )
-    channels: int = Field(1, ge=1, le=8, description="Capture channel count (mono = 1)")
-    gain: float = Field(1.0, ge=0.0, description="Linear gain applied before features")
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_legacy_fields(cls, data: object) -> object:
-        # `smoothing` was a callback-side EMA factor in the original Phase-5
-        # implementation. After splitting source/analyser, all temporal smoothing
-        # moved into the per-binding modulator envelopes (effects/modulator.py),
-        # so a global EMA on the audio state is no longer wanted. Silently drop
-        # it on read so existing YAMLs keep loading; `extra="forbid"` would
-        # otherwise reject the unknown key.
-        if isinstance(data, dict) and "smoothing" in data:
-            data = {k: v for k, v in data.items() if k != "smoothing"}
-        return data
-
-    @model_validator(mode="after")
-    def _check_window_vs_block(self) -> "AudioConfig":
-        if self.fft_window < self.blocksize:
-            raise ValueError(
-                f"audio.fft_window ({self.fft_window}) must be >= "
-                f"audio.blocksize ({self.blocksize})"
-            )
-        return self
+    ui_url: str = Field(
+        "http://127.0.0.1:8766",
+        description=(
+            "Where the audio-server's browser UI lives. The 'audio' link in "
+            "the LED UI opens this in a new tab — pick devices, retune "
+            "bands, save presets there."
+        ),
+    )
+    stale_after_s: float = Field(
+        1.5,
+        gt=0.0,
+        le=60.0,
+        description=(
+            "Watchdog: if no `/audio/lmh` packet arrives for this many "
+            "seconds the bridge is marked disconnected and the engine reverts "
+            "to non-reactive output. The audio-server emits at audio block "
+            "rate (~187 Hz @ 48k/256), so 1.5 s is well above the noise floor."
+        ),
+    )
 
 
 class AgentConfig(BaseModel):
@@ -251,16 +277,6 @@ class MastersConfig(BaseModel):
     brightness: float = Field(1.0, ge=0.0, le=1.0)
     speed: float = Field(1.0, ge=0.0, le=3.0)
     audio_reactivity: float = Field(1.0, ge=0.0, le=3.0)
-    audio_feature_cleaning: float = Field(
-        1.0, ge=0.0, le=1.0,
-        description=(
-            "Strength of the per-band envelope cleaner applied to the "
-            "normalised audio features (low/mid/high). 0 = raw FFT-derived "
-            "values (jittery on live music); 1 = peak-follower with exponential "
-            "release + soft noise gate (kicks ring as discrete pulses, hi-hat "
-            "outliers don't strobe). Adds zero latency on rising edges."
-        ),
-    )
     saturation: float = Field(1.0, ge=0.0, le=1.0)
     freeze: bool = False
 
@@ -274,9 +290,21 @@ class AppConfig(BaseModel):
     strips: list[StripConfig]
     transport: TransportConfig = TransportConfig()
     output: OutputConfig = OutputConfig()
-    audio: AudioConfig = AudioConfig()
+    audio_server: AudioServerConfig = AudioServerConfig()
     agent: AgentConfig = AgentConfig()
     masters: MastersConfig = MastersConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_audio_block(cls, data: object) -> object:
+        # The Phase-5 `audio:` block (device, samplerate, blocksize, fft_window)
+        # was ripped out when capture moved to the external audio-feature
+        # server. Drop it silently so older YAMLs in the wild still load —
+        # `extra="forbid"` would otherwise reject the unknown key. The new
+        # `audio_server:` block is unrelated and lives next to it.
+        if isinstance(data, dict) and "audio" in data:
+            data = {k: v for k, v in data.items() if k != "audio"}
+        return data
 
     @model_validator(mode="after")
     def _check_strip_layout(self) -> "AppConfig":
