@@ -8,6 +8,9 @@ pw: wled1234
 # Copy files to the Pi:
 scp .env xander@****:/home/xander/audio_LED/Animated_LED
 
+
+scp ~/.ssh/id_ed25519 xander@****:/home/xander/.ssh
+
 -----
 
 # SSH into the Pi from Mac:

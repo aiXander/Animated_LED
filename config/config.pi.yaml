@@ -108,7 +108,12 @@ audio_server:
   enabled: true
   autostart: true
   command: ["audio-server"]
-  working_dir: null
+  # Resolved relative to this YAML file's directory: from <repo>/config/ this
+  # points at <repo>/../Realtime_PyAudio_FFT, the sibling clone of the
+  # audio-feature server. Launching the subprocess with that as cwd means
+  # the audio-server picks up its own config.yaml (device, band cutoffs,
+  # smoothing, presets) from the cloned repo on every boot.
+  working_dir: ../../Realtime_PyAudio_FFT
   osc_listen_host: 127.0.0.1
   osc_listen_port: 9000
   ui_url: http://127.0.0.1:8766
