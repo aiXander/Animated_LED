@@ -30,7 +30,7 @@ import socket
 import subprocess
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any
@@ -102,6 +102,11 @@ class OscFeatureListener:
         self._server_thread: threading.Thread | None = None
         self._watchdog_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # Optional thread-safe callback fired after every /audio/lmh write.
+        # The render loop sets this so it can wake immediately on a fresh
+        # packet instead of polling at the fixed render cadence. The caller
+        # owns thread-safety (e.g. asyncio loop.call_soon_threadsafe).
+        self.kick_callback: Callable[[], None] | None = None
 
     @property
     def running(self) -> bool:
@@ -112,7 +117,7 @@ class OscFeatureListener:
             return
         try:
             from pythonosc import dispatcher  # noqa: PLC0415
-            from pythonosc.osc_server import ThreadingOSCUDPServer  # noqa: PLC0415
+            from pythonosc.osc_server import BlockingOSCUDPServer  # noqa: PLC0415
         except ImportError as e:
             log.warning("python-osc not installed: %s — audio features disabled", e)
             self.state.error = f"python-osc unavailable: {e}"
@@ -124,7 +129,11 @@ class OscFeatureListener:
         # enabled); register a no-op so we don't log "no handler" each frame.
         d.map("/audio/fft", lambda *_: None)
         try:
-            self._server = ThreadingOSCUDPServer((self.host, self.port), d)
+            # Single-threaded server: avoids the per-packet thread spawn that
+            # ThreadingOSCUDPServer does at ~187 Hz. Handlers are tiny (3 float
+            # writes), so serial dispatch is plenty fast and the reduced
+            # scheduling jitter matters more than parallelism.
+            self._server = BlockingOSCUDPServer((self.host, self.port), d)
         except OSError as e:
             log.warning(
                 "OSC listener could not bind %s:%d (%s) — audio features disabled",
@@ -179,6 +188,9 @@ class OscFeatureListener:
         s.mid = mid
         s.high = high
         s.mark_packet()
+        cb = self.kick_callback
+        if cb is not None:
+            cb()
 
     def _on_meta(self, _addr: str, *args: Any) -> None:
         # Per the audio-server README: sr:i blocksize:i n_fft_bins:i

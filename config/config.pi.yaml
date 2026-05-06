@@ -1,6 +1,6 @@
 project:
   name: festival_scaffold
-  target_fps: 40
+  target_fps: 60
 server:
   host: 0.0.0.0
   port: 8000

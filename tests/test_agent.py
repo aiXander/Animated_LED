@@ -436,6 +436,144 @@ def test_agent_chat_buffer_rolls_over_at_history_cap(
     assert sess.messages[0]["role"] != "tool"
 
 
+def _make_session_with_history(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, list[dict[str, Any]]]:
+    """Run one /agent/chat turn so the session buffer has tool-call history.
+
+    Returns (session_id, captured_kwargs_per_call). The fake LLM is
+    swapped *inside* this helper, so callers must replace `complete` again
+    if they need different behaviour for later turns.
+    """
+    captured: list[dict[str, Any]] = []
+
+    def fake_complete(self, **kw):
+        captured.append(kw)
+        return _completion_with_tool(_ice_wave_args(), text="applied")
+
+    monkeypatch.setattr(AgentClient, "complete", fake_complete)
+    r = client.post("/agent/chat", json={"message": "ice"})
+    assert r.status_code == 200, r.text
+    sid = r.json()["session_id"]
+    sess = client.app.state.agent_sessions.get(sid)
+    assert len(sess.messages) > 0, "expected non-empty buffer after first turn"
+    return sid, captured
+
+
+def test_delete_layer_wipes_agent_session_buffer_but_keeps_turns(
+    agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Manual layer removal must clear the LLM-visible buffer (so the next
+    turn doesn't see stale `update_leds` args) while keeping the
+    operator-visible transcript and the session id intact."""
+    sid, _ = _make_session_with_history(agent_client_app, monkeypatch)
+    sess = agent_client_app.app.state.agent_sessions.get(sid)
+    turns_before = len(sess.turns)
+
+    r = agent_client_app.delete("/layers/0")
+    assert r.status_code == 200
+
+    sess = agent_client_app.app.state.agent_sessions.get(sid)
+    assert sess is not None, "session id must survive a layer delete"
+    assert len(sess.messages) == 0, "LLM message buffer must be wiped"
+    assert len(sess.turns) == turns_before, "operator transcript must be kept"
+
+
+def test_post_layer_wipes_agent_session_buffer(
+    agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    sid, _ = _make_session_with_history(agent_client_app, monkeypatch)
+
+    r = agent_client_app.post(
+        "/layers",
+        json={
+            "node": {
+                "kind": "palette_lookup",
+                "params": {
+                    "scalar": {"kind": "constant", "params": {"value": 0.5}},
+                    "palette": "fire",
+                },
+            },
+            "blend": "add",
+            "opacity": 0.4,
+        },
+    )
+    assert r.status_code == 201
+
+    sess = agent_client_app.app.state.agent_sessions.get(sid)
+    assert len(sess.messages) == 0
+
+
+def test_patch_layer_wipes_agent_session_buffer(
+    agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    sid, _ = _make_session_with_history(agent_client_app, monkeypatch)
+
+    r = agent_client_app.patch("/layers/0", json={"opacity": 0.5})
+    assert r.status_code == 200
+
+    sess = agent_client_app.app.state.agent_sessions.get(sid)
+    assert len(sess.messages) == 0
+
+
+def test_preset_apply_wipes_agent_session_buffer(
+    agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    sid, _ = _make_session_with_history(agent_client_app, monkeypatch)
+
+    r = agent_client_app.post("/presets/default")
+    assert r.status_code == 200
+
+    sess = agent_client_app.app.state.agent_sessions.get(sid)
+    assert len(sess.messages) == 0
+
+
+def test_llm_update_leds_does_not_wipe_buffer(
+    agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """A successful /agent/chat turn must NOT wipe the buffer — the wipe is
+    operator-side only. Otherwise the model would lose conversational
+    context after every successful tool call."""
+    sid, _ = _make_session_with_history(agent_client_app, monkeypatch)
+    before = len(agent_client_app.app.state.agent_sessions.get(sid).messages)
+    assert before > 0
+
+    r = agent_client_app.post(
+        "/agent/chat", json={"message": "more red", "session_id": sid}
+    )
+    assert r.status_code == 200
+    after = len(agent_client_app.app.state.agent_sessions.get(sid).messages)
+    assert after > before
+
+
+def test_agent_chat_after_layer_removal_starts_fresh(
+    agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """After a manual layer removal, the next /agent/chat call must hit the
+    LLM with an empty history (just the new user prompt) — no stale
+    tool-call args left to copy from."""
+    sid, _ = _make_session_with_history(agent_client_app, monkeypatch)
+    agent_client_app.delete("/layers/0")
+
+    captured: list[dict[str, Any]] = []
+
+    def fake_complete(self, **kw):
+        captured.append(kw)
+        return _completion_with_tool(_ice_wave_args(), text="fresh")
+
+    monkeypatch.setattr(AgentClient, "complete", fake_complete)
+    r = agent_client_app.post(
+        "/agent/chat", json={"message": "make it red", "session_id": sid}
+    )
+    assert r.status_code == 200, r.text
+
+    msgs = captured[0]["messages"]
+    # Only the new user message — no carry-over from the wiped turn.
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "user"
+    assert msgs[0]["content"] == "make it red"
+
+
 def test_agent_chat_returns_503_on_missing_api_key(
     agent_client_app: TestClient, monkeypatch: pytest.MonkeyPatch
 ):

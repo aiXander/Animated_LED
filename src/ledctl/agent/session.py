@@ -102,6 +102,21 @@ class SessionStore:
     def delete(self, session_id: str) -> bool:
         return self._sessions.pop(session_id, None) is not None
 
+    def reset_all_buffers(self) -> None:
+        """Wipe the LLM-visible message deque for every active session.
+
+        Called when the operator mutates the layer stack via the UI or
+        applies a preset. The LLM's prior `update_leds` tool-call args then
+        reference layers that may no longer exist (or no longer match), and
+        without a wipe the model pattern-matches against those args and
+        steamrolls the operator's edit on the next turn. Operator-visible
+        `turns` and the session id are preserved — only `messages` is
+        cleared, so the chat panel keeps its transcript and the next turn
+        reuses the same session id.
+        """
+        for sess in self._sessions.values():
+            sess.messages.clear()
+
 
 def _new_session_id() -> str:
     return uuid.uuid4().hex

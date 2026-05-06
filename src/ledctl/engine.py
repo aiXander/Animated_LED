@@ -106,6 +106,13 @@ class Engine:
         self.calibration: CalibrationState | None = None
         self.audio_state: AudioState | None = None
         self.masters: MasterControls = masters or MasterControls()
+        # Event-driven render kick: the audio bridge calls `kick_audio()` from
+        # its OSC listener thread after every /audio/lmh packet. The render
+        # loop waits on this event so a fresh band value reaches the next
+        # frame within ~µs of arrival instead of waiting up to a full period.
+        # Created lazily when the loop starts so we capture the running loop.
+        self._audio_kick: asyncio.Event | None = None
+        self._asyncio_loop: asyncio.AbstractEventLoop | None = None
 
     def attach_audio(self, state: AudioState | None) -> None:
         """Make an AudioState visible to audio_band primitives via ctx.
@@ -127,7 +134,23 @@ class Engine:
         if self._task is not None:
             return
         self._stop.clear()
+        self._asyncio_loop = asyncio.get_running_loop()
+        self._audio_kick = asyncio.Event()
         self._task = asyncio.create_task(self._loop(), name="ledctl-engine")
+
+    def kick_audio(self) -> None:
+        """Wake the render loop on a fresh OSC packet (thread-safe).
+
+        Called by the OSC listener thread after every /audio/lmh write. Uses
+        `call_soon_threadsafe` so we can poke an asyncio.Event from outside
+        the loop. No-op before `start()` runs (kick is dropped silently — the
+        next fixed-cadence wake will pick up the new audio value anyway).
+        """
+        loop = self._asyncio_loop
+        ev = self._audio_kick
+        if loop is None or ev is None:
+            return
+        loop.call_soon_threadsafe(ev.set)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -316,14 +339,54 @@ class Engine:
 
     async def _loop(self) -> None:
         period = 1.0 / float(self.target_fps)
+        # Lower bound on the gap between two renders. Setting this slightly
+        # below `period` lets a fresh audio packet pull the next render
+        # forward (at the tail of the period) — saves up to ~5 ms of audio
+        # staleness without letting the effective rate exceed ~1.4×target_fps.
+        # WLED + WS2815 absorb the small variance comfortably.
+        kick_min_interval = period * 0.7
         t0 = time.perf_counter()
-        next_tick = t0
         fps_window_start = t0
         fps_window_frames = 0
         last_wall = t0
+        last_render = t0 - period  # fire first frame immediately
+        kick = self._audio_kick
 
         try:
             while not self._stop.is_set():
+                # ---- wait until either: period fully elapsed, or audio
+                # kicked us at least `kick_min_interval` after the last frame.
+                deadline = last_render + period
+                while True:
+                    now = time.perf_counter()
+                    remaining = deadline - now
+                    if remaining <= 0:
+                        break
+                    if kick is None:
+                        try:
+                            await asyncio.wait_for(self._stop.wait(), timeout=remaining)
+                            return
+                        except TimeoutError:
+                            break
+                    wait_kick = asyncio.create_task(kick.wait())
+                    wait_stop = asyncio.create_task(self._stop.wait())
+                    done, pending = await asyncio.wait(
+                        {wait_kick, wait_stop},
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for t in pending:
+                        t.cancel()
+                    if wait_stop in done:
+                        return
+                    if wait_kick in done:
+                        kick.clear()
+                        if time.perf_counter() - last_render >= kick_min_interval:
+                            break
+                        continue  # too soon since last frame; keep waiting
+                    break  # timeout — period elapsed
+
+                # ---- render ----
                 now = time.perf_counter()
                 wall_t = now - t0
                 dt_wall = wall_t - last_wall
@@ -347,25 +410,23 @@ class Engine:
                     self._apply_calibration(wall_t)
                 await self.transport.send_frame(self.buffer.to_uint8(self.gamma))
 
+                last_render = time.perf_counter()
+                if kick is not None:
+                    # Drop any kick that arrived during our render — we just
+                    # sampled the freshest audio, so this kick is consumed.
+                    kick.clear()
+
                 self.frame_count += 1
                 fps_window_frames += 1
                 if now - fps_window_start >= 1.0:
                     self.fps = fps_window_frames / (now - fps_window_start)
                     fps_window_start = now
                     fps_window_frames = 0
-
-                next_tick += period
-                sleep = next_tick - time.perf_counter()
-                if sleep > 0:
-                    try:
-                        await asyncio.wait_for(self._stop.wait(), timeout=sleep)
-                        return  # stop requested
-                    except TimeoutError:
-                        pass
-                else:
+                if last_render - deadline > period:
+                    # We finished a full period past our deadline — count it
+                    # as a dropped frame for diagnostics (we don't try to
+                    # catch up; better to skip than queue).
                     self.dropped_frames += 1
-                    next_tick = time.perf_counter()
-                    await asyncio.sleep(0)
         except Exception:
             log.exception("engine loop crashed")
             raise
