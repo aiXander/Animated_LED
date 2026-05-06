@@ -317,6 +317,45 @@ def create_app(
     async def favicon_ico() -> FileResponse:
         return FileResponse(WEB_DIR / "favicon.svg", media_type="image/svg+xml")
 
+    # ---- PWA: manifest, raster icons, service worker ----
+    # The mobile UI is installable as a home-screen app (Add to Home Screen on
+    # iOS Safari, "Install app" prompt on Android Chrome). The SW is minimal —
+    # it exists only to satisfy Chrome's installability heuristic.
+    @app.get("/manifest.webmanifest")
+    async def manifest() -> FileResponse:
+        return FileResponse(
+            WEB_DIR / "manifest.webmanifest",
+            media_type="application/manifest+json",
+        )
+
+    @app.get("/icon-192.png")
+    async def icon_192() -> FileResponse:
+        return FileResponse(WEB_DIR / "icon-192.png", media_type="image/png")
+
+    @app.get("/icon-512.png")
+    async def icon_512() -> FileResponse:
+        return FileResponse(WEB_DIR / "icon-512.png", media_type="image/png")
+
+    @app.get("/apple-touch-icon.png")
+    async def apple_touch_icon() -> FileResponse:
+        return FileResponse(WEB_DIR / "apple-touch-icon.png", media_type="image/png")
+
+    # Service worker MUST be served from the site root (its scope is the
+    # directory it's served from); /sw.js gives it scope "/" — broad enough
+    # to cover both / and /m.
+    @app.get("/sw.js")
+    async def service_worker() -> FileResponse:
+        return FileResponse(
+            WEB_DIR / "sw.js",
+            media_type="application/javascript",
+            headers={
+                # Browsers cap SW cache at 24h anyway; explicit no-cache means
+                # operators can ship updates without users uninstalling.
+                "Cache-Control": "no-cache",
+                "Service-Worker-Allowed": "/",
+            },
+        )
+
     # Shared ES modules under src/web/lib/ — bootstrap script + per-feature
     # modules used by both index.html and mobile.html.
     _LIB_DIR = (WEB_DIR / "lib").resolve()

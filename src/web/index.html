@@ -3,8 +3,23 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ledctl</title>
+  <title>aaiLED</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <!-- PWA: same install hooks as /m, in case someone visits the desktop URL
+       on a tablet/phone with ?desktop=1. -->
+  <meta name="theme-color" content="#050505" />
+  <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="aaiLED" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/sw.js").catch(() => { /* ignore */ });
+      });
+    }
+  </script>
   <!-- Mobile redirect. Goes to /m when:
          a) the device looks like a phone — touch-primary on a small
             viewport, or the UA hint / string says mobile; or
@@ -84,12 +99,12 @@
     }
     #viz-nav {
       position: absolute; top: 0.625rem; right: 0.75rem; display: flex;
-      gap: 0.375rem; z-index: 5;
+      gap: 0.46875rem; z-index: 5;
     }
     #viz-nav a {
-      padding: 0.25rem 0.625rem; background: rgba(17, 17, 17, 0.85);
+      padding: 0.3125rem 0.78125rem; background: rgba(17, 17, 17, 0.85);
       border: 1px solid #2a2a2a; border-radius: 0.375rem; color: #ddd;
-      text-decoration: none; font-size: 0.6875rem;
+      text-decoration: none; font-size: 0.859rem;
       transition: background 0.15s, border-color 0.15s, color 0.15s;
     }
     #viz-nav a:hover { background: #1a1a1a; border-color: #3a3a3a; color: #93c5fd; }
@@ -104,6 +119,11 @@
       display: none; z-index: 20;
     }
     #tooltip .gid { color: #93c5fd; }
+    #viz-brand {
+      position: absolute; top: 0.5rem; left: 50%; transform: translateX(-50%);
+      z-index: 5; font-weight: 700; color: #fbbf24; letter-spacing: 0.04em;
+      font-size: 1.366rem; pointer-events: none;
+    }
     #ws-pill {
       position: absolute; top: 0.625rem; left: 0.75rem; font-size: 0.6875rem;
       padding: 0.25rem 0.5rem; border-radius: 999px; border: 1px solid #333;
@@ -266,23 +286,27 @@
     .master-row.toggles button { flex: 1; }
 
     /* ---- preset buttons (in layers header) ---- */
+    /* 3-column grid: layers title left, preset buttons centered, empty right
+       column (::after) keeps them centred in the row regardless of title width. */
     #status-panel h3.with-actions {
-      display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+      display: grid; grid-template-columns: 1fr auto 1fr;
+      align-items: center; gap: 0.5rem;
     }
-    .h3-actions { display: flex; gap: 0.375rem; }
+    #status-panel h3.with-actions::after { content: ""; }
+    .h3-actions { display: flex; gap: 0.375rem; justify-content: center; }
     .preset-btn {
-      background: #141414; color: #cbd5e1; border: 1px solid #2a2a2a;
+      background: #1c1c1c; color: #cbd5e1; border: 1px solid #3a3a3a;
       border-radius: 0.25rem; padding: 0.125rem 0.5rem;
       font-family: inherit; font-size: 0.625rem; font-weight: 600;
       letter-spacing: 0.06em; text-transform: uppercase;
       cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
     }
-    .preset-btn:hover { background: #1c1c1c; border-color: #3a3a3a; color: #e5e7eb; }
+    .preset-btn:hover { background: #242424; border-color: #4a4a4a; color: #e5e7eb; }
     .preset-btn:active { transform: translateY(1px); }
-    .preset-btn.load { color: #a7f3d0; border-color: #1f3a36; }
-    .preset-btn.load:hover { border-color: #2c5550; color: #ccfbf1; }
-    .preset-btn.save { color: #ddd6fe; border-color: #2a223a; }
-    .preset-btn.save:hover { border-color: #3f3457; color: #ede9fe; }
+    .preset-btn.load { color: #a7f3d0; border-color: #2c5550; }
+    .preset-btn.load:hover { border-color: #3d7068; color: #ccfbf1; }
+    .preset-btn.save { color: #ddd6fe; border-color: #3f3457; }
+    .preset-btn.save:hover { border-color: #564773; color: #ede9fe; }
 
     /* ---- modal popups ---- */
     .modal-overlay {
@@ -360,12 +384,13 @@
     <!-- ===== top: LED viz (removed entirely by main-desktop.js when the
                  transport doesn't include the simulator) ===== -->
     <div id="viz">
+      <span id="viz-brand">aaiLED</span>
       <span id="ws-pill" class="dim">connecting…</span>
       <canvas id="canvas"></canvas>
       <nav id="viz-nav">
         <a href="/" class="active">main</a>
-        <a href="/editor">layout</a>
         <a href="#" id="audio-ui-link" title="opens the audio-feature server UI in a new tab">audio</a>
+        <a href="/editor">layout</a>
       </nav>
       <div id="cal-banner">
         <span id="cal-text">calibration active</span>
@@ -380,8 +405,8 @@
         <header>
           <span class="title">chat</span>
           <nav id="chat-nav">
-            <a href="/editor">layout</a>
             <a href="#" id="audio-ui-link-fallback" title="opens the audio-feature server UI in a new tab">audio</a>
+            <a href="/editor">layout</a>
           </nav>
           <span class="spacer"></span>
           <span class="dim" id="chat-status">ready</span>
