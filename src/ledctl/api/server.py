@@ -217,6 +217,11 @@ def create_app(
 
     audio_bridge: AudioBridge | None = _build_audio_bridge(cfg.audio_server)
     if audio_bridge is not None:
+        # Wire the kick callback BEFORE start() so the very first packet
+        # already wakes the render loop. The listener fires this from its
+        # OSC server thread; engine.kick_audio() is internally thread-safe
+        # via call_soon_threadsafe.
+        audio_bridge.listener.kick_callback = engine.kick_audio
         audio_bridge.start()
         engine.attach_audio(audio_bridge.state)
     else:
@@ -400,6 +405,24 @@ def create_app(
 
     # ---- layers ----
 
+    def _wipe_agent_history() -> None:
+        """Clear LLM message buffers when the operator mutates the layer stack.
+
+        The LLM's prior `update_leds` tool-call args are stored verbatim in
+        each session's rolling buffer. Once the operator changes the stack
+        (delete/add/patch a layer, or apply a preset), those args reference
+        layers that no longer exist or no longer match — and the model
+        pattern-matches against them and undoes the operator's edit on the
+        next turn. Wiping `messages` makes the LLM start fresh: it sees the
+        current layer stack via CURRENT STATE in the system prompt and the
+        new user prompt, with no stale conversational context to pull from.
+        Operator-visible `turns` and the session id are kept, so the chat
+        panel transcript is unaffected.
+        """
+        store = getattr(app.state, "agent_sessions", None)
+        if store is not None:
+            store.reset_all_buffers()
+
     @app.post("/layers", status_code=201)
     async def post_layer(body: PushLayerRequest) -> dict:
         if body.blend not in BLEND_MODES:
@@ -416,6 +439,7 @@ def create_app(
             ) from e
         except (TypeError, ValueError) as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+        _wipe_agent_history()
         return {"layer_index": i, "layers": engine.layer_state()}
 
     @app.patch("/layers/{i}")
@@ -436,6 +460,7 @@ def create_app(
             ) from e
         except (TypeError, ValueError) as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+        _wipe_agent_history()
         return {"layer_index": i, "layers": engine.layer_state()}
 
     @app.delete("/layers/{i}")
@@ -443,6 +468,7 @@ def create_app(
         if i < 0 or i >= len(engine.mixer.layers):
             raise HTTPException(status_code=404, detail=f"no layer at index {i}")
         engine.remove_layer(i)
+        _wipe_agent_history()
         return {"layers": engine.layer_state()}
 
     # ---- masters ----
@@ -533,6 +559,7 @@ def create_app(
             ) from e
         except (TypeError, ValueError, KeyError) as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+        _wipe_agent_history()
         if body.apply_masters:
             try:
                 engine.set_masters(**preset.masters.model_dump())

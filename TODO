@@ -1,17 +1,11 @@
 
-Setup SSH keys on Pi
-
-
-ssh-keygen -t ed25519 -C "xandersteenbruggex@gmail.com"
-
 
 Later:
 Setup auto-boot automation and make sure it works every single time
+Auto-turn off LEDs when server is disconnected?
 
 Donderdag:
-Buy usb microphone
-Turn on both at the same time
-Auto-turn off LEDs when server is disconnected?
+Buy usb microphone & power supply & any additional stuff (cables, connectors, fuses, ..)
 
 Friday:
 - properly align LEDs and spatial config

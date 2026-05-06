@@ -168,6 +168,12 @@ def build_router(app: FastAPI) -> APIRouter:
         # Buffer of messages we'll commit to the session at the very end. We
         # accumulate across retry attempts so the LLM sees its prior failed
         # attempts (and the structured tool errors) on each retry.
+        #
+        # The buffer is wiped at the operator-edit endpoints (POST/PATCH/
+        # DELETE /layers, POST /presets/{name}) so it's already empty on the
+        # first turn after a manual stack change. CURRENT STATE in the
+        # system prompt is then the only signal — no stale tool-call args
+        # for the LLM to copy.
         accumulated: list[dict[str, Any]] = [user_msg]
         # Mirror of `sess.messages + accumulated`, fed back to the LLM each
         # attempt without mutating the session until we're done.
@@ -185,19 +191,6 @@ def build_router(app: FastAPI) -> APIRouter:
         # recent attempt if no tool call was ever emitted).
         primary_usage: dict[str, int] | None = None
 
-        # Detect operator edits to the layer stack between turns. The chat
-        # history's last `update_leds` tool result echoed `layers: [...]` at
-        # the time we applied it; if the engine's current `layer_state()`
-        # differs, the operator hit the LAYERS UI (delete/patch/reorder)
-        # since then. We surface this to the LLM via a flag in the system
-        # prompt so it doesn't blindly copy its prior tool-call args and
-        # reinstate the removed layers.
-        last_seen_layers = _last_tool_result_layers(list(sess.messages))
-        external_edit = (
-            last_seen_layers is not None
-            and last_seen_layers != engine.layer_state()
-        )
-
         for attempt in range(max_attempts):
             # Regenerate per-turn prompt so each retry sees a fresh audio
             # snapshot + the latest engine state. The install/topology
@@ -209,7 +202,6 @@ def build_router(app: FastAPI) -> APIRouter:
                 presets_dir=presets_dir,
                 masters=engine.masters,
                 crossfade_seconds=cfg.default_crossfade_seconds,
-                external_edit=external_edit,
             )
             log.info(
                 "agent.attempt: session=%s attempt=%d/%d msgs=%d",
@@ -365,31 +357,6 @@ def build_router(app: FastAPI) -> APIRouter:
 
 def _serialise_tool_result(payload: dict[str, Any]) -> str:
     return json.dumps(payload, default=str)
-
-
-def _last_tool_result_layers(messages: list[dict[str, Any]]) -> list | None:
-    """Return the `layers` field of the most recent `tool` reply in `messages`.
-
-    Used to detect whether the operator manually edited the layer stack via
-    the UI between LLM turns. The tool result's `layers` field is set from
-    `engine.layer_state()` at the time we applied the call, so it's the last
-    layer state the LLM was told about. Comparing it to the current
-    `engine.layer_state()` is a structural-equal check on dicts of native
-    JSON types — no normalisation needed.
-    """
-    for msg in reversed(messages):
-        if msg.get("role") != "tool":
-            continue
-        content = msg.get("content")
-        if not isinstance(content, str):
-            continue
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and isinstance(payload.get("layers"), list):
-            return payload["layers"]
-    return None
 
 
 def install_agent_routes(

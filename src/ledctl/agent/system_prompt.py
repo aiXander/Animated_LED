@@ -50,7 +50,7 @@ def _summarise_install(topology: Topology) -> str:
     )
 
 
-def _summarise_current_state(engine: Any, external_edit: bool = False) -> str:
+def _summarise_current_state(engine: Any) -> str:
     layer_state = engine.layer_state()
     payload: dict[str, Any] = {
         "blackout": bool(engine.mixer.blackout),
@@ -59,21 +59,7 @@ def _summarise_current_state(engine: Any, external_edit: bool = False) -> str:
         "dropped_frames": engine.dropped_frames,
         "layers": layer_state,
     }
-    header = (
-        "CURRENT STATE (authoritative — operator can edit the stack via "
-        "the UI between turns; if this differs from your last `update_leds` "
-        "call, the operator removed/changed/reordered layers manually and "
-        "you MUST rebuild from this, not from your prior tool call args)"
-    )
-    if external_edit:
-        header += (
-            "\n!! OPERATOR EDIT DETECTED: the layer stack below differs from "
-            "what you returned in your most recent `update_leds` call. The "
-            "operator manually edited the stack via the LAYERS UI panel "
-            "since your last turn. Treat the layers below as ground truth "
-            "and rebuild from them — do NOT re-add layers the operator removed."
-        )
-    return header + "\n" + json.dumps(payload, indent=2, default=str)
+    return "CURRENT STATE (authoritative)\n" + json.dumps(payload, indent=2, default=str)
 
 
 def _summarise_audio(audio_state: AudioState | None) -> str:
@@ -170,14 +156,6 @@ RUBRIC = (
     "the tool call with a structured error including the full tree path. "
     "Re-emit a corrected full stack on the next turn — the previous valid "
     "stack is in CURRENT STATE so you can build from it.\n"
-    "- The operator can edit the layer stack manually via the LAYERS UI "
-    "panel (add/remove/reorder/patch). When that happens, CURRENT STATE "
-    "will diverge from the `layers` argument you sent in your most recent "
-    "`update_leds` call (and from the `layers` field in prior tool results "
-    "in this conversation). ALWAYS rebuild from CURRENT STATE — do NOT "
-    "reinstate layers the operator removed by copying your previous tool "
-    "call's arguments. Your chat history is a record of what you did; "
-    "CURRENT STATE is what's actually running.\n"
     "- If a tool result has `ok: false`, READ THE `details` field carefully "
     "before retrying — it tells you exactly which path/key the validator "
     "rejected.\n"
@@ -194,7 +172,6 @@ def build_system_prompt(
     presets_dir: Path | None = None,
     masters: MasterControls | None = None,
     crossfade_seconds: float | None = None,
-    external_edit: bool = False,
 ) -> str:
     """Assemble the per-turn system prompt. Pure function — easy to test."""
     presets: list[str] = []
@@ -209,7 +186,7 @@ def build_system_prompt(
         "crossfade. Validation is strict; the surface catalogue below is the "
         "authoritative spec.",
         _summarise_install(topology),
-        _summarise_current_state(engine, external_edit=external_edit),
+        _summarise_current_state(engine),
         _summarise_audio(audio_state),
     ]
     masters_block = _summarise_masters(masters, crossfade_seconds)

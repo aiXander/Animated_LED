@@ -32,7 +32,8 @@ def test_to_uint8_clips_overflows():
 def test_gamma_darkens_midtones():
     pb = PixelBuffer(2)
     pb.rgb[:] = np.array([[0.5, 0.5, 0.5]] * 2, dtype=np.float32)
-    linear = pb.to_uint8(gamma=1.0)
+    # to_uint8 reuses an internal buffer; copy before calling again.
+    linear = pb.to_uint8(gamma=1.0).copy()
     gamma_corrected = pb.to_uint8(gamma=2.2)
     # gamma 2.2 on 0.5 ≈ 0.218 -> 56
     assert int(linear[0, 0]) == 128
