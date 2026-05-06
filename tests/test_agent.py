@@ -770,7 +770,13 @@ def test_chat_html_served(agent_client_app: TestClient):
     r = agent_client_app.get("/")
     assert r.status_code == 200
     assert 'id="chat"' in r.text
-    assert "/agent/chat" in r.text
+    # The chat composer's POST target moved into the chat lib module after the
+    # desktop/mobile split; verify both the page wires up the module and the
+    # module references /agent/chat.
+    assert "/lib/main-desktop.js" in r.text
+    chat_js = agent_client_app.get("/lib/chat.js")
+    assert chat_js.status_code == 200
+    assert "/agent/chat" in chat_js.text
 
 
 def test_agent_chat_disabled_returns_503(

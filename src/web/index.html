@@ -4,6 +4,37 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ledctl</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <!-- Mobile redirect. Goes to /m when:
+         a) the device looks like a phone — touch-primary on a small
+            viewport, or the UA hint / string says mobile; or
+         b) the viewport is portrait (height ≥ width) — including a desktop
+            browser window the operator resized to preview the phone UI.
+       We also install a `change` listener on the portrait media query so
+       resizing flips to /m without an F5. Override with ?desktop=1, which
+       suppresses both the initial redirect and the resize listener for
+       that page load (the link in /m's header carries this flag). -->
+  <script>
+    (() => {
+      try {
+        const params = new URLSearchParams(location.search);
+        if (params.get("desktop") === "1") return;
+        if (location.pathname !== "/") return;
+        const ua = navigator.userAgent || "";
+        const uaMobile = (navigator.userAgentData && navigator.userAgentData.mobile)
+                      || /Mobi|Android|iPhone|iPod|IEMobile|Opera Mini/i.test(ua);
+        const touchSmall = matchMedia("(pointer: coarse) and (max-width: 932px)").matches;
+        const portraitMq = matchMedia("(orientation: portrait)");
+        if (uaMobile || touchSmall || portraitMq.matches) {
+          location.replace("/m");
+          return;
+        }
+        const onChange = (e) => { if (e.matches) location.replace("/m"); };
+        if (portraitMq.addEventListener) portraitMq.addEventListener("change", onChange);
+        else if (portraitMq.addListener) portraitMq.addListener(onChange); // legacy Safari
+      } catch (_) { /* ignore */ }
+    })();
+  </script>
   <style>
     /* Root font-size scales with viewport so every rem-based dimension
        (paddings, gaps, font sizes, panel min-widths, …) tracks the screen.
@@ -27,6 +58,9 @@
        sat empty — the empty band at the bottom of the screen. */
     #app { display: grid; grid-template-rows: auto 1fr; height: 100%;
            border: 1px solid #1a1a1a; border-radius: 0.5rem; overflow: hidden; }
+    /* When the bootstrap detects a non-simulator transport it removes #viz
+       entirely; the grid then has just a single 1fr row for #middle. */
+    body.no-viz #app { grid-template-rows: 1fr; }
     .ok  { color: #4ade80; }
     .bad { color: #f87171; }
     .warn { color: #fbbf24; }
@@ -94,6 +128,15 @@
       padding: 0.25rem 0.5rem; font-family: inherit; font-size: 0.75rem;
     }
     #chat header button { cursor: pointer; }
+    /* When viz is removed, chat header has no top nav above it — surface a
+       set of links here so the operator can still reach editor/audio. */
+    #chat-nav { display: none; gap: 0.375rem; }
+    body.no-viz #chat-nav { display: flex; }
+    #chat-nav a {
+      padding: 0.25rem 0.5rem; border: 1px solid #2a2a2a; border-radius: 0.375rem;
+      color: #ddd; text-decoration: none; font-size: 0.6875rem;
+    }
+    #chat-nav a:hover { background: #1a1a1a; color: #93c5fd; }
     #log { flex: 1; overflow-y: auto; padding: 0.875rem; min-height: 0; }
     .turn { margin-bottom: 0.875rem; }
     .bubble { padding: 0.5rem 0.75rem; border-radius: 0.625rem; max-width: 92%;
@@ -197,7 +240,7 @@
 
     /* ---- masters ---- */
     .master-row {
-      display: flex; align-items: center; gap: 0.5rem; padding: 0.234375rem 0.25rem 0.234375rem 0;
+      display: flex; align-items: center; gap: 0.5rem; padding: 0.28125rem 0.25rem 0.28125rem 0;
       min-width: 0;
     }
     .master-row > label {
@@ -222,26 +265,24 @@
     .master-row.toggles { gap: 0.375rem; padding-top: 0.375rem; }
     .master-row.toggles button { flex: 1; }
 
-    /* ---- preset bar (overlaid on viz, same row as ws-pill / viz-nav) ---- */
-    #preset-bar {
-      position: absolute; top: 0.625rem; left: 50%; transform: translateX(-50%);
-      display: flex; gap: 0.5rem; z-index: 5;
+    /* ---- preset buttons (in layers header) ---- */
+    #status-panel h3.with-actions {
+      display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
     }
+    .h3-actions { display: flex; gap: 0.375rem; }
     .preset-btn {
-      background: linear-gradient(180deg, #6d28d9 0%, #4c1d95 100%);
-      color: #ede9fe; border: 1px solid #7c3aed; border-radius: 0.375rem;
-      padding: 0.25rem 0.75rem; font-family: inherit; font-size: 0.6875rem;
-      font-weight: 600; letter-spacing: 0.04em; cursor: pointer;
-      box-shadow: 0 1px 0 rgba(255,255,255,0.08) inset,
-                  0 2px 4px rgba(0,0,0,0.4);
-      transition: filter 0.15s, transform 0.05s;
+      background: #141414; color: #cbd5e1; border: 1px solid #2a2a2a;
+      border-radius: 0.25rem; padding: 0.125rem 0.5rem;
+      font-family: inherit; font-size: 0.625rem; font-weight: 600;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
     }
-    .preset-btn:hover { filter: brightness(1.15); }
+    .preset-btn:hover { background: #1c1c1c; border-color: #3a3a3a; color: #e5e7eb; }
     .preset-btn:active { transform: translateY(1px); }
-    .preset-btn.load {
-      background: linear-gradient(180deg, #0d9488 0%, #115e59 100%);
-      border-color: #14b8a6; color: #ccfbf1;
-    }
+    .preset-btn.load { color: #a7f3d0; border-color: #1f3a36; }
+    .preset-btn.load:hover { border-color: #2c5550; color: #ccfbf1; }
+    .preset-btn.save { color: #ddd6fe; border-color: #2a223a; }
+    .preset-btn.save:hover { border-color: #3f3457; color: #ede9fe; }
 
     /* ---- modal popups ---- */
     .modal-overlay {
@@ -316,19 +357,15 @@
 </head>
 <body>
   <div id="app">
-    <!-- ===== top: LED viz ===== -->
+    <!-- ===== top: LED viz (removed entirely by main-desktop.js when the
+                 transport doesn't include the simulator) ===== -->
     <div id="viz">
       <span id="ws-pill" class="dim">connecting…</span>
       <canvas id="canvas"></canvas>
-      <div id="preset-bar">
-        <button class="preset-btn save" id="save-preset-btn" type="button">save preset</button>
-        <button class="preset-btn load" id="load-preset-btn" type="button">load preset</button>
-      </div>
       <nav id="viz-nav">
         <a href="/" class="active">main</a>
         <a href="/editor">layout</a>
         <a href="#" id="audio-ui-link" title="opens the audio-feature server UI in a new tab">audio</a>
-        <a href="/docs">api docs</a>
       </nav>
       <div id="cal-banner">
         <span id="cal-text">calibration active</span>
@@ -342,6 +379,10 @@
       <section id="chat">
         <header>
           <span class="title">chat</span>
+          <nav id="chat-nav">
+            <a href="/editor">layout</a>
+            <a href="#" id="audio-ui-link-fallback" title="opens the audio-feature server UI in a new tab">audio</a>
+          </nav>
           <span class="spacer"></span>
           <span class="dim" id="chat-status">ready</span>
           <button id="new">new session</button>
@@ -362,8 +403,7 @@
           <div class="status-col">
             <h3>engine</h3>
             <div class="stat"><span class="k">status</span><span class="v"><span id="status-engine" class="bad">connecting…</span></span></div>
-            <div class="stat"><span class="k">render fps</span><span class="v" id="fps">—</span></div>
-            <div class="stat"><span class="k">target fps</span><span class="v dim" id="target-fps">—</span></div>
+            <div class="stat"><span class="k">render fps</span><span class="v"><span id="fps">—</span> <span class="dim">(target: <span id="target-fps">—</span>)</span></span></div>
             <div class="stat"><span class="k">frames</span><span class="v" id="frames">0</span></div>
             <div class="stat"><span class="k">elapsed</span><span class="v" id="elapsed">0s</span></div>
           </div>
@@ -411,7 +451,13 @@
         <div class="stat"><span class="k">status</span><span class="v dim" id="audio-status">—</span></div>
         <div id="audio-meter"></div>
 
-        <h3>layers</h3>
+        <h3 class="with-actions">
+          <span>layers</span>
+          <span class="h3-actions">
+            <button class="preset-btn save" id="save-preset-btn" type="button">save preset</button>
+            <button class="preset-btn load" id="load-preset-btn" type="button">load preset</button>
+          </span>
+        </h3>
         <div id="layers-list"><div class="dim">—</div></div>
       </aside>
     </div>
@@ -459,1142 +505,6 @@
   </div>
 
 <script src="/audio-meter.js"></script>
-<script>
-(() => {
-  const $ = (id) => document.getElementById(id);
-
-  // =========================================================================
-  // splitter — drag the boundary between chat (left) and status (right).
-  // Default 75% / 25% via flex-basis on the two panes.
-  // =========================================================================
-  const middle = $("middle");
-  const chatPane = $("chat");
-  const statusPane = $("status-panel");
-  const splitter = $("splitter");
-
-  function setSplit(leftPct) {
-    const clamped = Math.max(35, Math.min(85, leftPct));
-    // Subtract half the splitter's own width so the two panes + splitter
-    // sum to exactly 100%. Splitter is `flex: 0 0 0.375rem` in CSS.
-    chatPane.style.flex = `0 0 calc(${clamped}% - 0.1875rem)`;
-    statusPane.style.flex = `0 0 calc(${100 - clamped}% - 0.1875rem)`;
-  }
-  setSplit(60);
-
-  let dragging = false;
-  splitter.addEventListener("mousedown", (e) => {
-    dragging = true;
-    document.body.classList.add("dragging");
-    splitter.classList.add("dragging");
-    e.preventDefault();
-  });
-  window.addEventListener("mousemove", (e) => {
-    if (!dragging) return;
-    const rect = middle.getBoundingClientRect();
-    const pct = ((e.clientX - rect.left) / rect.width) * 100;
-    setSplit(pct);
-    requestReproject();
-  });
-  window.addEventListener("mouseup", () => {
-    if (!dragging) return;
-    dragging = false;
-    document.body.classList.remove("dragging");
-    splitter.classList.remove("dragging");
-  });
-
-  // =========================================================================
-  // LED simulator — same logic as the previous index.html, but the canvas
-  // now lives in a fixed-height top section, so reproject() reads the
-  // canvas's container size instead of window.innerWidth/Height.
-  // =========================================================================
-  const canvas = $("canvas");
-  const ctx = canvas.getContext("2d", { alpha: false });
-  const tooltip = $("tooltip");
-  const calBanner = $("cal-banner");
-  const calText = $("cal-text");
-  const calClear = $("cal-clear");
-
-  // Per-LED rendering, NO interpolation: each LED is drawn as a discrete
-  // axis-aligned rectangle in DEVICE-pixel coordinates (the dpr transform is
-  // dropped for the LED loop), so every edge lands on a whole device pixel
-  // and the canvas never edge-AAs. Per-LED width is derived from rounded
-  // slot boundaries (midpoints between adjacent LED centres), NOT a single
-  // round(spacing) applied uniformly — the latter produces periodic black
-  // gaps when fract(spacing*dpr) is non-zero. With boundaries, some LEDs
-  // are W device px wide and some are W+1, but adjacent rects always share
-  // an exact integer edge so no canvas background can leak through.
-  const STRIP_THICKNESS  = 12;    // px, perpendicular to the strip
-  const LED_WIDTH_SCALE  = 1.0;   // along the strip, as fraction of slot
-                                  // width (1.0 = edge-to-edge tile, no gaps)
-  const HOVER_DOT = 8;
-
-  let leds = [];
-  let strips = [];
-  let ledRects = null;      // Int32Array length = 4 * leds.length
-  let bboxMin = [0, 0, 0];
-  let bboxMax = [1, 1, 1];
-  let lastFrame = null;
-  let projected = null;
-  // mouseX/mouseY are canvas-local (used for hit-testing).
-  // mouseAbsX/Y are viewport coords (used to anchor the fixed-position tooltip).
-  let mouseX = -1, mouseY = -1;
-  let mouseAbsX = 0, mouseAbsY = 0;
-  let mySolo = null;
-  let canvasW = 1, canvasH = 1;
-  let canvasDpr = 1;
-
-  function resizeCanvas() {
-    const dpr = window.devicePixelRatio || 1;
-    canvasDpr = dpr;
-    const rect = canvas.getBoundingClientRect();
-    canvasW = Math.max(1, Math.floor(rect.width));
-    canvasH = Math.max(1, Math.floor(rect.height));
-    canvas.width = Math.floor(canvasW * dpr);
-    canvas.height = Math.floor(canvasH * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    reproject();
-  }
-
-  let reprojectScheduled = false;
-  function requestReproject() {
-    if (reprojectScheduled) return;
-    reprojectScheduled = true;
-    requestAnimationFrame(() => { reprojectScheduled = false; resizeCanvas(); });
-  }
-  window.addEventListener("resize", requestReproject);
-  if (window.ResizeObserver) {
-    new ResizeObserver(requestReproject).observe($("viz"));
-  }
-
-  function reproject() {
-    if (!leds.length) { projected = null; return; }
-    const margin = 24;
-    const ww = canvasW - 2 * margin;
-    const hh = canvasH - 2 * margin;
-    const dx = bboxMax[0] - bboxMin[0] || 1;
-    const dy = bboxMax[1] - bboxMin[1] || 1;
-    const s = Math.min(ww / dx, hh / dy);
-    const cx = canvasW / 2;
-    const cy = canvasH / 2;
-    const ox = (bboxMin[0] + bboxMax[0]) / 2;
-    const oy = (bboxMin[1] + bboxMax[1]) / 2;
-    projected = new Float32Array(leds.length * 2);
-    for (let i = 0; i < leds.length; i++) {
-      projected[i * 2]     = cx + (leds[i].position[0] - ox) * s;
-      projected[i * 2 + 1] = cy - (leds[i].position[1] - oy) * s;
-    }
-    // Build per-LED INTEGER rects so fillRect never lands on a fractional
-    // coord (fractional fillRect causes edge anti-aliasing that visibly
-    // blends adjacent LED colours). Each LED's left edge = round(its float
-    // position); width = next LED's rounded position − this one's, so
-    // adjacent rects tile exactly. Strips are treated as axis-aligned along
-    // whichever axis dominates (the install's strips are horizontal); for
-    // arbitrary diagonal strips this would approximate.
-    ledRects = new Int32Array(leds.length * 4);
-    const dpr = canvasDpr;
-    const thickDev = Math.max(1, Math.round(STRIP_THICKNESS * dpr));
-    const halfThickDev = (thickDev / 2) | 0;
-    strips.forEach(strip => {
-      const off = strip.pixel_offset;
-      const n = strip.pixel_count;
-      if (n === 0) return;
-      const sx = projected[off * 2];
-      const sy = projected[off * 2 + 1];
-      const ex = projected[(off + n - 1) * 2];
-      const ey = projected[(off + n - 1) * 2 + 1];
-      const dx = ex - sx;
-      const dy = ey - sy;
-      const horizontal = Math.abs(dx) >= Math.abs(dy);
-      if (horizontal) {
-        const yTopDev = Math.round(sy * dpr) - halfThickDev;
-        const stepF = n > 1 ? dx / (n - 1) : (dx >= 0 ? 1 : -1);
-        const halfStepCss = stepF / 2;
-        let prevBoundDev = Math.round((sx - halfStepCss) * dpr);
-        for (let i = 0; i < n; i++) {
-          const nextCss = (i < n - 1)
-            ? (sx + stepF * (i + 0.5))
-            : (sx + stepF * (n - 1) + halfStepCss);
-          const nextBoundDev = Math.round(nextCss * dpr);
-          const slotW = Math.abs(nextBoundDev - prevBoundDev);
-          const slotL = Math.min(prevBoundDev, nextBoundDev);
-          let xL, w;
-          if (LED_WIDTH_SCALE >= 0.999) {
-            xL = slotL; w = Math.max(1, slotW);
-          } else {
-            w = Math.max(1, Math.round(slotW * LED_WIDTH_SCALE));
-            xL = slotL + ((slotW - w) >> 1);
-          }
-          const idx = (off + i) * 4;
-          ledRects[idx]     = xL;
-          ledRects[idx + 1] = yTopDev;
-          ledRects[idx + 2] = w;
-          ledRects[idx + 3] = thickDev;
-          prevBoundDev = nextBoundDev;
-        }
-      } else {
-        const xLeftDev = Math.round(sx * dpr) - halfThickDev;
-        const stepF = n > 1 ? dy / (n - 1) : (dy >= 0 ? 1 : -1);
-        const halfStepCss = stepF / 2;
-        let prevBoundDev = Math.round((sy - halfStepCss) * dpr);
-        for (let i = 0; i < n; i++) {
-          const nextCss = (i < n - 1)
-            ? (sy + stepF * (i + 0.5))
-            : (sy + stepF * (n - 1) + halfStepCss);
-          const nextBoundDev = Math.round(nextCss * dpr);
-          const slotH = Math.abs(nextBoundDev - prevBoundDev);
-          const slotT = Math.min(prevBoundDev, nextBoundDev);
-          let yT, h;
-          if (LED_WIDTH_SCALE >= 0.999) {
-            yT = slotT; h = Math.max(1, slotH);
-          } else {
-            h = Math.max(1, Math.round(slotH * LED_WIDTH_SCALE));
-            yT = slotT + ((slotH - h) >> 1);
-          }
-          const idx = (off + i) * 4;
-          ledRects[idx]     = xLeftDev;
-          ledRects[idx + 1] = yT;
-          ledRects[idx + 2] = thickDev;
-          ledRects[idx + 3] = h;
-          prevBoundDev = nextBoundDev;
-        }
-      }
-    });
-  }
-
-  function pickLED() {
-    if (!projected || mouseX < 0) return -1;
-    const radius = 10, r2 = radius * radius;
-    let best = -1, bestD = r2;
-    for (let i = 0; i < leds.length; i++) {
-      const dx = projected[i * 2] - mouseX;
-      const dy = projected[i * 2 + 1] - mouseY;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < bestD) { bestD = d2; best = i; }
-    }
-    return best;
-  }
-
-  function draw() {
-    ctx.fillStyle = "#050505";
-    ctx.fillRect(0, 0, canvasW, canvasH);
-    if (ledRects && lastFrame && projected) {
-      ctx.imageSmoothingEnabled = false;
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = "source-over";
-      // Drop the dpr transform: ledRects are device-pixel ints, so each
-      // fillRect lands exactly on whole device pixels and the canvas can't
-      // edge-AA the LEDs into a soft border or bleed across neighbours.
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      const n = leds.length;
-      for (let i = 0; i < n; i++) {
-        const src = i * 3;
-        const idx = i * 4;
-        ctx.fillStyle = `rgb(${lastFrame[src]},${lastFrame[src + 1]},${lastFrame[src + 2]})`;
-        ctx.fillRect(ledRects[idx], ledRects[idx + 1], ledRects[idx + 2], ledRects[idx + 3]);
-      }
-      ctx.setTransform(canvasDpr, 0, 0, canvasDpr, 0, 0);
-      const hit = pickLED();
-      if (hit >= 0) {
-        const x = projected[hit * 2], y = projected[hit * 2 + 1];
-        ctx.strokeStyle = "#fbbf24";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(
-          x - HOVER_DOT / 2 - 2, y - HOVER_DOT / 2 - 2,
-          HOVER_DOT + 4, HOVER_DOT + 4,
-        );
-        const led = leds[hit];
-        const cSrc = hit * 3;
-        const cr = lastFrame[cSrc], cg = lastFrame[cSrc + 1], cb = lastFrame[cSrc + 2];
-        const swatch = `display:inline-block;width:0.7em;height:0.7em;`
-                     + `vertical-align:middle;margin-right:0.35em;border:1px solid #333;`
-                     + `background:rgb(${cr},${cg},${cb})`;
-        tooltip.style.display = "block";
-        tooltip.style.left = (mouseAbsX + 12) + "px";
-        tooltip.style.top = (mouseAbsY + 12) + "px";
-        tooltip.innerHTML =
-          `<div class="gid">global #${led.global_index}</div>` +
-          `<div>${led.strip_id} · local ${led.local_index}</div>` +
-          `<div class="dim">x=${led.position[0].toFixed(2)} y=${led.position[1].toFixed(2)}</div>` +
-          `<div><span style="${swatch}"></span>rgb(${cr}, ${cg}, ${cb})</div>`;
-      } else {
-        tooltip.style.display = "none";
-      }
-    }
-    requestAnimationFrame(draw);
-  }
-
-  // pickLED works in canvas-local coords; the tooltip is fixed-positioned so
-  // it needs viewport coords. Track both.
-  canvas.addEventListener("mousemove", (e) => {
-    const r = canvas.getBoundingClientRect();
-    mouseX = e.clientX - r.left;
-    mouseY = e.clientY - r.top;
-    mouseAbsX = e.clientX;
-    mouseAbsY = e.clientY;
-  });
-  canvas.addEventListener("mouseleave", () => { mouseX = -1; tooltip.style.display = "none"; });
-
-  canvas.addEventListener("click", async () => {
-    const hit = pickLED();
-    if (hit < 0) return;
-    const gid = leds[hit].global_index;
-    if (mySolo === gid) {
-      await fetch("/calibration/stop", { method: "POST" });
-      mySolo = null;
-    } else {
-      await fetch("/calibration/solo", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ indices: [gid] }),
-      });
-      mySolo = gid;
-    }
-    // /ws/state will push the new calibration state within ~16ms.
-  });
-
-  calClear.addEventListener("click", async () => {
-    await fetch("/calibration/stop", { method: "POST" });
-    mySolo = null;
-  });
-
-  // =========================================================================
-  // Status panel — DOM nodes cached once; /ws/state pushes a fresh snapshot
-  // at engine.target_fps and we only mutate textContent / style.width here.
-  // No component re-rendering: the layer rows are only rebuilt when the
-  // layer stack actually changes (signature compare). The chat panel is
-  // untouched by this loop.
-  // =========================================================================
-  const els = {
-    fps: $("fps"), targetFps: $("target-fps"),
-    frames: $("frames"), elapsed: $("elapsed"),
-    transport: $("transport"), simClients: $("sim-clients"), gamma: $("gamma"),
-    audioStatus: $("audio-status"),
-    layersList: $("layers-list"),
-    freezeBtn: $("m-freeze"),
-    blackoutBtn: $("m-blackout"),
-    crossfadeSlider: $("m-crossfade"),
-    crossfadeVal: $("m-crossfade-v"),
-  };
-  const audioMeter = window.AudioMeter.mount($("audio-meter"));
-
-  // The 'audio' link in the top nav opens the external audio-feature server's
-  // UI in a new tab. We re-resolve the URL via /audio/state's `ui_url` field
-  // each time `applyState` runs so a config edit shows up without reload.
-  let audioUiUrl = "";
-  (function wireAudioUiLink() {
-    const link = $("audio-ui-link");
-    if (!link) return;
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.addEventListener("click", async (e) => {
-      // If we already have the URL, let the anchor navigate naturally.
-      if (audioUiUrl) return;
-      e.preventDefault();
-      try {
-        const r = await fetch("/audio/ui");
-        const body = await r.json();
-        if (body && body.ui_url) {
-          audioUiUrl = body.ui_url;
-          link.href = audioUiUrl;
-          window.open(audioUiUrl, "_blank", "noopener");
-        }
-      } catch (_) { /* ignore */ }
-    });
-  })();
-
-  function fmtNum(v, digits = 3) { return v == null ? "—" : Number(v).toFixed(digits); }
-  function pct(v) { return Math.max(0, Math.min(100, (v || 0) * 100)).toFixed(1) + "%"; }
-
-  // Last text written into each value node, so we can short-circuit DOM
-  // writes when nothing changed (cheap, but cuts layout/style invalidation
-  // when the value is identical frame to frame).
-  const lastText = new WeakMap();
-  function setText(node, text) {
-    if (lastText.get(node) === text) return;
-    lastText.set(node, text);
-    node.textContent = text;
-  }
-  function setWidth(node, width) {
-    if (lastText.get(node) === width) return;
-    lastText.set(node, width);
-    node.style.width = width;
-  }
-  function setClass(node, cls) {
-    if (node.className === cls) return;
-    node.className = cls;
-  }
-
-  // Layers — each row is a click-drag opacity bar. Structural changes
-  // (count, effect, blend) trigger a rebuild; opacity changes update the
-  // CSS var only so the active drag isn't interrupted.
-  let lastLayersSig = null;
-  const layerRowCache = []; // [{row, name, blend, opNum, idx}]
-  const lastLayerEdit = new Map();      // index → ms (suppress incoming sync during drag)
-  const pendingOpacity = new Map();     // index → 0..1
-  let opacitySendTimer = null;
-
-  function flushOpacity() {
-    opacitySendTimer = null;
-    const snapshot = Array.from(pendingOpacity.entries());
-    pendingOpacity.clear();
-    for (const [i, v] of snapshot) {
-      fetch(`/layers/${i}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ opacity: v }),
-      }).catch(() => { /* WS will resync */ });
-    }
-  }
-  function queueOpacity(i, v) {
-    pendingOpacity.set(i, v);
-    lastLayerEdit.set(i, performance.now());
-    if (!opacitySendTimer) opacitySendTimer = setTimeout(flushOpacity, 33);
-  }
-  function setRowOpacity(cache, opacity) {
-    const pct = Math.max(0, Math.min(1, opacity)) * 100;
-    cache.row.style.setProperty("--op", pct.toFixed(1) + "%");
-    cache.opNum.textContent = opacity.toFixed(2);
-  }
-
-  let activeDrag = null; // { i, cache }
-  function opacityFromEvent(cache, e) {
-    const r = cache.row.getBoundingClientRect();
-    return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-  }
-  function onDragMove(e) {
-    if (!activeDrag) return;
-    const v = opacityFromEvent(activeDrag.cache, e);
-    setRowOpacity(activeDrag.cache, v);
-    queueOpacity(activeDrag.i, v);
-  }
-  function onDragEnd() {
-    if (!activeDrag) return;
-    activeDrag.cache.row.classList.remove("dragging");
-    activeDrag = null;
-    window.removeEventListener("mousemove", onDragMove);
-    window.removeEventListener("mouseup", onDragEnd);
-  }
-  function startDrag(i, cache, e) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    activeDrag = { i, cache };
-    cache.row.classList.add("dragging");
-    window.addEventListener("mousemove", onDragMove);
-    window.addEventListener("mouseup", onDragEnd);
-    // Initial click already sets opacity at the click point.
-    onDragMove(e);
-  }
-
-  // Walk a layer's node tree and pull out a short, ordered list of the
-  // identifiers a human cares about: the rgb_field leaf, scalar field
-  // generators, the palette name, and any audio-band reactivity. Skips
-  // pure plumbing (constant, mix, math ops, remap, …) since they don't
-  // help recognise what the layer is doing.
-  const SUMMARY_SKIP = new Set([
-    "constant", "mix", "mul", "add", "screen", "max", "min",
-    "remap", "threshold", "clamp", "range_map",
-  ]);
-  const SUMMARY_MAX_TOKENS = 5;
-  const SUMMARY_MAX_CHARS = 56;
-  function summaryToken(node) {
-    const k = node.kind;
-    const p = node.params || {};
-    if (k === "palette_named") return String(p.name || "palette");
-    if (k === "palette_stops") return "custom-palette";
-    if (k === "palette_lookup") return "palette";
-    if (k === "audio_band") return `audio:${p.band || "?"}`;
-    return k;
-  }
-  function walkSummary(node, out, seen) {
-    if (!node || typeof node !== "object") return;
-    if (typeof node.kind === "string" && !SUMMARY_SKIP.has(node.kind)) {
-      const tok = summaryToken(node);
-      if (tok && !seen.has(tok)) { seen.add(tok); out.push(tok); }
-    }
-    const params = node.params;
-    if (params && typeof params === "object") {
-      for (const key in params) {
-        const v = params[key];
-        if (key === "palette" && typeof v === "string") {
-          // Bare-string sugar: surface.py expands this to palette_named at
-          // compile time but the stored spec keeps the shorthand.
-          if (!seen.has(v)) { seen.add(v); out.push(v); }
-        } else if (Array.isArray(v)) {
-          for (const item of v) walkSummary(item, out, seen);
-        } else if (v && typeof v === "object") {
-          walkSummary(v, out, seen);
-        }
-      }
-    }
-  }
-  function summarizeLayer(layer) {
-    const out = [];
-    walkSummary(layer && layer.node, out, new Set());
-    if (!out.length) return "—";
-    let tokens = out.slice(0, SUMMARY_MAX_TOKENS);
-    let truncated = out.length > SUMMARY_MAX_TOKENS;
-    let s = tokens.join(", ");
-    while (tokens.length > 1 && s.length > SUMMARY_MAX_CHARS) {
-      tokens.pop();
-      truncated = true;
-      s = tokens.join(", ");
-    }
-    return truncated ? s + " …" : s;
-  }
-
-  function renderLayers(layers) {
-    layers = layers || [];
-    // Structural signature only — exclude opacity so a slider drag isn't
-    // wiped out by the WS state echo.
-    const sig = JSON.stringify(
-      layers.map((l) => [summarizeLayer(l), l.blend || "normal"])
-    );
-    const structuralChanged = sig !== lastLayersSig;
-    lastLayersSig = sig;
-
-    const host = els.layersList;
-    if (!layers.length) {
-      if (structuralChanged) {
-        host.replaceChildren();
-        const empty = document.createElement("div");
-        empty.className = "dim";
-        empty.textContent = "— no layers —";
-        host.appendChild(empty);
-        layerRowCache.length = 0;
-      }
-      return;
-    }
-
-    if (structuralChanged || layerRowCache.length !== layers.length) {
-      host.replaceChildren();
-      layerRowCache.length = 0;
-      layers.forEach((_, i) => {
-        const row = document.createElement("div");
-        row.className = "layer-row";
-        const head = document.createElement("div");
-        head.className = "head";
-        const idx = document.createElement("span");
-        idx.className = "dim";
-        idx.textContent = `#${i}`;
-        const name = document.createElement("span");
-        name.className = "name";
-        const opNum = document.createElement("span");
-        opNum.className = "op-num";
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "remove";
-        remove.textContent = "×";
-        remove.title = "remove layer";
-        // Don't let the click bubble into the row's drag handler.
-        remove.addEventListener("mousedown", (e) => e.stopPropagation());
-        remove.addEventListener("click", (e) => {
-          e.stopPropagation();
-          fetch(`/layers/${i}`, { method: "DELETE" })
-            .catch(() => { /* WS will resync */ });
-        });
-        head.appendChild(idx);
-        head.appendChild(document.createTextNode(" "));
-        head.appendChild(name);
-        head.appendChild(remove);
-        const blend = document.createElement("div");
-        blend.className = "blend";
-        row.appendChild(head);
-        row.appendChild(blend);
-        row.appendChild(opNum);
-        host.appendChild(row);
-        const cache = { row, name, blend, opNum, idx: i };
-        row.addEventListener("mousedown", (e) => startDrag(i, cache, e));
-        layerRowCache.push(cache);
-      });
-    }
-    layers.forEach((l, i) => {
-      const cache = layerRowCache[i];
-      const summary = summarizeLayer(l);
-      cache.name.textContent = summary;
-      cache.row.title = `#${i} ${summary} · drag to set opacity`;
-      cache.blend.textContent = `blend ${l.blend || "normal"}`;
-      // Skip opacity sync if user just edited this row.
-      if (performance.now() - (lastLayerEdit.get(i) || 0) < 400) return;
-      const opacity = (typeof l.opacity === "number") ? l.opacity : 1;
-      setRowOpacity(cache, opacity);
-    });
-  }
-
-  // ---- masters: sliders + freeze toggle ----
-  // Local edits PATCH /masters; incoming /ws/state echoes back and would
-  // fight a dragging slider, so suppress sync for ~400ms after user input.
-  const MASTER_FIELDS = [
-    { id: "m-brightness",            field: "brightness" },
-    { id: "m-speed",                 field: "speed" },
-    { id: "m-audio-reactivity",      field: "audio_reactivity" },
-    { id: "m-saturation",            field: "saturation" },
-  ];
-  const lastMasterEdit = new Map();
-  const pendingMasters = {};
-  let mastersSendTimer = null;
-
-  function flushMasters() {
-    mastersSendTimer = null;
-    const body = pendingMasters;
-    if (!Object.keys(body).length) return;
-    const payload = JSON.stringify(body);
-    for (const k in body) delete body[k];
-    fetch("/masters", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: payload,
-    }).catch(() => { /* WS will resync */ });
-  }
-  function queueMaster(field, value) {
-    pendingMasters[field] = value;
-    lastMasterEdit.set(field, performance.now());
-    if (mastersSendTimer) return;
-    mastersSendTimer = setTimeout(flushMasters, 33);
-  }
-
-  for (const m of MASTER_FIELDS) {
-    const slider = $(m.id);
-    const valEl = $(m.id + "-v");
-    slider.addEventListener("input", () => {
-      const v = parseFloat(slider.value);
-      valEl.textContent = v.toFixed(2);
-      queueMaster(m.field, v);
-    });
-  }
-  els.freezeBtn.addEventListener("click", () => {
-    const next = !els.freezeBtn.classList.contains("on");
-    els.freezeBtn.classList.toggle("on", next);
-    els.freezeBtn.textContent = next ? "freeze on" : "freeze";
-    queueMaster("freeze", next);
-  });
-
-  function applyMasters(m) {
-    if (!m) return;
-    const now = performance.now();
-    for (const cfg of MASTER_FIELDS) {
-      if (now - (lastMasterEdit.get(cfg.field) || 0) < 400) continue;
-      const v = m[cfg.field];
-      if (typeof v !== "number") continue;
-      const slider = $(cfg.id);
-      const valEl = $(cfg.id + "-v");
-      const current = parseFloat(slider.value);
-      if (Math.abs(current - v) > 1e-4) slider.value = String(v);
-      const text = v.toFixed(2);
-      if (valEl.textContent !== text) valEl.textContent = text;
-    }
-    if (now - (lastMasterEdit.get("freeze") || 0) >= 400) {
-      const on = !!m.freeze;
-      if (els.freezeBtn.classList.contains("on") !== on) {
-        els.freezeBtn.classList.toggle("on", on);
-        els.freezeBtn.textContent = on ? "freeze on" : "freeze";
-      }
-    }
-  }
-
-  // Apply a /state snapshot to the cached DOM nodes. Called from the WS
-  // handler (target_fps) and from the initial /state fetch.
-  function applyState(s) {
-    if (!s) return;
-    setText(els.fps, fmtNum(s.fps, 1));
-    setText(els.targetFps, s.target_fps ?? "—");
-    setText(els.frames, String(s.frame_count ?? 0));
-    setText(els.elapsed, (s.elapsed != null) ? `${s.elapsed.toFixed(1)}s` : "—");
-    setText(els.transport, s.transport_mode || "—");
-    setText(els.simClients, String(s.sim_clients ?? 0));
-    setText(els.gamma, fmtNum(s.gamma, 2));
-
-    const bo = !!s.blackout;
-    if (els.blackoutBtn.classList.contains("on") !== bo) {
-      els.blackoutBtn.classList.toggle("on", bo);
-      els.blackoutBtn.textContent = bo ? "blackout on" : "blackout";
-    }
-
-    renderLayers(s.layers);
-    applyMasters(s.masters);
-
-    const a = s.audio || {};
-    let statusText;
-    if (a.connected) statusText = "connected";
-    else if (a.error) statusText = "disconnected · " + a.error;
-    else statusText = "disconnected";
-    setText(els.audioStatus, statusText);
-    if (a.ui_url && audioUiUrl !== a.ui_url) {
-      audioUiUrl = a.ui_url;
-      const link = $("audio-ui-link");
-      if (link) link.href = a.ui_url;
-    }
-    audioMeter.update(a);
-
-    // Calibration banner — text rarely changes; setText guards it.
-    const cal = s.calibration;
-    if (cal) {
-      calBanner.style.display = "block";
-      const txt = (cal.mode === "solo")
-        ? `solo lit: #${cal.indices.join(", #")}`
-        : `walk · step ${cal.step} · ${cal.interval}s · current #${cal.current}`;
-      setText(calText, txt);
-    } else {
-      if (calBanner.style.display !== "none") calBanner.style.display = "none";
-      mySolo = null;
-    }
-  }
-
-  // One-shot initial fetch — paints the panel before the first WS message
-  // arrives, and serves as the fallback when the WS is unavailable.
-  async function fetchStateOnce() {
-    try {
-      const r = await fetch("/state");
-      applyState(await r.json());
-    } catch (e) { /* WS will catch up */ }
-  }
-
-  // /ws/state — server pushes the same payload as GET /state at target_fps.
-  // Auto-reconnects with backoff. Falls back to a 1s poll while disconnected
-  // so the panel never freezes if the WS is down.
-  let stateWsBackoff = 500;
-  let stateFallbackTimer = null;
-  function startStateFallback() {
-    if (stateFallbackTimer) return;
-    stateFallbackTimer = setInterval(fetchStateOnce, 1000);
-  }
-  function stopStateFallback() {
-    if (!stateFallbackTimer) return;
-    clearInterval(stateFallbackTimer);
-    stateFallbackTimer = null;
-  }
-  function connectStateWs() {
-    const url = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws/state";
-    const ws = new WebSocket(url);
-    ws.onopen = () => { stateWsBackoff = 500; stopStateFallback(); };
-    ws.onmessage = (ev) => {
-      try { applyState(JSON.parse(ev.data)); } catch (e) { /* ignore */ }
-    };
-    const reconnect = () => {
-      startStateFallback();
-      setTimeout(connectStateWs, stateWsBackoff);
-      stateWsBackoff = Math.min(stateWsBackoff * 2, 5000);
-    };
-    ws.onclose = reconnect;
-    ws.onerror = () => { try { ws.close(); } catch (e) { /* ignore */ } };
-  }
-
-  // =========================================================================
-  // Topology + WebSocket frames.
-  // =========================================================================
-  async function loadTopology() {
-    const r = await fetch("/topology");
-    const topo = await r.json();
-    leds = topo.leds;
-    strips = topo.strips || [];
-    bboxMin = topo.bbox_min;
-    bboxMax = topo.bbox_max;
-    $("leds").textContent = topo.pixel_count;
-    reproject();
-  }
-
-  async function initSimulator() {
-    try {
-      await loadTopology();
-    } catch (e) {
-      $("status-engine").textContent = "topology fetch failed";
-      $("status-engine").className = "bad";
-      return;
-    }
-    resizeCanvas();
-
-    const wsUrl = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws/frames";
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = "arraybuffer";
-    const setWs = (txt, cls) => {
-      $("ws-pill").textContent = txt;
-      $("ws-pill").className = cls;
-      $("status-engine").textContent = txt;
-      $("status-engine").className = cls;
-    };
-    ws.onopen = () => setWs("connected", "ok");
-    ws.onclose = () => setWs("disconnected", "bad");
-    ws.onerror = () => setWs("error", "bad");
-    ws.onmessage = (ev) => {
-      const buf = new Uint8Array(ev.data);
-      if (buf.length !== leds.length * 3) { loadTopology(); }
-      lastFrame = buf;
-    };
-    requestAnimationFrame(draw);
-  }
-
-  // =========================================================================
-  // Chat — same flow as the standalone /chat page, just hosted in #chat.
-  // =========================================================================
-  const log = $("log");
-  const input = $("input");
-  const sendBtn = $("send");
-  const chatStatus = $("chat-status");
-
-  let sessionId = null;
-  let inflight = false;
-
-  function setChatStatus(text, cls = "dim") {
-    chatStatus.textContent = text;
-    chatStatus.className = cls;
-  }
-
-  function escapeHtml(s) {
-    return (s || "").replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-    })[c]);
-  }
-
-  function renderUserBubble(text) {
-    const row = document.createElement("div");
-    row.className = "turn user row";
-    row.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
-    log.appendChild(row);
-    log.scrollTop = log.scrollHeight;
-    return row;
-  }
-
-  // Render an assistant bubble. `turn.pending=true` shows a spinner placeholder
-  // that send() later replaces in-place via the returned element.
-  function renderAsstBubble(turn) {
-    const row = document.createElement("div");
-    row.className = "turn asst row";
-    if (turn.pending) {
-      row.innerHTML = `<div><div class="bubble dim">…</div></div>`;
-      log.appendChild(row);
-      log.scrollTop = log.scrollHeight;
-      return row;
-    }
-
-    const hasText = !!(turn.assistant_text && turn.assistant_text.trim());
-    const hasTool = !!turn.tool_call;
-
-    let bubbleHtml = "";
-    if (hasText) {
-      bubbleHtml = `<div class="bubble">${escapeHtml(turn.assistant_text)}</div>`;
-    } else if (!hasTool) {
-      const fallback = `(no response${turn.finish_reason ? ` · finish_reason=${turn.finish_reason}` : ""})`;
-      bubbleHtml = `<div class="bubble dim">${escapeHtml(fallback)}</div>`;
-    }
-
-    let toolHtml = "";
-    if (hasTool) {
-      const okClass = turn.tool_result && turn.tool_result.ok ? "ok" : (turn.tool_result ? "bad" : "dim");
-      const baseSummary = turn.tool_result
-        ? (turn.tool_result.ok
-           ? `tool: ${turn.tool_call.name} ✓`
-           : `tool: ${turn.tool_call.name} ✗ ${escapeHtml(turn.tool_result.error || "error")}`)
-        : `tool: ${turn.tool_call.name}`;
-      const u = turn.usage || null;
-      const usageHtml = u
-        ? ` <span class="dim">· tokens: ${u.input_tokens ?? "?"} in / ${u.output_tokens ?? "?"} out</span>`
-        : "";
-      const retriesHtml = (typeof turn.retries_used === "number" && turn.retries_used > 0)
-        ? ` <span class="warn">· ${turn.retries_used} retr${turn.retries_used === 1 ? "y" : "ies"}</span>`
-        : "";
-      toolHtml = `
-        <details class="toolblock">
-          <summary class="${okClass}">${baseSummary}${retriesHtml}${usageHtml}</summary>
-          <pre>arguments: ${escapeHtml(JSON.stringify(turn.tool_call.arguments, null, 2))}
-result: ${escapeHtml(JSON.stringify(turn.tool_result, null, 2))}</pre>
-        </details>`;
-    }
-    const errHtml = turn.error
-      ? `<div class="meta bad">error: ${escapeHtml(turn.error)}</div>` : "";
-    row.innerHTML = `
-      <div>
-        ${bubbleHtml}
-        ${toolHtml}
-        ${errHtml}
-      </div>`;
-    log.appendChild(row);
-    log.scrollTop = log.scrollHeight;
-    return row;
-  }
-
-  function replaceAsstBubble(placeholder, turn) {
-    placeholder.remove();
-    return renderAsstBubble(turn);
-  }
-
-  async function loadAgentConfig() {
-    try {
-      const r = await fetch("/agent/config");
-      if (r.ok) {
-        const cfg = await r.json();
-        if (!cfg.enabled) setChatStatus("agent disabled in config", "bad");
-        if (typeof cfg.default_crossfade_seconds === "number"
-            && performance.now() - crossfadeUserEditAt > 400) {
-          els.crossfadeSlider.value = String(cfg.default_crossfade_seconds);
-          els.crossfadeVal.textContent = cfg.default_crossfade_seconds.toFixed(2) + "s";
-        }
-      }
-    } catch (e) { /* ignore */ }
-  }
-
-  async function send(text) {
-    if (inflight) return;
-    inflight = true;
-    sendBtn.disabled = true;
-    setChatStatus("thinking…");
-    renderUserBubble(text);
-    let placeholder = renderAsstBubble({ pending: true });
-    try {
-      const body = { message: text };
-      if (sessionId) body.session_id = sessionId;
-      const r = await fetch("/agent/chat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error(err.detail || `HTTP ${r.status}`);
-      }
-      const data = await r.json();
-      sessionId = data.session_id;
-      replaceAsstBubble(placeholder, {
-        assistant_text: data.assistant_text || "",
-        tool_call: data.tool_call,
-        tool_result: data.tool_result,
-        finish_reason: data.finish_reason,
-        usage: data.usage,
-        retries_used: data.retries_used,
-      });
-      setChatStatus(`history ${data.history_size}`);
-      // /ws/state pushes the new layer stack on the next tick (~16ms),
-      // so no manual poll needed.
-    } catch (e) {
-      setChatStatus("error: " + e.message, "bad");
-      replaceAsstBubble(placeholder, {
-        assistant_text: "(request failed)",
-        error: e.message,
-      });
-    } finally {
-      inflight = false;
-      sendBtn.disabled = false;
-    }
-  }
-
-  $("form").addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = "";
-    send(text);
-  });
-
-  input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter" && !ev.shiftKey) {
-      ev.preventDefault();
-      $("form").requestSubmit();
-    }
-  });
-
-  $("new").addEventListener("click", () => {
-    sessionId = null;
-    log.innerHTML = "";
-    setChatStatus("new session");
-    input.focus();
-  });
-
-  // Blackout toggle (in masters row).
-  els.blackoutBtn.addEventListener("click", async () => {
-    const next = !els.blackoutBtn.classList.contains("on");
-    // Optimistic update; /ws/state confirms within ~16ms.
-    els.blackoutBtn.classList.toggle("on", next);
-    els.blackoutBtn.textContent = next ? "blackout on" : "blackout";
-    try {
-      await fetch(next ? "/blackout" : "/resume", { method: "POST" });
-    } catch (e) { /* WS will resync */ }
-  });
-
-  // Crossfade slider — single source of truth for transition speed across
-  // the whole UI. Both the agent's `update_leds` tool and `POST /presets/{name}`
-  // resolve their crossfade duration from agent.default_crossfade_seconds,
-  // so whatever this slider is set to is what every fade actually uses.
-  let crossfadeUserEditAt = 0;
-  let crossfadeSendTimer = null;
-  function flushCrossfade() {
-    crossfadeSendTimer = null;
-    const v = parseFloat(els.crossfadeSlider.value);
-    fetch("/agent/config", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ default_crossfade_seconds: v }),
-    }).catch(() => { /* ignore */ });
-  }
-  els.crossfadeSlider.addEventListener("input", () => {
-    const v = parseFloat(els.crossfadeSlider.value);
-    els.crossfadeVal.textContent = v.toFixed(2) + "s";
-    crossfadeUserEditAt = performance.now();
-    if (!crossfadeSendTimer) crossfadeSendTimer = setTimeout(flushCrossfade, 150);
-  });
-
-  // =========================================================================
-  // Preset save / load — modal popups + REST round-trips. The save dialog
-  // posts the current layer stack + masters to /presets; load applies a
-  // selected preset via /presets/{name} with optional apply_masters.
-  // =========================================================================
-  const saveModal = $("save-modal");
-  const loadModal = $("load-modal");
-  const saveNameInput = $("save-name");
-  const saveErr = $("save-err");
-  const loadErr = $("load-err");
-  const presetList = $("preset-list");
-  const loadWithMasters = $("load-with-masters");
-  let selectedPreset = null;
-
-  function openModal(modal) {
-    modal.classList.add("open");
-  }
-  function closeModal(modal) {
-    modal.classList.remove("open");
-  }
-
-  $("save-preset-btn").addEventListener("click", () => {
-    saveNameInput.value = "";
-    saveErr.textContent = "";
-    openModal(saveModal);
-    setTimeout(() => saveNameInput.focus(), 0);
-  });
-  $("save-cancel").addEventListener("click", () => closeModal(saveModal));
-  $("save-confirm").addEventListener("click", doSavePreset);
-  saveNameInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); doSavePreset(); }
-    else if (e.key === "Escape") { closeModal(saveModal); }
-  });
-
-  async function doSavePreset() {
-    const raw = saveNameInput.value.trim();
-    if (!raw) { saveErr.textContent = "name is required"; return; }
-    if (raw.length > 40) { saveErr.textContent = "max 40 characters"; return; }
-    if (!/^[A-Za-z0-9][A-Za-z0-9_\-]*$/.test(raw)) {
-      saveErr.textContent = "letters/digits/_/- only; must start with alphanumeric";
-      return;
-    }
-    saveErr.textContent = "saving…";
-    try {
-      const r = await fetch("/presets", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: raw, overwrite: true }),
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        const msg = typeof err.detail === "string"
-          ? err.detail
-          : JSON.stringify(err.detail || err) || `HTTP ${r.status}`;
-        saveErr.textContent = msg;
-        return;
-      }
-      closeModal(saveModal);
-    } catch (e) {
-      saveErr.textContent = "network error: " + e.message;
-    }
-  }
-
-  $("load-preset-btn").addEventListener("click", async () => {
-    loadErr.textContent = "";
-    selectedPreset = null;
-    presetList.replaceChildren();
-    presetList.appendChild(Object.assign(document.createElement("div"), {
-      className: "empty", textContent: "loading…",
-    }));
-    openModal(loadModal);
-    try {
-      const r = await fetch("/presets");
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = await r.json();
-      renderPresetList(data.presets || []);
-    } catch (e) {
-      presetList.replaceChildren();
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "failed to load presets: " + e.message;
-      presetList.appendChild(empty);
-    }
-  });
-
-  function renderPresetList(names) {
-    presetList.replaceChildren();
-    if (!names.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "no saved presets";
-      presetList.appendChild(empty);
-      return;
-    }
-    const sorted = [...names].sort((a, b) => a.localeCompare(b));
-    for (const name of sorted) {
-      const item = document.createElement("div");
-      item.className = "preset-item";
-      item.textContent = name;
-      item.addEventListener("click", () => {
-        for (const el of presetList.querySelectorAll(".preset-item.selected")) {
-          el.classList.remove("selected");
-        }
-        item.classList.add("selected");
-        selectedPreset = name;
-      });
-      item.addEventListener("dblclick", () => {
-        selectedPreset = name;
-        item.classList.add("selected");
-        doLoadPreset();
-      });
-      presetList.appendChild(item);
-    }
-  }
-
-  $("load-cancel").addEventListener("click", () => closeModal(loadModal));
-  $("load-confirm").addEventListener("click", doLoadPreset);
-
-  async function doLoadPreset() {
-    if (!selectedPreset) { loadErr.textContent = "select a preset"; return; }
-    loadErr.textContent = "loading…";
-    // Pass the live slider value explicitly so a still-pending debounced
-    // PATCH to /agent/config can't race the load and apply the old default.
-    const crossfade = parseFloat(els.crossfadeSlider.value);
-    try {
-      const r = await fetch("/presets/" + encodeURIComponent(selectedPreset), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          apply_masters: !!loadWithMasters.checked,
-          crossfade_seconds: crossfade,
-        }),
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        const msg = typeof err.detail === "string"
-          ? err.detail
-          : JSON.stringify(err.detail || err) || `HTTP ${r.status}`;
-        loadErr.textContent = msg;
-        return;
-      }
-      closeModal(loadModal);
-    } catch (e) {
-      loadErr.textContent = "network error: " + e.message;
-    }
-  }
-
-  // Click on overlay (outside the modal box) closes the modal.
-  for (const overlay of [saveModal, loadModal]) {
-    overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) closeModal(overlay);
-    });
-  }
-  window.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape") return;
-    if (saveModal.classList.contains("open")) closeModal(saveModal);
-    if (loadModal.classList.contains("open")) closeModal(loadModal);
-  });
-
-  // Bootstrap.
-  loadAgentConfig();
-  initSimulator();
-  fetchStateOnce();
-  connectStateWs();
-})();
-</script>
+<script type="module" src="/lib/main-desktop.js"></script>
 </body>
 </html>

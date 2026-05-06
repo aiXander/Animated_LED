@@ -292,6 +292,10 @@ def create_app(
     async def index() -> FileResponse:
         return FileResponse(WEB_DIR / "index.html", headers=_NO_CACHE_HEADERS)
 
+    @app.get("/m")
+    async def mobile() -> FileResponse:
+        return FileResponse(WEB_DIR / "mobile.html", headers=_NO_CACHE_HEADERS)
+
     @app.get("/editor")
     async def editor() -> FileResponse:
         return FileResponse(WEB_DIR / "editor.html", headers=_NO_CACHE_HEADERS)
@@ -300,6 +304,36 @@ def create_app(
     async def audio_meter_js() -> FileResponse:
         return FileResponse(
             WEB_DIR / "audio-meter.js",
+            media_type="application/javascript",
+            headers=_NO_CACHE_HEADERS,
+        )
+
+    @app.get("/favicon.svg")
+    async def favicon_svg() -> FileResponse:
+        return FileResponse(WEB_DIR / "favicon.svg", media_type="image/svg+xml")
+
+    # /favicon.ico is what most browsers ask for by default; serve the SVG.
+    @app.get("/favicon.ico")
+    async def favicon_ico() -> FileResponse:
+        return FileResponse(WEB_DIR / "favicon.svg", media_type="image/svg+xml")
+
+    # Shared ES modules under src/web/lib/ — bootstrap script + per-feature
+    # modules used by both index.html and mobile.html.
+    _LIB_DIR = (WEB_DIR / "lib").resolve()
+
+    @app.get("/lib/{path:path}")
+    async def lib_static(path: str) -> FileResponse:
+        # Resolve and verify the candidate stays inside _LIB_DIR — guards
+        # against `..` traversal (FastAPI's path converter passes raw text).
+        candidate = (_LIB_DIR / path).resolve()
+        try:
+            candidate.relative_to(_LIB_DIR)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail="not found") from e
+        if not candidate.is_file():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(
+            candidate,
             media_type="application/javascript",
             headers=_NO_CACHE_HEADERS,
         )
