@@ -176,10 +176,10 @@
       color: #dbeafe; font-weight: 600;
       min-width: 0; flex: 1 1 auto;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      padding-right: 2.75rem; /* clear the centered op-num */
     }
     .layer-row .op-num {
-      position: absolute; left: 50%; transform: translateX(-50%);
+      position: absolute; left: 50%; bottom: 0.1875rem;
+      transform: translateX(-50%);
       font-variant-numeric: tabular-nums; opacity: 0.85;
       background: rgba(20, 20, 20, 0.55); padding: 0 0.25rem; border-radius: 0.1875rem;
     }
@@ -197,7 +197,7 @@
 
     /* ---- masters ---- */
     .master-row {
-      display: flex; align-items: center; gap: 0.5rem; padding: 0.1875rem 0.25rem 0.1875rem 0;
+      display: flex; align-items: center; gap: 0.5rem; padding: 0.234375rem 0.25rem 0.234375rem 0;
       min-width: 0;
     }
     .master-row > label {
@@ -344,8 +344,6 @@
           <span class="title">chat</span>
           <span class="spacer"></span>
           <span class="dim" id="chat-status">ready</span>
-          <label for="model">model</label>
-          <input id="model" placeholder="(default)" size="24" />
           <button id="new">new session</button>
         </header>
         <div id="log"></div>
@@ -367,7 +365,6 @@
             <div class="stat"><span class="k">render fps</span><span class="v" id="fps">—</span></div>
             <div class="stat"><span class="k">target fps</span><span class="v dim" id="target-fps">—</span></div>
             <div class="stat"><span class="k">frames</span><span class="v" id="frames">0</span></div>
-            <div class="stat"><span class="k">dropped</span><span class="v" id="dropped">0</span></div>
             <div class="stat"><span class="k">elapsed</span><span class="v" id="elapsed">0s</span></div>
           </div>
           <div class="status-col">
@@ -412,7 +409,6 @@
 
         <h3>audio</h3>
         <div class="stat"><span class="k">status</span><span class="v dim" id="audio-status">—</span></div>
-        <div class="stat"><span class="k">device</span><span class="v dim" id="audio-device">—</span></div>
         <div id="audio-meter"></div>
 
         <h3>layers</h3>
@@ -770,9 +766,8 @@
   // =========================================================================
   const els = {
     fps: $("fps"), targetFps: $("target-fps"),
-    frames: $("frames"), dropped: $("dropped"), elapsed: $("elapsed"),
+    frames: $("frames"), elapsed: $("elapsed"),
     transport: $("transport"), simClients: $("sim-clients"), gamma: $("gamma"),
-    audioDevice: $("audio-device"),
     audioStatus: $("audio-status"),
     layersList: $("layers-list"),
     freezeBtn: $("m-freeze"),
@@ -1000,12 +995,12 @@
         head.appendChild(idx);
         head.appendChild(document.createTextNode(" "));
         head.appendChild(name);
-        head.appendChild(opNum);
         head.appendChild(remove);
         const blend = document.createElement("div");
         blend.className = "blend";
         row.appendChild(head);
         row.appendChild(blend);
+        row.appendChild(opNum);
         host.appendChild(row);
         const cache = { row, name, blend, opNum, idx: i };
         row.addEventListener("mousedown", (e) => startDrag(i, cache, e));
@@ -1103,7 +1098,6 @@
     setText(els.fps, fmtNum(s.fps, 1));
     setText(els.targetFps, s.target_fps ?? "—");
     setText(els.frames, String(s.frame_count ?? 0));
-    setText(els.dropped, String(s.dropped_frames ?? 0));
     setText(els.elapsed, (s.elapsed != null) ? `${s.elapsed.toFixed(1)}s` : "—");
     setText(els.transport, s.transport_mode || "—");
     setText(els.simClients, String(s.sim_clients ?? 0));
@@ -1119,7 +1113,6 @@
     applyMasters(s.masters);
 
     const a = s.audio || {};
-    setText(els.audioDevice, a.device || "—");
     let statusText;
     if (a.connected) statusText = "connected";
     else if (a.error) statusText = "disconnected · " + a.error;
@@ -1236,11 +1229,9 @@
   const input = $("input");
   const sendBtn = $("send");
   const chatStatus = $("chat-status");
-  const modelInput = $("model");
 
   let sessionId = null;
   let inflight = false;
-  let cfgDefaultModel = "";
 
   function setChatStatus(text, cls = "dim") {
     chatStatus.textContent = text;
@@ -1330,8 +1321,6 @@ result: ${escapeHtml(JSON.stringify(turn.tool_result, null, 2))}</pre>
       const r = await fetch("/agent/config");
       if (r.ok) {
         const cfg = await r.json();
-        cfgDefaultModel = cfg.model;
-        modelInput.placeholder = cfg.model;
         if (!cfg.enabled) setChatStatus("agent disabled in config", "bad");
         if (typeof cfg.default_crossfade_seconds === "number"
             && performance.now() - crossfadeUserEditAt > 400) {
@@ -1352,8 +1341,6 @@ result: ${escapeHtml(JSON.stringify(turn.tool_result, null, 2))}</pre>
     try {
       const body = { message: text };
       if (sessionId) body.session_id = sessionId;
-      const overrideModel = modelInput.value.trim();
-      if (overrideModel && overrideModel !== cfgDefaultModel) body.model = overrideModel;
       const r = await fetch("/agent/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
