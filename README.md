@@ -20,6 +20,9 @@ ssh xander@XanderPi.local
 ssh -L 8080:10.0.0.2:80 xander@XanderPi.local
 http://localhost:8080
 
+# Over tailscale (Pi must be on and connected to local wifi + eth plugged in):
+https://xanderpi.tail182af2.ts.net
+
 
 # Fire up the server:
 cd /home/xander/audio_LED/Animated_LED

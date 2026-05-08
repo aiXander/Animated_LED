@@ -16,6 +16,21 @@ I will use several Claude Code instances for dev / debugging so always try to se
 
 All the LEDs have been physically connected (3 x 150 LEDs on all 4 quadrants).
 
+## Network access cheatsheet (set up 2026-05-08)
+
+The Gledopto/WLED stays on its **ethernet-only** static IP `10.0.0.2` (the WLED "Static IP" field is shared between ethernet and WiFi, so giving it a hotspot DHCP lease would break the ethernet leg the DDP render path depends on). It is reachable only through the Pi.
+
+**Pi as gateway to the Gledopto:**
+- `systemd-socket-proxyd` reverse proxy on the Pi listens on port 8080 and forwards to `10.0.0.2:80`. Units live in `deploy/wled-proxy.{socket,service}` and are installed under `/etc/systemd/system/` on the Pi (enabled, autostart on boot, WebSocket-transparent so the WLED live UI works).
+- LAN access (any device on the hotspot, no install): `http://xanderpi.local:8080` (Safari/Firefox; Chrome's async DNS doesn't speak mDNS) or `http://<pi-hotspot-ip>:8080` from Chrome. Hotspot IPs are dynamic — re-resolve via `dscacheutil -q host -a name XanderPi.local` from the Mac when needed.
+- Tailnet access (HTTPS, real Let's Encrypt cert, anywhere): `https://xanderpi.tail182af2.ts.net/` — provisioned via `tailscale serve --bg http://localhost:8080` on the Pi. Tailnet HTTPS/Serve is enabled at the tailnet level (one-time admin click). Same Tailscale account (`mlpaperchannel@`) on Mac + Pi.
+
+**Pi access from the Mac:**
+- Mac's `~/.ssh/id_ed25519.pub` is in the Pi's `~/.ssh/authorized_keys`, so `ssh xander@XanderPi.local` is passwordless.
+- Pixel hotspot defaults to client (AP) isolation; if peer-to-peer breaks (`.local` stops resolving, Pi/Gledopto invisible from Mac scan), restart the hotspot or switch its security to **WPA2-Personal** with **2.4 GHz / Extend compatibility ON** (the ESP32 in the Gledopto is 2.4 GHz only, and the Gledopto's WiFi scan will not even list a 5 GHz-only hotspot).
+
+**Festival-day rule:** DDP frames flow Pi → Gledopto over the ethernet cable, never over WiFi. WiFi/Tailscale is only for browser UI + SSH.
+
 ## Commands
 
 ```bash
