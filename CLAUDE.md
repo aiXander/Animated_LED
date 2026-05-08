@@ -176,6 +176,54 @@ The OpenRouter API key is read from `OPENROUTER_API_KEY` (env var name configura
 - LedFx and `ledctl` cannot both talk to the same WLED at once.
 - The Gledopto runs **WLED-MoonModules** (AudioReactive fork, build 2508020 confirmed 2026-05-08), not stock WLED. It has extra GEQ / AGC / I2S settings on the Info page; otherwise behaves like 0.14+. Stock-WLED tutorials mostly still apply.
 
+## Strip mapping (verified 1:1 with operator UI, 2026-05-08)
+
+The mapping below was verified end-to-end via `/calibration/solo` against the physical rig. Operator UI ↔ physical LEDs are 1:1; do not edit either side without re-running the test sequence.
+
+**WLED outputs** (Gledopto LED Preferences) — all four are **WS281x, RGB, length 450, Reversed OFF, Skip 0**:
+
+| WLED output | GPIO | Start | Length | Reversed |
+| ----------- | ---- | ----- | ------ | -------- |
+| 1           | 16   | 0     | 450    | off      |
+| 2           | 12   | 450   | 450    | off      |
+| 3           | 2    | 900   | 450    | off      |
+| 4           | 4    | 1350  | 450    | off      |
+
+(WLED outputs 2 and 4 used to be Reversed=ON; that was unchecked when the ledctl `pixel_offset`s were swapped — keeping reversal in WLED with the new offsets would have flipped those two strips.)
+
+**ledctl strips** (`config/config.pi.yaml`) — all four `reversed: false`, all four with `geometry.start` at `x=0` (centre) and `geometry.end` at `x=±15` (outer edge):
+
+| ledctl `id`   | `pixel_offset` | physical quadrant | geometry end |
+| ------------- | -------------- | ----------------- | ------------ |
+| top_right     | 0              | top-right         | (+15, +0.5)  |
+| bottom_right  | 450            | bottom-right      | (+15, −0.5)  |
+| bottom_left   | 900            | bottom-left       | (−15, −0.5)  |
+| top_left      | 1350           | top-left          | (−15, +0.5)  |
+
+All strips are physically wired controller-at-centre, so logical pixel 0 of each = centre end of the rig. No reversal anywhere — ledctl geometry, WLED logical addressing, and physical wiring all agree.
+
+**Re-verifying after any change** (run on the Pi):
+
+```bash
+PI=http://localhost:8000; PW=kaailed
+solo() { curl -s -X POST "$PI/calibration/solo?password=$PW" -H 'Content-Type: application/json' -d "{\"indices\": $(python3 -c "import json;print(json.dumps(list(range($1,$2))))")}"; }
+
+# Quadrant test
+solo 0 450      # top-right
+solo 450 900    # bottom-right
+solo 900 1350   # bottom-left
+solo 1350 1800  # top-left
+
+# Direction test (first 30 of each strip — should light at CENTRE)
+solo 0 30; solo 450 480; solo 900 930; solo 1350 1380
+
+curl -s -X POST "$PI/calibration/stop?password=$PW"
+```
+
+## Boot-time Gledopto reboot
+
+`deploy/gledopto-reboot.service` is a oneshot systemd unit that fires `curl http://10.0.0.2/reset` 8 s after `ledctl.service` has started. WLED reboots and comes back up while DDP is already streaming, so it enters realtime override cleanly on every Pi boot — works around the WLED-MM realtime-intake wedge without manual intervention. Installed and enabled on the Pi at `/etc/systemd/system/gledopto-reboot.service`.
+
 ## DDP control: Pi vs Gledopto (debug + on-site toggle)
 
 The render loop's DDP transport has a **`paused`** flag exposed over the API and as a button on the operator UI. Pausing stops `send_frame` to WLED while keeping the simulator leg streaming, so the operator UI viz stays live. After WLED's ~2.5 s realtime timeout the Gledopto resumes its own preset/effect — i.e. instant A/B between "Pi drives" and "Gledopto drives" with no service restart.
