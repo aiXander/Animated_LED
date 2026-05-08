@@ -16,20 +16,42 @@ I will use several Claude Code instances for dev / debugging so always try to se
 
 All the LEDs have been physically connected (3 x 150 LEDs on all 4 quadrants).
 
-## Network access cheatsheet (set up 2026-05-08)
+## Network access cheatsheet (current state, 2026-05-08)
 
-The Gledopto/WLED stays on its **ethernet-only** static IP `10.0.0.2` (the WLED "Static IP" field is shared between ethernet and WiFi, so giving it a hotspot DHCP lease would break the ethernet leg the DDP render path depends on). It is reachable only through the Pi.
+**Topology.** Gledopto/WLED is reachable only through the Pi, on the **ethernet-only** static IP `10.0.0.2` (the WLED "Static IP" field is shared between ethernet and WiFi — keep WiFi off on the Gledopto so the ethernet leg the DDP render path depends on stays intact). The Pi joins the phone hotspot for everything else (browser UIs, Tailscale, SSH).
 
-**Pi as gateway to the Gledopto:**
-- `systemd-socket-proxyd` reverse proxy on the Pi listens on port 8080 and forwards to `10.0.0.2:80`. Units live in `deploy/wled-proxy.{socket,service}` and are installed under `/etc/systemd/system/` on the Pi (enabled, autostart on boot, WebSocket-transparent so the WLED live UI works).
-- LAN access (any device on the hotspot, no install): `http://xanderpi.local:8080` (Safari/Firefox; Chrome's async DNS doesn't speak mDNS) or `http://<pi-hotspot-ip>:8080` from Chrome. Hotspot IPs are dynamic — re-resolve via `dscacheutil -q host -a name XanderPi.local` from the Mac when needed.
-- Tailnet access (HTTPS, real Let's Encrypt cert, anywhere): `https://xanderpi.tail182af2.ts.net/` — provisioned via `tailscale serve --bg http://localhost:8080` on the Pi. Tailnet HTTPS/Serve is enabled at the tailnet level (one-time admin click). Same Tailscale account (`mlpaperchannel@`) on Mac + Pi.
+**Service map on the Pi.** All four services are `enabled` and autostart on every reboot:
 
-**Pi access from the Mac:**
-- Mac's `~/.ssh/id_ed25519.pub` is in the Pi's `~/.ssh/authorized_keys`, so `ssh xander@XanderPi.local` is passwordless.
-- Pixel hotspot defaults to client (AP) isolation; if peer-to-peer breaks (`.local` stops resolving, Pi/Gledopto invisible from Mac scan), restart the hotspot or switch its security to **WPA2-Personal** with **2.4 GHz / Extend compatibility ON** (the ESP32 in the Gledopto is 2.4 GHz only, and the Gledopto's WiFi scan will not even list a 5 GHz-only hotspot).
+| Service                 | Listens on             | Talks to                                  |
+| ----------------------- | ---------------------- | ----------------------------------------- |
+| `ledctl.service`        | `0.0.0.0:8000`         | DDP→Gledopto on ethernet; spawns audio-server |
+| `wled-proxy.{socket,service}` | `0.0.0.0:8080`   | reverse-proxies to `10.0.0.2:80` (WLED UI) |
+| `audio-server` (subprocess of ledctl) | `0.0.0.0:8765` (WS) + `0.0.0.0:8766` (HTTP UI) + sends OSC to `127.0.0.1:9000` | USB mic via ALSA |
+| `tailscaled.service`    | WireGuard              | tailnet (`xanderpi.tail182af2.ts.net`)    |
 
-**Festival-day rule:** DDP frames flow Pi → Gledopto over the ethernet cable, never over WiFi. WiFi/Tailscale is only for browser UI + SSH.
+**Browser URLs.**
+
+| What                | LAN (hotspot)                                      | Tailnet (anywhere)                                  |
+| ------------------- | -------------------------------------------------- | --------------------------------------------------- |
+| ledctl operator UI  | `http://xanderpi.local:8000` / `http://<pi-ip>:8000` | `https://xanderpi.tail182af2.ts.net:8443/`          |
+| WLED UI             | `http://xanderpi.local:8080` / `http://<pi-ip>:8080` | `https://xanderpi.tail182af2.ts.net/` (port 443)    |
+| Audio-server FFT UI | `http://xanderpi.local:8766` / `http://<pi-ip>:8766` | `https://xanderpi.tail182af2.ts.net:10000/`         |
+
+`xanderpi.local` (mDNS) only resolves in Safari/Firefox/`curl` on the Mac. Chrome bypasses macOS mDNS — use the IP or the tailnet URL there. Hotspot IPs are dynamic; re-resolve via `dscacheutil -q host -a name XanderPi.local` from the Mac.
+
+**Tailscale serve.** Same Tailscale account (`mlpaperchannel@`) on Mac + Pi. Three HTTPS mounts active (`tailscale serve` only allows ports 443 / 8443 / 10000 — that's why ports are remapped on the tailnet side): WLED→443, ledctl→8443, audio-UI→10000. Configs persist in `/var/lib/tailscale/`, so `tailscale serve` resumes automatically after reboot.
+
+**Pi access from the Mac.**
+- Passwordless: Mac's `~/.ssh/id_ed25519.pub` is in the Pi's `~/.ssh/authorized_keys` — `ssh xander@XanderPi.local` just works.
+- Pixel hotspot client isolation: if `.local` stops resolving and devices can't see each other, restart the hotspot or switch its security to **WPA2-Personal** with **2.4 GHz / Extend compatibility ON**. The ESP32 in the Gledopto is 2.4 GHz only and won't even list a 5 GHz-only hotspot in its scan.
+
+**Festival-day rule.** DDP frames flow Pi → Gledopto over the ethernet cable, never over WiFi. WiFi / Tailscale is browser UI + SSH only.
+
+**Clean-Pi install notes (for future re-deploys).**
+- Repo lives at `/home/xander/audio_LED/Animated_LED/`, with `Realtime_PyAudio_FFT` as a sibling at `/home/xander/audio_LED/Realtime_PyAudio_FFT/`. The canonical `deploy/ledctl.service` template uses `User=pi` and `/home/pi/animated_LED/` paths — patch `User=xander` and the three paths to the actual layout above before installing under `/etc/systemd/system/`.
+- `config.pi.yaml` `audio_server.command` must be the **absolute path** to the `audio-server` binary (`/home/xander/.local/bin/audio-server`) — systemd doesn't inherit the user shell's PATH, so a bare `"audio-server"` won't resolve under the unit.
+- ledctl's venv at `/home/xander/audio_LED/Animated_LED/.venv` needs `python-osc` for the OSC listener to bind. Install with `cd <repo> && /home/xander/.local/bin/uv pip install python-osc` (the venv has no `pip` of its own; PEP 668 blocks system `pip3`).
+- Audio-server's `Realtime_PyAudio_FFT/configs/main.yaml` must have `ws.host: 0.0.0.0` so the FFT UI / WebSocket are reachable from the tailnet. Leave the OSC destination on `127.0.0.1` — both processes are on the same Pi.
 
 ## Commands
 

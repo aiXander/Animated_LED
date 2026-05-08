@@ -19,6 +19,7 @@ export function bindMasters({
   values,          // { brightness: HTMLElement, ... } — text node next to each slider
   freezeBtn,
   blackoutBtn,
+  ddpBtn,
   crossfadeSlider,
   crossfadeVal,
 }) {
@@ -77,6 +78,25 @@ export function bindMasters({
     });
   }
 
+  // DDP transport pause toggle. "Pi control" = sending DDP (button "on");
+  // toggling off pauses DDP so the Gledopto runs its own preset after the
+  // WLED realtime timeout (~2.5 s). Disabled at runtime if /state reports
+  // no DDP transport (e.g. dev = simulator-only).
+  let ddpEditAt = 0;
+  if (ddpBtn) {
+    ddpBtn.addEventListener("click", async () => {
+      const turningOff = ddpBtn.classList.contains("on");
+      const next = !turningOff;
+      ddpBtn.classList.toggle("on", next);
+      ddpBtn.textContent = next ? "Pi control" : "Gledopto";
+      ddpEditAt = performance.now();
+      try {
+        await fetch(turningOff ? "/transport/pause" : "/transport/resume",
+          { method: "POST" });
+      } catch (_) { /* WS will resync */ }
+    });
+  }
+
   // Crossfade slider — single source of truth for transition speed across
   // the whole UI. Both the agent's `update_leds` tool and POST /presets/{name}
   // resolve their crossfade duration from agent.default_crossfade_seconds,
@@ -123,6 +143,29 @@ export function bindMasters({
     }
   }
 
+  function applyDdp(ddp) {
+    if (!ddpBtn) return;
+    if (performance.now() - ddpEditAt < 600) return;
+    if (!ddp || !ddp.available) {
+      ddpBtn.disabled = true;
+      ddpBtn.classList.remove("on");
+      ddpBtn.textContent = "no DDP";
+      ddpBtn.title = "Current transport mode has no DDP leg (e.g. simulator-only).";
+      return;
+    }
+    ddpBtn.disabled = false;
+    const piOn = !ddp.paused;
+    if (ddpBtn.classList.contains("on") !== piOn) {
+      ddpBtn.classList.toggle("on", piOn);
+    }
+    const sentBits = ` · ${ddp.frames_sent} frames → ${ddp.host}:${ddp.port}`;
+    ddpBtn.textContent = piOn ? "Pi control" : "Gledopto";
+    ddpBtn.title = (piOn
+      ? "ledctl is sending DDP. Click to release: WLED reverts to its own preset after ~2.5s."
+      : "DDP paused — Gledopto's own preset is on. Click to take Pi control back.")
+      + sentBits;
+  }
+
   function applyBlackout(blackout) {
     if (!blackoutBtn) return;
     const bo = !!blackout;
@@ -146,5 +189,5 @@ export function bindMasters({
     return crossfadeSlider ? parseFloat(crossfadeSlider.value) : null;
   }
 
-  return { applyMasters, applyBlackout, setCrossfadeFromConfig, getCrossfade };
+  return { applyMasters, applyBlackout, applyDdp, setCrossfadeFromConfig, getCrossfade };
 }
