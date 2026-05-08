@@ -20,6 +20,7 @@ export function bindMasters({
   freezeBtn,
   blackoutBtn,
   ddpBtn,
+  simBtn,
   crossfadeSlider,
   crossfadeVal,
 }) {
@@ -97,6 +98,24 @@ export function bindMasters({
     });
   }
 
+  // Simulator stream pause toggle. "on" = sim stream is running (frames
+  // broadcast to browser viz). Toggling off stops the broadcast so the Pi
+  // doesn't pay the WS encode/send cost while DDP is driving the LEDs.
+  let simEditAt = 0;
+  if (simBtn) {
+    simBtn.addEventListener("click", async () => {
+      const turningOff = simBtn.classList.contains("on");
+      const next = !turningOff;
+      simBtn.classList.toggle("on", next);
+      simBtn.textContent = next ? "sim stream" : "sim paused";
+      simEditAt = performance.now();
+      try {
+        await fetch(turningOff ? "/sim/pause" : "/sim/resume",
+          { method: "POST" });
+      } catch (_) { /* WS will resync */ }
+    });
+  }
+
   // Crossfade slider — single source of truth for transition speed across
   // the whole UI. Both the agent's `update_leds` tool and POST /presets/{name}
   // resolve their crossfade duration from agent.default_crossfade_seconds,
@@ -166,6 +185,19 @@ export function bindMasters({
       + sentBits;
   }
 
+  function applySim(simPaused) {
+    if (!simBtn) return;
+    if (performance.now() - simEditAt < 600) return;
+    const running = !simPaused;
+    if (simBtn.classList.contains("on") !== running) {
+      simBtn.classList.toggle("on", running);
+    }
+    simBtn.textContent = running ? "sim stream" : "sim paused";
+    simBtn.title = running
+      ? "Sim stream is running — browser viz receives frames. Click to pause and offload the Pi."
+      : "Sim stream paused — browser viz frozen. Click to resume.";
+  }
+
   function applyBlackout(blackout) {
     if (!blackoutBtn) return;
     const bo = !!blackout;
@@ -189,5 +221,5 @@ export function bindMasters({
     return crossfadeSlider ? parseFloat(crossfadeSlider.value) : null;
   }
 
-  return { applyMasters, applyBlackout, applyDdp, setCrossfadeFromConfig, getCrossfade };
+  return { applyMasters, applyBlackout, applyDdp, applySim, setCrossfadeFromConfig, getCrossfade };
 }
