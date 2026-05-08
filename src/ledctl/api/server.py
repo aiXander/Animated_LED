@@ -433,6 +433,7 @@ def create_app(
             "audio": _audio_state_payload(),
             "masters": _masters_payload(),
             "ddp": _ddp_state_payload(),
+            "sim_paused": bool(sim.paused),
         }
 
     @app.get("/state")
@@ -648,6 +649,46 @@ def create_app(
         for d in ddps:
             d.paused = False
         return {"ddp": _ddp_state_payload()}
+
+    # Pausing the simulator stream stops broadcasting frames to browser
+    # viz clients. The Pi was being overloaded driving DDP + the simulator
+    # WebSocket simultaneously; this lets the operator drop the sim leg
+    # on demand without touching DDP.
+    @app.post("/sim/pause")
+    async def post_sim_pause() -> dict:
+        sim.paused = True
+        return {"sim_paused": True}
+
+    @app.post("/sim/resume")
+    async def post_sim_resume() -> dict:
+        sim.paused = False
+        return {"sim_paused": False}
+
+    # ---- system ----
+
+    @app.post("/system/reboot")
+    async def post_system_reboot() -> dict:
+        """Reboot the host machine (Pi). Requires passwordless sudo for /sbin/reboot.
+
+        Schedules `sudo /sbin/reboot` ~1s in the future so the HTTP response
+        can return cleanly before the system goes down.
+        """
+        import shutil
+        import subprocess
+
+        if shutil.which("sudo") is None or shutil.which("reboot") is None:
+            raise HTTPException(status_code=501, detail="reboot not available on this host")
+        try:
+            subprocess.Popen(
+                ["sudo", "-n", "/bin/sh", "-c", "sleep 1 && /sbin/reboot"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as e:  # pragma: no cover
+            raise HTTPException(status_code=500, detail=f"reboot failed: {e}") from e
+        log.warning("system reboot requested via /system/reboot")
+        return {"ok": True, "message": "rebooting in ~1s"}
 
     # ---- presets ----
 

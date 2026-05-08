@@ -16,6 +16,10 @@ class SimulatorTransport(Transport):
     def __init__(self) -> None:
         self._clients: set[WebSocket] = set()
         self._lock = asyncio.Lock()
+        # When paused, send_frame is a no-op. Used by the operator UI to
+        # offload the Pi: pausing the simulator stream stops every connected
+        # browser viz from receiving frames so the render loop only feeds DDP.
+        self.paused: bool = False
 
     async def add_client(self, ws: "WebSocket") -> None:
         async with self._lock:
@@ -30,7 +34,7 @@ class SimulatorTransport(Transport):
         return len(self._clients)
 
     async def send_frame(self, pixels: np.ndarray) -> None:
-        if not self._clients:
+        if self.paused or not self._clients:
             return
         data = pixels.tobytes()
         # Snapshot so we don't mutate during iteration.

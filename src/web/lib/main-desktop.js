@@ -101,6 +101,7 @@ async function boot() {
     freezeBtn:       $("m-freeze"),
     blackoutBtn:     $("m-blackout"),
     ddpBtn:          $("m-ddp"),
+    simBtn:          $("m-sim"),
     crossfadeSlider: $("m-crossfade"),
     crossfadeVal:    $("m-crossfade-v"),
   });
@@ -188,6 +189,7 @@ async function boot() {
 
     masters.applyBlackout(s.blackout);
     masters.applyDdp(s.ddp);
+    masters.applySim(s.sim_paused);
     layers.render(s.layers);
     masters.applyMasters(s.masters);
 
