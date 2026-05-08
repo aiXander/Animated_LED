@@ -16,17 +16,21 @@ scp ~/.ssh/id_ed25519 xander@100.121.105.103:/home/xander/.ssh
 # SSH into the Pi from Mac:
 ssh xander@XanderPi.local
 
+# Connect to Gledopto config (on Mac):
+ssh -L 8080:10.0.0.2:80 xander@XanderPi.local
+http://localhost:8080
+
+
 # Fire up the server:
 cd /home/xander/audio_LED/Animated_LED
 .venv/bin/ledctl run --config config/config.pi.yaml
 
-# Connect to Pi server UI:
+# Connect to aaiLED server UI on Pi from macbook / phone
 http://100.121.105.103:8000/?password=kaailed
 
 
-# Connect to Gledopto config:
-ssh -L 8080:10.0.0.2:80 xander@XanderPi.local
-http://localhost:8080
+
+Hit http://localhost:8080/reset to restart it
 
 
 
