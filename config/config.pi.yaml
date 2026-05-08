@@ -107,7 +107,9 @@ audio_server:
   # Pi), the LED render loop keeps running with audio_band returning 0.
   enabled: true
   autostart: true
-  command: ["audio-server"]
+  # Absolute path required: systemd doesn't inherit the user shell PATH,
+  # so a bare "audio-server" silently fails to resolve under ledctl.service.
+  command: ["/home/xander/.local/bin/audio-server"]
   # Resolved relative to this YAML file's directory: from <repo>/config/ this
   # points at <repo>/../Realtime_PyAudio_FFT, the sibling clone of the
   # audio-feature server. Launching the subprocess with that as cwd means
