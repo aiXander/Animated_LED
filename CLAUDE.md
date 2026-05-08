@@ -1,6 +1,20 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code / hardware setup in this repository.
+
+## Current hardware setup:
+We are on-site, there is no fixed local wifi network yet (never has been active) so I'm using my phone's hotspot.
+network name: "Xander's Pixel", password: xanderwifi
+
+Both the Pi and the Gledopto know this network (added in settings).
+
+My Pi (hardcoded to 10.0.0.1) is connected to gledopto (hardcoded to 10.0.0.2) via a 15m ethernet cable.
+I am using my macbook to SSH into the Pi since I don't have an external keyboard / screen.
+My macbook is thus my command centre.
+
+I will use several Claude Code instances for dev / debugging so always try to see from terminal / logs / ... on which device you currently are (either the Pi or the macbook).
+
+All the LEDs have been physically connected (3 x 150 LEDs on all 4 quadrants).
 
 ## Commands
 

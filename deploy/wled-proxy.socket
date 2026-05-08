@@ -1,0 +1,9 @@
+[Unit]
+Description=Socket for WLED reverse proxy (Pi WiFi -> Gledopto ethernet)
+
+[Socket]
+ListenStream=8080
+Accept=no
+
+[Install]
+WantedBy=sockets.target

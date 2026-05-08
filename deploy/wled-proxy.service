@@ -1,0 +1,17 @@
+[Unit]
+Description=Reverse proxy from Pi WiFi to Gledopto/WLED on ethernet
+Requires=wled-proxy.socket
+After=network-online.target wled-proxy.socket
+
+[Service]
+ExecStart=/lib/systemd/systemd-socket-proxyd 10.0.0.2:80
+Restart=always
+RestartSec=2
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+NoNewPrivileges=true
+DynamicUser=yes
+
+[Install]
+WantedBy=multi-user.target
