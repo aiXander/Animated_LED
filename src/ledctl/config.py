@@ -183,6 +183,17 @@ class AudioServerConfig(BaseModel):
             "bands, save presets there."
         ),
     )
+    tailnet_ui_url: str | None = Field(
+        None,
+        description=(
+            "Optional override for the 'audio' link when the operator UI is "
+            "loaded over a Tailscale tailnet (https + *.ts.net host). The "
+            "configured `ui_url` (loopback) is unreachable from a remote "
+            "browser; Tailscale Serve only exposes 443/8443/10000, so set "
+            "this to e.g. `https://<host>.ts.net:10000/` if you've mounted "
+            "the audio UI there. Leave unset to fall back to `ui_url`."
+        ),
+    )
     stale_after_s: float = Field(
         1.5,
         gt=0.0,

@@ -119,6 +119,9 @@ audio_server:
   osc_listen_host: 127.0.0.1
   osc_listen_port: 9000
   ui_url: http://127.0.0.1:8766
+  # Used when the operator UI is loaded over the tailnet (https://*.ts.net).
+  # Tailscale Serve only allows 443/8443/10000; audio UI is mounted on 10000.
+  tailnet_ui_url: https://xanderpi.tail182af2.ts.net:10000/
   stale_after_s: 1.5
 agent:
   enabled: true

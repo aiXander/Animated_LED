@@ -385,6 +385,7 @@ def create_app(
                 "connected": False,
                 "device": "",
                 "ui_url": app.state.config.audio_server.ui_url,
+                "tailnet_ui_url": app.state.config.audio_server.tailnet_ui_url,
                 "error": "audio_server.enabled is false",
                 "low": 0.0,
                 "mid": 0.0,
@@ -407,6 +408,7 @@ def create_app(
                 "high": [s.high_lo, s.high_hi],
             },
             "ui_url": bridge.ui_url,
+            "tailnet_ui_url": app.state.config.audio_server.tailnet_ui_url,
             "error": s.error or supervisor_error,
             "low": round(s.low, 5),
             "mid": round(s.mid, 5),
@@ -815,10 +817,13 @@ def create_app(
         on the client.
         """
         bridge: AudioBridge | None = app.state.audio_bridge
-        url = (
-            bridge.ui_url if bridge is not None else app.state.config.audio_server.ui_url
-        )
-        return {"ui_url": url, "enabled": app.state.config.audio_server.enabled}
+        cfg = app.state.config.audio_server
+        url = bridge.ui_url if bridge is not None else cfg.ui_url
+        return {
+            "ui_url": url,
+            "tailnet_ui_url": cfg.tailnet_ui_url,
+            "enabled": cfg.enabled,
+        }
 
     # ---- live config view + write-back (Phase 4 editor) ----
 
