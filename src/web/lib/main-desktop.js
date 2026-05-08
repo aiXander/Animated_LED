@@ -100,6 +100,7 @@ async function boot() {
     },
     freezeBtn:       $("m-freeze"),
     blackoutBtn:     $("m-blackout"),
+    ddpBtn:          $("m-ddp"),
     crossfadeSlider: $("m-crossfade"),
     crossfadeVal:    $("m-crossfade-v"),
   });
@@ -186,6 +187,7 @@ async function boot() {
     setText(els.gamma,      fmtNum(s.gamma, 2));
 
     masters.applyBlackout(s.blackout);
+    masters.applyDdp(s.ddp);
     layers.render(s.layers);
     masters.applyMasters(s.masters);
 

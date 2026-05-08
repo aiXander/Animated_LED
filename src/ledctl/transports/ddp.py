@@ -23,8 +23,17 @@ class DDPTransport(Transport):
         self.port = port
         self.dest_id = dest_id
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # When `paused` is True, send_frame becomes a no-op. WLED's realtime
+        # override expires after ~2.5 s, after which the Gledopto resumes its
+        # own preset/effect — i.e. Pi control mode → Gledopto control mode
+        # without needing to stop the render loop.
+        self.paused: bool = False
+        self.packets_sent: int = 0
+        self.frames_sent: int = 0
 
     async def send_frame(self, pixels: np.ndarray) -> None:
+        if self.paused:
+            return
         # Validate shape lazily — wrong shape = caller bug, hard fail is fine.
         assert pixels.dtype == np.uint8 and pixels.ndim == 2 and pixels.shape[1] == 3
         flat = pixels.tobytes()
@@ -47,8 +56,10 @@ class DDPTransport(Transport):
             )
             packet = header + flat[offset_bytes : offset_bytes + chunk_bytes]
             self._sock.sendto(packet, (self.host, self.port))
+            self.packets_sent += 1
             offset_bytes += chunk_bytes
             pixel_idx += chunk_pixels
+        self.frames_sent += 1
 
     async def close(self) -> None:
         self._sock.close()

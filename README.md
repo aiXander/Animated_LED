@@ -16,24 +16,15 @@ scp ~/.ssh/id_ed25519 xander@****:/home/xander/.ssh
 # SSH into the Pi from Mac:
 ssh xander@XanderPi.local
 
-# Connect to Gledopto config (on Mac):
-ssh -L 8080:10.0.0.2:80 xander@XanderPi.local
-http://localhost:8080
-
-# Over tailscale (Pi must be on and connected to local wifi + eth plugged in):
-https://****
+| ledctl operator UI  |    http://xanderpi.local:8000     https://****:8443
+| WLED UI             |    http://xanderpi.local:8080     https://**** 
+| Audio-server FFT UI |    http://xanderpi.local:8766     https://****:10000
 
 
 # Fire up the server:
 cd /home/xander/audio_LED/Animated_LED
 .venv/bin/ledctl run --config config/config.pi.yaml
 
-# Connect to aaiLED server UI on Pi from macbook / phone
-http://****:8000/?password=CHANGE_ME
-
-
-
-Hit http://localhost:8080/reset to restart it
 
 
 

@@ -432,6 +432,7 @@ def create_app(
             "gamma": engine.gamma,
             "audio": _audio_state_payload(),
             "masters": _masters_payload(),
+            "ddp": _ddp_state_payload(),
         }
 
     @app.get("/state")
@@ -597,6 +598,56 @@ def create_app(
     async def post_resume() -> dict:
         engine.mixer.blackout = False
         return {"blackout": False}
+
+    # ---- DDP control (Pi vs Gledopto) ----
+    # Pausing the DDP transport stops realtime frames to WLED. WLED's own
+    # realtime override expires after ~2.5 s, after which the Gledopto's
+    # active preset/effect takes over the LEDs again. The simulator leg of
+    # MultiTransport keeps streaming so the operator UI viz stays live.
+
+    def _ddp_transports() -> list[DDPTransport]:
+        t = transport
+        if isinstance(t, DDPTransport):
+            return [t]
+        if isinstance(t, MultiTransport):
+            return [c for c in t._transports if isinstance(c, DDPTransport)]
+        return []
+
+    def _ddp_state_payload() -> dict[str, Any]:
+        ddps = _ddp_transports()
+        if not ddps:
+            return {"available": False, "paused": False, "frames_sent": 0, "packets_sent": 0}
+        d = ddps[0]
+        return {
+            "available": True,
+            "paused": bool(d.paused),
+            "host": d.host,
+            "port": d.port,
+            "frames_sent": d.frames_sent,
+            "packets_sent": d.packets_sent,
+        }
+
+    @app.get("/transport")
+    async def get_transport() -> dict:
+        return {"mode": app.state.config.transport.mode, "ddp": _ddp_state_payload()}
+
+    @app.post("/transport/pause")
+    async def post_transport_pause() -> dict:
+        ddps = _ddp_transports()
+        if not ddps:
+            raise HTTPException(status_code=409, detail="no DDP transport in current mode")
+        for d in ddps:
+            d.paused = True
+        return {"ddp": _ddp_state_payload()}
+
+    @app.post("/transport/resume")
+    async def post_transport_resume() -> dict:
+        ddps = _ddp_transports()
+        if not ddps:
+            raise HTTPException(status_code=409, detail="no DDP transport in current mode")
+        for d in ddps:
+            d.paused = False
+        return {"ddp": _ddp_state_payload()}
 
     # ---- presets ----
 
