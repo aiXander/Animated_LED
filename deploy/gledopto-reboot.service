@@ -1,0 +1,34 @@
+[Unit]
+# Reboots the Gledopto/WLED controller once after ledctl has started.
+#
+# Why: WLED's realtime intake occasionally wedges on its own state and
+# refuses DDP overrides until power-cycled. Rebooting it after ledctl is
+# already streaming DDP guarantees WLED comes up *while* realtime packets
+# are arriving, so it enters realtime override cleanly on every Pi boot.
+#
+# Install:
+#   sudo cp deploy/gledopto-reboot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable gledopto-reboot.service
+#   # (no --now: it should fire on the next boot, after ledctl is up)
+
+Description=Reboot Gledopto/WLED after ledctl is up (clean realtime intake)
+Requires=ledctl.service
+After=ledctl.service
+
+[Service]
+Type=oneshot
+# Wait for ledctl to actually be rendering and DDP to be streaming.
+# 8 s is comfortable: ledctl's render loop is up within ~2 s of process
+# start, and we want a few packets in-flight before WLED reboots.
+ExecStartPre=/bin/sleep 8
+# WLED returns 200 immediately and reboots ~1 s later.
+# --max-time guards against a hung TCP connect.
+ExecStart=/usr/bin/curl -sf --max-time 5 "http://10.0.0.2/reset"
+# If the Gledopto is unreachable at boot (e.g. eth cable unplugged), don't
+# block the rest of the boot or mark the unit failed forever.
+SuccessExitStatus=0 7 28
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
