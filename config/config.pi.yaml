@@ -20,7 +20,7 @@ strips:
 - id: top_left
   controller: gledopto_main
   output: 1
-  pixel_offset: 0
+  pixel_offset: 1350
   pixel_count: 450
   leds_per_meter: 30.0
   geometry:
@@ -37,7 +37,7 @@ strips:
 - id: top_right
   controller: gledopto_main
   output: 2
-  pixel_offset: 450
+  pixel_offset: 0
   pixel_count: 450
   leds_per_meter: 30.0
   geometry:
@@ -71,7 +71,7 @@ strips:
 - id: bottom_right
   controller: gledopto_main
   output: 4
-  pixel_offset: 1350
+  pixel_offset: 450
   pixel_count: 450
   leds_per_meter: 30.0
   geometry:

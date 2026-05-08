@@ -174,6 +174,44 @@ The OpenRouter API key is read from `OPENROUTER_API_KEY` (env var name configura
 - INMP441 I²S microphone (on Pi only; USB audio or built-in mic on dev).
 - `config/config.dev.yaml` for Mac dev (transport=simulator); `config/config.pi.yaml` for Pi (transport=ddp).
 - LedFx and `ledctl` cannot both talk to the same WLED at once.
+- The Gledopto runs **WLED-MoonModules** (AudioReactive fork, build 2508020 confirmed 2026-05-08), not stock WLED. It has extra GEQ / AGC / I2S settings on the Info page; otherwise behaves like 0.14+. Stock-WLED tutorials mostly still apply.
+
+## DDP control: Pi vs Gledopto (debug + on-site toggle)
+
+The render loop's DDP transport has a **`paused`** flag exposed over the API and as a button on the operator UI. Pausing stops `send_frame` to WLED while keeping the simulator leg streaming, so the operator UI viz stays live. After WLED's ~2.5 s realtime timeout the Gledopto resumes its own preset/effect — i.e. instant A/B between "Pi drives" and "Gledopto drives" with no service restart.
+
+| method  | path                  | what it does                                                  |
+| ------- | --------------------- | ------------------------------------------------------------- |
+| GET     | `/transport`          | `{mode, ddp:{available, paused, host, port, frames_sent, packets_sent}}` |
+| POST    | `/transport/pause`    | stop sending DDP → after ~2.5 s WLED takes back over          |
+| POST    | `/transport/resume`   | resume DDP → ledctl drives the LEDs                           |
+
+`/state` also embeds the same `ddp` block. The auth gate applies, so on the Pi: `curl 'localhost:8000/transport?password=kaailed' | python3 -m json.tool`. UI button lives next to freeze/blackout in the desktop landing page; disabled in dev (simulator-only mode) since there's no DDP transport to pause.
+
+**Diagnostic counters.** `DDPTransport` exposes `frames_sent` / `packets_sent`; useful for confirming the Pi is actually transmitting. Healthy 60 fps × 1800 LEDs = 4 packets per frame (3×1450 B + 1×1090 B over the wire).
+
+**On-site debug recipe** when the LEDs show WLED's own preset instead of ledctl content:
+
+```bash
+# 1. confirm ledctl is sending DDP and frames_sent is climbing
+curl -s 'localhost:8000/transport?password=kaailed' | python3 -m json.tool
+
+# 2. confirm packets actually leave eth0 toward 10.0.0.2:4048
+sudo tcpdump -i any -n 'host 10.0.0.2 and udp port 4048' -c 20
+
+# 3. confirm Gledopto is reachable on ETH and ARP'd
+ping -c 3 10.0.0.2
+arp -n | grep 10.0.0.2     # MAC must resolve, not "(incomplete)"
+
+# 4. check WLED's Info page for a "Realtime: DDP, IP: 10.0.0.1" line.
+#    Absence of that line == WLED is silently dropping the override even
+#    though packets reach it. The most common cause we've seen is a wedged
+#    realtime intake state — REBOOT THE GLEDOPTO before chasing config
+#    (encountered on-site 2026-05-08 after ~2 h of WLED-MM uptime; full
+#    power cycle restored normal DDP override with no settings changed).
+```
+
+If the Info page never shows a Realtime line even after a Gledopto reboot, then it's a config issue. In that order: WLED-MM **Sync Interfaces → Realtime → "Receive UDP Realtime"** must be on (this is the override-arming toggle, distinct from "Receive UDP" which is the WLED-to-WLED notifier protocol); **LED Preferences → Length** must be 1800; **Segments** must include a Segment 0 spanning 0–1799; and turn **PC Mode** off as a control. The `Force max brightness during realtime` toggle eliminates a separate "looks ignored because brightness=0" failure mode.
 
 ## External audio dependency
 
