@@ -1,5 +1,27 @@
 # ledctl — audio-reactive LED installation
 
+
+--------
+--------
+
+# SSH into the Pi from Mac:
+ssh xander@XanderPi.local
+
+| ledctl operator UI  |    http://xanderpi.local:8000     https://****:8443
+| WLED UI             |    http://xanderpi.local:8080     https://**** 
+| Audio-server FFT UI |    http://xanderpi.local:8766     https://****:10000
+
+
+# Fire up the server:
+cd /home/xander/audio_LED/Animated_LED
+.venv/bin/ledctl run --config config/config.pi.yaml
+
+--------
+--------
+
+
+----
+
 test
 # Wifi: WLED-AP
 pw: wled1234
@@ -13,17 +35,7 @@ scp ~/.ssh/id_ed25519 xander@****:/home/xander/.ssh
 
 -----
 
-# SSH into the Pi from Mac:
-ssh xander@XanderPi.local
 
-| ledctl operator UI  |    http://xanderpi.local:8000     https://****:8443
-| WLED UI             |    http://xanderpi.local:8080     https://**** 
-| Audio-server FFT UI |    http://xanderpi.local:8766     https://****:10000
-
-
-# Fire up the server:
-cd /home/xander/audio_LED/Animated_LED
-.venv/bin/ledctl run --config config/config.pi.yaml
 
 
 
