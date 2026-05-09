@@ -18,6 +18,7 @@ or transports. The Engine wires it up.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import time
@@ -458,7 +459,6 @@ class Runtime:
             speed=float(m.speed),
             audio_reactivity=float(m.audio_reactivity),
             saturation=float(m.saturation),
-            freeze=bool(m.freeze),
             crossfade_seconds=float(self.crossfade_seconds),
         )
         return EffectFrameContext(
@@ -469,6 +469,8 @@ class Runtime:
             params=ParamView(layer.params, strict=self.strict_params),
             masters=masters_view,
             n=self.n,
+            frames=FrameMap(self.topology.derived),
+            pos=self.topology.normalised_positions,
         )
 
     # ---- fence test ---- #
@@ -491,9 +493,23 @@ class Runtime:
             try:
                 rgb = layer.instance.render(ctx)
             except Exception as e:
+                # Surface the traceback so the LLM sees which line failed —
+                # generic NumPy errors like "all input arrays must have the
+                # same shape" are useless without a line number.
+                import traceback
+                tb = traceback.format_exc()
+                tb_lines = [
+                    line for line in tb.splitlines()
+                    if "<llm:" in line or "EffectError" in line
+                    or line.strip().startswith("File ")
+                ]
+                tb_short = "\n".join(tb_lines) if tb_lines else tb
+                hint = _diagnostic_hint(e)
                 raise EffectCompileError(
                     f"render() crashed on synthetic frame {i}: "
-                    f"{type(e).__name__}: {e}"
+                    f"{type(e).__name__}: {e}\n"
+                    f"{hint}\n"
+                    f"---\n{tb_short}"
                 ) from e
             if not isinstance(rgb, np.ndarray):
                 raise EffectCompileError(
@@ -821,3 +837,70 @@ def _clone_layer_for_live(src: Layer, runtime: Runtime) -> Layer:
 
 # Backwards-friendly alias for tests / docs that referenced ActiveEffect.
 ActiveEffect = Layer
+
+
+def _diagnostic_hint(exc: Exception) -> str:
+    """Map a fence-test exception to an actionable hint for the LLM. The hint
+    is appended to the EffectCompileError message and shows up under
+    LAST EFFECT ERROR in the next system prompt, so the LLM can self-correct
+    without burning a retry."""
+    msg = str(exc)
+    name = type(exc).__name__
+    if name == "AttributeError":
+        # Most common: ctx.x / ctx.y / ctx.u_loop instead of ctx.frames.<name>
+        if "'EffectFrameContext'" in msg or "'EffectInitContext'" in msg:
+            return (
+                "Hint: the context doesn't have that attribute directly. "
+                "Per-LED frames live at `ctx.frames.<name>` (e.g. `ctx.frames.x`, "
+                "`ctx.frames.u_loop`, `ctx.frames.radius`). The 3D position array "
+                "is `ctx.pos` (shape (N, 3)). The audio bands are at "
+                "`ctx.audio.low / .mid / .high`. See COORDINATE FRAMES + RUNTIME "
+                "API in the system prompt for the full list."
+            )
+        if "unknown frame" in msg:
+            # FrameMap.__getattr__ raises with this prefix.
+            return (
+                "Hint: that frame doesn't exist. Available names are listed in "
+                "COORDINATE FRAMES (x/y/z, signed_x/y/z, u_loop, radius, angle, "
+                "side_top, side_bottom, axial_dist, axial_signed, corner_dist, "
+                "strip_id, chain_index, distance)."
+            )
+        if "unknown param" in msg:
+            # ParamView.__getattr__ raises with this prefix when an effect
+            # reaches for a key it didn't declare in its schema.
+            return (
+                "Hint: that param key isn't in your declared schema. Either add "
+                "it under `params` in your write_effect call, or read it from a "
+                "constant. Use `ctx.params.<key>` (NOT `ctx.params['<key>']`)."
+            )
+        if "'AudioView'" in msg:
+            return (
+                "Hint: AudioView exposes low/mid/high/beat/beats_since_start/bpm/"
+                "connected and a `bands` dict — nothing else. No `volume`, `peak`, "
+                "or `freq` fields."
+            )
+    if name == "ValueError" and "shape" in msg:
+        return (
+            "Hint: shape mismatch. Common causes:\n"
+            "  - hsv_to_rgb(per_led_h, scalar_s, scalar_v) is supported and broadcasts;\n"
+            "  - np.stack / np.concatenate on arrays of different ndim — broadcast first;\n"
+            "  - per-LED ops mixing (N,) and scalar — usually fine; mixing (N,) and (3,) is not."
+        )
+    if name == "TypeError" and "params are read-only" in msg:
+        return (
+            "Hint: you tried to write to ctx.params.* — those are operator-owned. "
+            "Read them with `ctx.params.<key>`; if you need a derived value, compute "
+            "it into a local."
+        )
+    if name == "KeyError":
+        return (
+            "Hint: KeyError usually means a frame name typo or a param key that's "
+            "not in your declared schema. Frames at `ctx.frames`; params via "
+            "`ctx.params.<key>` (NOT `ctx.params['<key>']`)."
+        )
+    return (
+        "Hint: traceback below shows which line in your code raised. Common pitfalls:\n"
+        "  - per-LED data lives at `ctx.frames.<name>` (not `ctx.<name>`);\n"
+        "  - audio bands at `ctx.audio.low/.mid/.high`;\n"
+        "  - return must be (N, 3) float32 in [0, 1] — fill `self.out` in place."
+    )

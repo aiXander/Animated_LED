@@ -36,18 +36,32 @@ def hex_to_rgb(hex_str: str) -> np.ndarray:
 
 
 def hsv_to_rgb(h, s, v):
-    """HSV → RGB. Scalar or array. Returns float32, broadcasting like numpy."""
-    h = np.asarray(h, dtype=np.float32)
-    s = np.asarray(s, dtype=np.float32)
-    v = np.asarray(v, dtype=np.float32)
-    h6 = (np.mod(h, 1.0) * 6.0)
+    """HSV → RGB. Scalars and arrays broadcast against each other; returns
+    float32. Input shape `(...,)` → output `(..., 3)`. Scalar inputs return
+    a `(3,)` array.
+
+    Examples:
+        hsv_to_rgb(0.33, 1.0, 1.0)               # → (3,) green
+        hsv_to_rgb(np.array([0, 0.33, 0.66]), 1.0, 1.0)  # → (3, 3) RGB triples
+        hsv_to_rgb(ctx.frames.x, 1.0, 1.0)       # → (N, 3) per-LED rainbow
+    """
+    # Broadcast h, s, v to a common shape FIRST. Without this, `q = v * (1-s*f)`
+    # has h's shape while `p = v * (1-s)` has s/v's shape — and `np.stack` of a
+    # (N,) and a 0-d array later raises "all input arrays must have the same
+    # shape." The cheap fix is `broadcast_arrays`, which gives us views all of
+    # the same shape with no per-element copy.
+    h, s, v = np.broadcast_arrays(
+        np.asarray(h, dtype=np.float32),
+        np.asarray(s, dtype=np.float32),
+        np.asarray(v, dtype=np.float32),
+    )
+    h6 = np.mod(h, 1.0) * 6.0
     i = np.floor(h6).astype(np.int32)
     f = h6 - i.astype(np.float32)
     p = v * (1.0 - s)
     q = v * (1.0 - s * f)
     t = v * (1.0 - s * (1.0 - f))
     i_mod = i % 6
-    # Stack and gather — works for scalars and arrays alike.
     r_choices = np.stack([v, q, p, p, t, v], axis=-1)
     g_choices = np.stack([t, v, v, q, p, p], axis=-1)
     b_choices = np.stack([p, p, t, v, v, q], axis=-1)

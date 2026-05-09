@@ -109,7 +109,6 @@ class MastersPatchRequest(BaseModel):
     speed: float | None = Field(None, ge=0.0, le=3.0)
     audio_reactivity: float | None = Field(None, ge=0.0, le=3.0)
     saturation: float | None = Field(None, ge=0.0, le=1.0)
-    freeze: bool | None = None
     persist: bool = False
 
 
@@ -156,6 +155,26 @@ class LoadEffectRequest(BaseModel):
     blend: str = "normal"
     opacity: float = Field(1.0, ge=0.0, le=1.0)
     add_layer: bool = Field(False, description="Insert as a new layer instead of replacing.")
+
+
+class SavePreviewRequest(BaseModel):
+    """Operator-driven save of the currently-selected PREVIEW layer to disk."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., pattern=r"^[a-z][a-z0-9_]{0,40}$")
+    summary: str | None = Field(
+        None, max_length=400,
+        description="Override the in-memory layer's summary; otherwise reused.",
+    )
+    overwrite: bool = Field(
+        True,
+        description="When False, fail with 409 if a saved effect with this name exists.",
+    )
+
+
+class StarRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    starred: bool
 
 
 # ---- yaml writers ---- #
@@ -213,7 +232,6 @@ def _masters_from_config(cfg: AppConfig) -> MasterControls:
     return MasterControls(
         brightness=m.brightness, speed=m.speed,
         audio_reactivity=m.audio_reactivity, saturation=m.saturation,
-        freeze=m.freeze,
     )
 
 
@@ -516,9 +534,50 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"no effect {name!r}")
         return {"deleted": name}
 
-    class StarRequest(BaseModel):
-        model_config = ConfigDict(extra="forbid")
-        starred: bool
+    @app.post("/preview/save", status_code=201)
+    async def save_preview(body: SavePreviewRequest) -> dict:
+        """Persist the currently-selected preview layer under `body.name`.
+
+        Operator-driven save (vs. agent-driven save in `apply_write_effect`).
+        The on-disk param values pick up whatever the operator dragged the
+        sliders to since the layer was loaded.
+        """
+        from ..surface.schema import WriteEffectArgs
+        sel = runtime.preview.selected_layer()
+        if sel is None:
+            raise HTTPException(status_code=409, detail="preview is empty")
+        if not body.overwrite and store.exists(body.name):
+            raise HTTPException(
+                status_code=409, detail=f"an effect named {body.name!r} already exists",
+            )
+        try:
+            args = WriteEffectArgs(
+                name=body.name,
+                summary=body.summary if body.summary is not None else sel.summary,
+                code=sel.source,
+                params=sel.params.schema,
+            )
+        except ValidationError as e:
+            raise HTTPException(
+                status_code=422,
+                detail=e.errors(include_url=False, include_context=False),
+            ) from e
+        try:
+            stored = store.save(args=args, param_values=sel.params.values())
+        except (OSError, ValueError) as e:
+            raise HTTPException(status_code=500, detail=f"save failed: {e}") from e
+        # Rename the in-memory preview layer to match the saved slug. Without
+        # this, subsequent /preview/params slider drags would call
+        # store.save_values(<old name>, ...) and quietly overwrite a different
+        # on-disk effect (or no-op on a name that's since been deleted).
+        sel.name = stored.name
+        sel.summary = stored.summary
+        _wipe_agent_history()
+        return {
+            "saved": stored.name,
+            "summary": stored.summary,
+            "param_count": len(stored.param_schema),
+        }
 
     @app.post("/effects/{name}/star")
     async def star_effect(name: str, body: StarRequest) -> dict:
@@ -532,6 +591,21 @@ def create_app(
         meta["starred"] = bool(body.starred)
         yml.write_text(safe_dump(meta, sort_keys=False, default_flow_style=False))
         return {"name": name, "starred": bool(body.starred)}
+
+    def _wipe_agent_history() -> None:
+        """Clear the LLM's rolling conversation buffer.
+
+        Called when an operator action replaces preview SOURCE outside the
+        agent's own write_effect path (library load, pull-live-to-preview,
+        save, etc.). Without this wipe, the LLM's prior tool_call payloads
+        in the deque reference source that's no longer in preview, which
+        confuses follow-up turns ("the prompt says X is loaded but my last
+        emit was Y"). Operator-visible `turns` (chat transcript) are
+        preserved; only the model-visible message buffer clears.
+        """
+        store_obj = getattr(app.state, "agent_sessions", None)
+        if store_obj is not None:
+            store_obj.reset_all_buffers()
 
     @app.post("/effects/{name}/load_preview")
     async def load_preview(name: str, body: LoadEffectRequest | None = None) -> dict:
@@ -548,6 +622,7 @@ def create_app(
             )
         except (EffectCompileError, ValueError) as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+        _wipe_agent_history()
         return {"loaded": "preview", "name": name, "snapshot": runtime.snapshot()}
 
     @app.post("/effects/{name}/load_live")
@@ -602,6 +677,7 @@ def create_app(
             runtime.pull_live_to_preview()
         except EffectCompileError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+        _wipe_agent_history()
         return runtime.snapshot()
 
     # ---- per-layer controls ---- #

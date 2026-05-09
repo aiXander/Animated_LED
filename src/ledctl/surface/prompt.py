@@ -25,16 +25,17 @@ YOUR JOB
 You are an LED effect author. The operator types short descriptions of what they want to see;
 you write a single Python `Effect` subclass that we hot-load into a render loop on a Raspberry
 Pi, plus a tiny set of operator-facing UI controls (sliders / colour pickers / dropdowns) so
-the operator can hand-tune the look without re-prompting you. Emit ONE `write_effect` tool call
-per turn — never a diff, always the COMPLETE effect.
+the operator can hand-tune the look without re-prompting you. Emit ONE `write_effect` tool
+call per turn — never a diff, always the COMPLETE effect.
 
-The operator UI is layered (Resolume-style): a *composition* is a stack of layers, each layer
-is one Effect (yours), with a blend mode and opacity. There are two compositions: LIVE
-(driving the LEDs) and PREVIEW (the operator's scratchpad, shown in the simulator). Your
-`write_effect` replaces the SELECTED layer in the PREVIEW composition only. The operator
-promotes the entire preview composition to live with one click. So your output should be a
-clean, self-contained effect that plays well as a layer — the operator decides how to combine
-it with others.
+The operator UI has a layered scratchpad called the PREVIEW composition (Resolume-style): a
+stack of layers, each layer is one Effect (yours), with a blend mode and opacity. Your
+`write_effect` replaces the SELECTED layer in the preview composition. There is also a LIVE
+output that's driving the LEDs in front of the dance floor — the operator owns that
+completely and you have NO visibility into it and NO way to change it. They will promote the
+preview to live themselves when (and only when) it's ready. So focus on making the preview
+slot look great as a clean, self-contained effect layer; assume nothing about what's playing
+live.
 """
 
 PHYSICAL_RIG = """\
@@ -68,14 +69,23 @@ CONTRACT
   class MyEffect(Effect):
       def init(self, ctx):     # runs ONCE when this effect becomes active.
           # ctx.n, ctx.pos, ctx.frames, ctx.strips, ctx.rig
-          # precompute per-LED arrays here; allocate self.* state buffers.
+          # precompute per-LED state here; allocate self.* buffers.
           ...
 
       def render(self, ctx):   # runs every frame (~60 Hz).
-          # ctx.t, ctx.wall_t, ctx.dt, ctx.audio.*, ctx.params.*, ctx.masters
+          # ctx.t, ctx.wall_t, ctx.dt, ctx.n
+          # ctx.frames.x / .y / .u_loop / …  (per-LED frames; same as init)
+          # ctx.pos          (N, 3) float32 in [-1, 1] — same as init
+          # ctx.audio.low / .mid / .high / .beat / .bpm / .bands[name]
+          # ctx.params.<key>     operator-controlled values
+          # ctx.masters          read-only (NEVER mutate)
           # MUST return (N, 3) float32 in [0, 1].
           # CANONICAL PATTERN: fill self.out in place, return self.out.
           ...
+
+  # IMPORTANT: per-LED data lives at `ctx.frames.x`, NOT `ctx.x`.
+  # `ctx.x` does not exist; it raises AttributeError. The frames available
+  # are listed in COORDINATE FRAMES above. `ctx.pos` is the (N, 3) array.
 
   - `init(ctx)` runs once per swap. ALL precompute and state allocation happens here.
   - `render(ctx)` runs every frame. Vectorised numpy. NO allocation in the hot path.
@@ -117,6 +127,17 @@ ANTI-PATTERNS — don't do these
   - `print(...)` → not in builtins. Use `log.warning(...)`.
   - returning float64 → cast to float32, or fill `self.out` (already float32) in place.
   - dunder access (`__class__`, `__globals__`, …) → reserved; effects don't need it.
+
+SHAPE GOTCHAS — common cause of "all input arrays must have the same shape"
+
+  - `np.stack([per_led_array, scalar])` mixes ndim. Cast the scalar:
+        np.stack([per_led_array, np.full_like(per_led_array, 0.5)])
+  - `np.concatenate` on (N,) and (3,) → broadcast first or reshape.
+  - `hsv_to_rgb(per_led_h, scalar_s, scalar_v)` is supported and returns
+    `(N, 3)` — no manual broadcasting needed.
+  - `palette_lerp(stops, t_array)` returns shape `t.shape + (3,)`.
+  - When in doubt, `np.broadcast_arrays(a, b, c)` returns views with a
+    common shape, then stack as usual.
 """
 
 EXAMPLE_BASIC = '''\
@@ -315,7 +336,6 @@ def _masters_block(masters: MasterControls | None) -> str:
         f"  speed:             {masters.speed:.2f}   (multiplies ctx.t advancement)\n"
         f"  audio_reactivity:  {masters.audio_reactivity:.2f}   (already pre-applied to ctx.audio.*)\n"
         f"  saturation:        {masters.saturation:.2f}\n"
-        f"  freeze:            {str(bool(masters.freeze)).lower()}\n"
         "If a request can only be honoured by a master change ('make it brighter' while brightness=1.0;\n"
         "'less reactive' while audio_reactivity is high) — TELL THE OPERATOR which slider to move\n"
         "instead of writing a redundant effect. Otherwise design assuming the masters stay where they are."
@@ -323,40 +343,40 @@ def _masters_block(masters: MasterControls | None) -> str:
 
 
 def _current_effects_block(runtime: Runtime | None) -> str:
+    """Render ONLY the PREVIEW composition — the LLM has no visibility into LIVE.
+
+    LIVE is operator-controlled exclusively (no read, no write). Showing live
+    source / param values would tempt the LLM to "preserve" what's playing
+    and confuse it about which layer it's authoring.
+    """
     if runtime is None:
         return ""
     snap = runtime.snapshot()
-    out = ["CURRENT COMPOSITIONS"]
+    out = ["CURRENT PREVIEW COMPOSITION (your scratchpad — what you're authoring)"]
+    out.append(f"  crossfade on promote: {snap['crossfade_seconds']:.2f}s")
+    preview = snap.get("preview") or {}
+    layers = preview.get("layers") or []
+    sel = preview.get("selected", 0)
+    if not layers:
+        out.append("  preview composition is empty — your `write_effect` will create the first layer")
+        return "\n".join(out)
+    out.append(f"  layers: {len(layers)}, selected: #{sel}")
+    for i, layer in enumerate(layers):
+        marker = "▶" if i == sel else " "
+        out.append(
+            f"  {marker} #{i}  {layer['name']}  "
+            f"[{layer['blend']} @ opacity={layer['opacity']:.2f}"
+            f"{' DISABLED' if not layer.get('enabled', True) else ''}]"
+        )
+        out.append(f"      summary: {layer['summary']}")
+        out.append(f"      param_values: {json.dumps(layer['param_values'])}")
+    sel_layer = layers[min(sel, len(layers) - 1)]
     out.append(
-        f"  mode: {snap['mode']}    crossfade: {snap['crossfade_seconds']:.2f}s    "
-        f"blackout: {snap['blackout']}"
+        "\n  SELECTED LAYER SOURCE (your `write_effect` will REPLACE this — "
+        "build on it or rewrite it as the user requested):"
     )
-    for slot in ("preview", "live"):
-        comp = snap.get(slot) or {}
-        layers = comp.get("layers") or []
-        sel = comp.get("selected", 0)
-        if not layers:
-            out.append(f"\n  [{slot.upper()}] composition empty")
-            continue
-        out.append(f"\n  [{slot.upper()}] composition — {len(layers)} layer(s), selected: #{sel}")
-        for i, layer in enumerate(layers):
-            marker = "▶" if (slot == "preview" and i == sel) else " "
-            out.append(
-                f"  {marker} #{i}  {layer['name']}  "
-                f"[{layer['blend']} @ opacity={layer['opacity']:.2f}"
-                f"{' DISABLED' if not layer.get('enabled', True) else ''}]"
-            )
-            out.append(f"      summary: {layer['summary']}")
-            out.append(
-                f"      param_values: {json.dumps(layer['param_values'])}"
-            )
-        # Source of the SELECTED preview layer is the most useful for the LLM
-        # — it's what the operator is iterating on.
-        if slot == "preview":
-            sel_layer = layers[min(sel, len(layers) - 1)]
-            out.append("\n  SELECTED PREVIEW LAYER SOURCE (you are replacing this on `write_effect`):")
-            for line in sel_layer["source"].splitlines():
-                out.append(f"    {line}")
+    for line in sel_layer["source"].splitlines():
+        out.append(f"    {line}")
     return "\n".join(out)
 
 

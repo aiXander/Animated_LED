@@ -84,7 +84,6 @@ class MastersView:
     speed: float = 1.0
     audio_reactivity: float = 1.0
     saturation: float = 1.0
-    freeze: bool = False
     crossfade_seconds: float = 1.0
 
 
@@ -156,7 +155,13 @@ class EffectInitContext:
 
 @dataclass
 class EffectFrameContext:
-    """Passed to `Effect.render` every tick."""
+    """Passed to `Effect.render` every tick.
+
+    `frames` and `pos` are the same per-LED arrays you saw in `init` — kept
+    here too so `ctx.frames.x` / `ctx.pos` work in render without having to
+    cache `self.x = ctx.frames.x` from init. Cheap (FrameMap is a view), and
+    matches the LLM's natural reach.
+    """
 
     t: float
     wall_t: float
@@ -165,6 +170,8 @@ class EffectFrameContext:
     params: ParamView
     masters: MastersView
     n: int
+    frames: FrameMap | None = None
+    pos: np.ndarray | None = None
 
 
 # ---------- Effect base ---------- #

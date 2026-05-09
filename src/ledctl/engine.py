@@ -242,8 +242,7 @@ class Engine:
                 last_wall = wall_t
                 self.elapsed = wall_t
 
-                speed = 0.0 if self.masters.freeze else float(self.masters.speed)
-                self.effective_t += dt_wall * speed
+                self.effective_t += dt_wall * float(self.masters.speed)
 
                 audio_view = self._build_audio_view()
 

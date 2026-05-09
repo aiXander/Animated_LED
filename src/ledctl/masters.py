@@ -1,7 +1,7 @@
 """Operator-owned master controls + the per-frame render context.
 
 `MasterControls` is the small set of room-level knobs (brightness, speed,
-audio_reactivity, saturation, freeze) the operator owns. They are deliberately
+audio_reactivity, saturation) the operator owns. They are deliberately
 kept out of the surface DSL: the LLM never produces or alters them. The render
 loop reads them through `RenderContext`; the REST surface in `api/server.py`
 exposes `GET /masters` and `PATCH /masters` for the UI.
@@ -11,16 +11,11 @@ Bounds (enforced in `clamped()` and at the REST layer):
   - speed ∈ [0, 3]
   - audio_reactivity ∈ [0, 3]
   - saturation ∈ [0, 1]
-  - freeze: bool
 
 `brightness > 1.0` activates an adaptive headroom mode in `Mixer._apply_master_output`:
 the gain is derived from a rolling peak of the post-saturation stack so the recent
 brightest pixel is pushed toward 1.0. `brightness ≤ 1.0` is exact linear gain — old
 presets and existing UI behaviour stay identical. See `mixer.py` for the curve.
-
-A frozen pattern still breathes with the room, by design: `freeze` zeroes
-`effective_t` accumulation but `audio_band` reads `AudioState` directly,
-and the audio server keeps publishing smoothed band energies regardless.
 """
 
 from __future__ import annotations
@@ -38,7 +33,6 @@ class MasterControls:
     speed: float = 1.0
     audio_reactivity: float = 1.0
     saturation: float = 1.0
-    freeze: bool = False
 
     def clamped(self) -> MasterControls:
         return MasterControls(
@@ -46,7 +40,6 @@ class MasterControls:
             speed=_clip(self.speed, 0.0, 3.0),
             audio_reactivity=_clip(self.audio_reactivity, 0.0, 3.0),
             saturation=_clip(self.saturation, 0.0, 1.0),
-            freeze=bool(self.freeze),
         )
 
     def merge(self, **patch: object) -> MasterControls:
@@ -60,7 +53,6 @@ class MasterControls:
             "speed",
             "audio_reactivity",
             "saturation",
-            "freeze",
         }
         unknown = set(patch) - valid
         if unknown:
@@ -82,9 +74,9 @@ def _clip(v: float, lo: float, hi: float) -> float:
 class RenderContext:
     """Per-frame snapshot threaded through every primitive.
 
-    `t` is *effective* time (master-speed-scaled, frozen if `freeze`). `wall_t`
-    is raw monotonic time — the mixer's crossfade alpha uses wall_t so it
-    keeps progressing under speed/freeze.
+    `t` is *effective* time (master-speed-scaled). `wall_t` is raw monotonic
+    time — the mixer's crossfade alpha uses wall_t so it keeps progressing
+    under speed.
     `audio` is a possibly-pre-scaled view of the current AudioState (the
     low/mid/high fields are multiplied by `masters.audio_reactivity` once per
     tick, so individual primitives stay pure).

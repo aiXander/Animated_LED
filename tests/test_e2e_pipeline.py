@@ -98,7 +98,7 @@ def test_full_pipeline_broken_then_fixed_then_promoted(tmp_path: Path):
     # The prompt should also expose the runtime API so the LLM knows what's in scope.
     assert "RUNTIME API" in prompt
     # And the current preview source so the LLM can see what it's replacing.
-    assert "SELECTED PREVIEW LAYER SOURCE" in prompt
+    assert "SELECTED LAYER SOURCE" in prompt
 
     # ---- TURN 3: LLM emits a corrected version (uses real helpers) ---- #
     # NOTE: param keys are deliberately distinct from pulse_mono's so the

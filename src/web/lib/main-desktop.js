@@ -5,7 +5,7 @@
 //   - Per-layer param panel that applies tweaks live (no LLM round-trip)
 //   - Chat (design-mode only) → write_effect → preview slot
 //   - Promote / Pull-live-to-preview / blackout / library
-//   - Master row + audio pill + WS state stream
+//   - Stacked masters panel + audio HUD + WS state stream
 
 import { bindViz } from "./viz.js";
 import { $, setText } from "./util.js";
@@ -39,7 +39,7 @@ function connectStateStream() {
 }
 
 // --- viz canvas ---
-bindViz({
+const viz = bindViz({
   root: $("viz"),
   canvas: $("canvas"),
   tooltip: null,
@@ -47,6 +47,9 @@ bindViz({
   calText: $("cal-text"),
   calClear: $("cal-clear"),
 });
+// Critical: bindViz returns the API; nothing connects the /ws/frames stream
+// until we call start(). Without this the simulator stays black.
+viz.start();
 
 // --- mode toggle ---
 $("btn-design").addEventListener("click", () => setMode("design"));
@@ -73,13 +76,13 @@ function maybeRestoreMode() {
   } catch (_) {}
 }
 
-// --- masters row ---
+// --- masters stack (brightness / speed / audio / saturation / crossfade) ---
 function bindMasters() {
   const map = [
     ["m-bri", "v-bri", "brightness"],
-    ["m-sat", "v-sat", "saturation"],
     ["m-spd", "v-spd", "speed"],
     ["m-aud", "v-aud", "audio_reactivity"],
+    ["m-sat", "v-sat", "saturation"],
   ];
   for (const [sliderId, valId, key] of map) {
     const slider = $(sliderId);
@@ -89,9 +92,30 @@ function bindMasters() {
       sendMaster({ [key]: v });
     });
   }
-  $("m-frz").addEventListener("change", (e) => sendMaster({ freeze: e.target.checked }));
+  $("m-cf").addEventListener("input", (e) => {
+    const v = parseFloat(e.target.value);
+    $("v-cf").textContent = v.toFixed(2);
+    sendCrossfade(v);
+  });
 }
 bindMasters();
+
+let cfTimer = null;
+let pendingCf = null;
+function sendCrossfade(v) {
+  pendingCf = v;
+  if (cfTimer) return;
+  cfTimer = setTimeout(async () => {
+    const value = pendingCf;
+    pendingCf = null;
+    cfTimer = null;
+    await fetch("/agent/config", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ default_crossfade_seconds: value }),
+    }).catch(() => {});
+  }, 60);
+}
 
 let pendingMaster = null;
 let masterTimer = null;
@@ -144,56 +168,142 @@ document.addEventListener("click", (e) => {
 function renderLibrary() {
   const lib = $("lib");
   if (!libraryEffects.length) {
-    lib.innerHTML = `<div class="lib-row"><div>no saved effects</div></div>`;
+    lib.innerHTML = `<div class="lib-row"><div class="name">no saved effects</div></div>`;
     return;
   }
   lib.innerHTML = "";
   for (const eff of libraryEffects) {
     const row = document.createElement("div");
     row.className = "lib-row";
+    // Hover-revealed action row: pull into Design / pull into Live / ×.
     row.innerHTML = `
-      <div>
-        <div>${escapeAttr(eff.name)}</div>
-        <div class="summary">${escapeAttr(eff.summary || "")}</div>
-      </div>
+      <div class="name">${escapeAttr(eff.name)}</div>
+      <div class="summary">${escapeAttr(eff.summary || "")}</div>
       <div class="actions">
-        <button data-act="preview">preview</button>
-        <button data-act="add-pre">+pre</button>
-        <button data-act="add-live">+live</button>
-        <button data-act="del" class="danger">×</button>
+        <button class="pull-design" data-act="design" title="Replace the selected preview layer">pull into Design</button>
+        <button class="pull-live"   data-act="live"   title="Replace the selected live layer (with crossfade)">pull into Live</button>
+        <button class="danger"      data-act="del"    title="Delete from library">×</button>
       </div>`;
     row.addEventListener("click", async (e) => {
       const btn = e.target.closest("button");
-      if (!btn) return;
+      if (!btn) return;  // plain row click is a no-op now — the operator
+                         // picks Design vs Live deliberately.
       const act = btn.dataset.act;
-      if (act === "preview") {
+      if (act === "design") {
         await fetch(`/effects/${eff.name}/load_preview`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
         });
-      } else if (act === "add-pre") {
-        await fetch(`/effects/${eff.name}/load_preview`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ add_layer: true }),
-        });
-      } else if (act === "add-live") {
+        $("lib").classList.remove("open");
+      } else if (act === "live") {
         await fetch(`/effects/${eff.name}/load_live`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ add_layer: true }),
+          body: JSON.stringify({}),
         });
+        $("lib").classList.remove("open");
       } else if (act === "del") {
-        if (!confirm(`delete ${eff.name}?`)) return;
-        await fetch(`/effects/${eff.name}`, { method: "DELETE" });
-        libraryEffects = libraryEffects.filter((x) => x.name !== eff.name);
-        renderLibrary();
+        openDeleteModal(eff.name);
       }
     });
     lib.appendChild(row);
   }
 }
+
+// ---- save-current-effect modal ---- //
+
+$("btn-save-effect").addEventListener("click", openSaveModal);
+
+function openSaveModal() {
+  // Default the input to the selected preview layer's current name so the
+  // operator can just edit & overwrite, or rename and save a copy.
+  const seed = (state && state.preview && state.preview.layers
+    && state.preview.layers[state.preview.selected])
+    ? state.preview.layers[state.preview.selected].name
+    : "";
+  $("save-name").value = seed;
+  $("save-err").textContent = "";
+  $("save-modal").classList.add("open");
+  // Defer focus so the modal is visible before the input grabs it.
+  requestAnimationFrame(() => $("save-name").focus());
+}
+
+function closeSaveModal() { $("save-modal").classList.remove("open"); }
+
+$("save-cancel").addEventListener("click", closeSaveModal);
+$("save-modal").addEventListener("click", (e) => {
+  if (e.target.id === "save-modal") closeSaveModal();
+});
+$("save-name").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); doSaveEffect(); }
+  if (e.key === "Escape") { e.preventDefault(); closeSaveModal(); }
+});
+$("save-confirm").addEventListener("click", doSaveEffect);
+
+async function doSaveEffect() {
+  const name = $("save-name").value.trim();
+  const err = $("save-err");
+  err.textContent = "";
+  if (!/^[a-z][a-z0-9_]{0,40}$/.test(name)) {
+    err.textContent = "name must be snake_case ([a-z][a-z0-9_]{0,40})";
+    return;
+  }
+  $("save-confirm").disabled = true;
+  $("save-confirm").textContent = "…";
+  try {
+    const r = await fetch("/preview/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, overwrite: true }),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      err.textContent = `save failed: ${r.status} ${text}`;
+      return;
+    }
+    closeSaveModal();
+  } catch (e) {
+    err.textContent = `save error: ${e}`;
+  } finally {
+    $("save-confirm").disabled = false;
+    $("save-confirm").textContent = "save";
+  }
+}
+
+// ---- delete-confirm modal ---- //
+
+let pendingDelete = null;
+
+function openDeleteModal(name) {
+  pendingDelete = name;
+  $("del-name").textContent = name;
+  $("del-modal").classList.add("open");
+}
+
+function closeDeleteModal() {
+  pendingDelete = null;
+  $("del-modal").classList.remove("open");
+}
+
+$("del-cancel").addEventListener("click", closeDeleteModal);
+$("del-modal").addEventListener("click", (e) => {
+  if (e.target.id === "del-modal") closeDeleteModal();
+});
+$("del-confirm").addEventListener("click", async () => {
+  const name = pendingDelete;
+  if (!name) return;
+  await fetch(`/effects/${name}`, { method: "DELETE" });
+  libraryEffects = libraryEffects.filter((x) => x.name !== name);
+  renderLibrary();
+  closeDeleteModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    closeSaveModal();
+    closeDeleteModal();
+  }
+});
 
 // --- composition decks ---
 function renderDecks() {
@@ -464,7 +574,13 @@ function sendParam(slot, layerIndex, key, value) {
 // --- chat ---
 $("chat-send").addEventListener("click", sendChat);
 $("chat-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendChat();
+  // Enter sends; Shift+Enter inserts a literal newline.
+  // (The textarea's default behaviour for plain Enter is to insert "\n";
+  // we override that for an instant-send feel matching every other chat UI.)
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    sendChat();
+  }
 });
 
 async function sendChat() {
@@ -530,18 +646,75 @@ $("btn-audio").addEventListener("click", async (e) => {
   } catch (_) {}
 });
 
+// --- audio HUD (low / mid / high / beat meters + bpm) ---
+//
+// Bands are already in [0, 1] (smoothed + auto-scaled upstream by the
+// audio-server). beat_count is monotonic — we snap the beat meter to 1.0 on
+// every onset and decay it exponentially in a rAF loop so it stays visible
+// despite the underlying signal being a single-frame pulse.
+let lastBeatCount = 0;
+let beatLevel = 0;             // [0, 1] decaying value for the beat meter
+let beatLastTickWall = 0;      // performance.now() of last decay step
+const BEAT_DECAY_HALFLIFE_MS = 180;
+
+function updateAudioHud(a) {
+  const hud = $("audio-hud");
+  if (!a || !a.connected) {
+    hud.classList.add("disconnected");
+    setMeter($("meter-low"), 0);  setText($("num-low"), "0.00");
+    setMeter($("meter-mid"), 0);  setText($("num-mid"), "0.00");
+    setMeter($("meter-high"), 0); setText($("num-high"), "0.00");
+    setMeter($("meter-beat"), 0); setText($("num-beat"), "0");
+    setText($("audio-bpm"), "—");
+    lastBeatCount = (a && a.beat_count) || 0;
+    return;
+  }
+  hud.classList.remove("disconnected");
+  setMeter($("meter-low"),  a.low  || 0);  setText($("num-low"),  (a.low  || 0).toFixed(2));
+  setMeter($("meter-mid"),  a.mid  || 0);  setText($("num-mid"),  (a.mid  || 0).toFixed(2));
+  setMeter($("meter-high"), a.high || 0);  setText($("num-high"), (a.high || 0).toFixed(2));
+  setText($("audio-bpm"), a.bpm != null ? `${a.bpm.toFixed(0)}` : "—");
+  // Beat: snap to 1.0 on each new onset; the decay loop handles fadeout.
+  if (typeof a.beat_count === "number") {
+    if (a.beat_count > lastBeatCount) {
+      beatLevel = 1.0;
+    }
+    lastBeatCount = a.beat_count;
+    setText($("num-beat"), String(a.beat_count));
+  }
+}
+
+// Continuous decay of the beat meter, independent of /ws/state cadence so
+// the bar feels alive even between state pushes.
+function tickBeatDecay() {
+  const now = performance.now();
+  if (beatLastTickWall === 0) beatLastTickWall = now;
+  const dt = now - beatLastTickWall;
+  beatLastTickWall = now;
+  if (beatLevel > 0) {
+    beatLevel *= Math.pow(0.5, dt / BEAT_DECAY_HALFLIFE_MS);
+    if (beatLevel < 0.005) beatLevel = 0;
+    setMeter($("meter-beat"), beatLevel);
+  }
+  requestAnimationFrame(tickBeatDecay);
+}
+requestAnimationFrame(tickBeatDecay);
+
+function setMeter(el, v) {
+  if (!el) return;
+  const pct = Math.max(0, Math.min(100, (v || 0) * 100));
+  const next = `${pct.toFixed(0)}%`;
+  if (el.dataset.w !== next) {
+    el.style.width = next;
+    el.dataset.w = next;
+  }
+}
+
 // --- per-tick state apply ---
 function applyState() {
   if (!state) return;
   setText($("fps-pill"), `${state.fps?.toFixed?.(0) ?? "?"} fps`);
-  const a = state.audio;
-  if (a && a.connected) {
-    setText($("audio-pill"), `audio L${a.low?.toFixed?.(2) ?? "0"} M${a.mid?.toFixed?.(2) ?? "0"}`);
-    $("audio-pill").className = "pill ok";
-  } else {
-    setText($("audio-pill"), "audio off");
-    $("audio-pill").className = "pill warn";
-  }
+  updateAudioHud(state.audio);
   document.body.classList.toggle("design-mode", state.mode === "design");
   document.body.classList.toggle("live-mode", state.mode === "live");
   $("btn-design").classList.toggle("active", state.mode === "design");
@@ -559,7 +732,11 @@ function applyState() {
     setText($("v-sat"), m.saturation?.toFixed?.(2) ?? "1.00");
     setText($("v-spd"), m.speed?.toFixed?.(2) ?? "1.00");
     setText($("v-aud"), m.audio_reactivity?.toFixed?.(2) ?? "1.00");
-    $("m-frz").checked = !!m.freeze;
+  }
+  if (typeof state.crossfade_seconds === "number"
+      && document.activeElement !== $("m-cf")) {
+    $("m-cf").value = state.crossfade_seconds;
+    setText($("v-cf"), state.crossfade_seconds.toFixed(2));
   }
 
   if (state.blackout) {
@@ -572,6 +749,7 @@ function applyState() {
     setText($("btn-blackout"), "⚫ blackout");
   }
 
+  viz.applyCalibration(state.calibration);
   renderDecks();
   renderParams();
 }
