@@ -823,16 +823,44 @@ def _clone_composition(comp: Composition) -> Composition:
 
 
 def _clone_layer_for_live(src: Layer, runtime: Runtime) -> Layer:
-    """Recompile + re-init a layer's effect so live and preview don't share
-    an Effect instance (each gets its own self.* state). Slow-ish — happens
-    once per layer on promote / pull, not per frame."""
-    return runtime._compile_layer(
-        name=src.name, summary=src.summary, source=src.source,
-        param_schema=src.params.schema,
-        param_values=src.params.values(),
-        blend=src.blend, opacity=src.opacity,
-        run_fence=False,
-    )
+    """Promote / pull: clone a layer so the destination looks IDENTICAL to
+    the source at the moment of the swap.
+
+    Deepcopy the running Effect instance (head positions, sparkle ages,
+    palette LUTs, all `self.*` state) into a fresh Layer wrapper with its
+    own ParamStore. Live and preview don't share mutable references after
+    this — each evolves independently from the same starting state.
+
+    A fresh recompile + init would reset stateful effects to t=0, so the
+    operator would see the comets jump back to the start on every promote.
+    That's what the deepcopy avoids.
+
+    If deepcopy fails (LLM emitted an effect with non-copyable state — a
+    socket, lock, generator), fall back to recompile + reinit so promote
+    still works; the visible state reset is the lesser evil.
+    """
+    try:
+        new_instance = copy.deepcopy(src.instance)
+        new_params = ParamStore(src.params.schema)
+        new_params.set_initial_values(src.params.values())
+        return Layer(
+            name=src.name, summary=src.summary, source=src.source,
+            instance=new_instance, params=new_params,
+            blend=src.blend, opacity=src.opacity,
+            enabled=src.enabled,
+        )
+    except Exception:
+        _log.exception(
+            "deepcopy of layer %r failed; falling back to recompile (state will reset)",
+            src.name,
+        )
+        return runtime._compile_layer(
+            name=src.name, summary=src.summary, source=src.source,
+            param_schema=src.params.schema,
+            param_values=src.params.values(),
+            blend=src.blend, opacity=src.opacity,
+            run_fence=False,
+        )
 
 
 # Backwards-friendly alias for tests / docs that referenced ActiveEffect.
