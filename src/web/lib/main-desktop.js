@@ -58,6 +58,19 @@ async function setMode(mode) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mode }),
   });
+  try { localStorage.setItem("ledctl.mode", mode); } catch (_) {}
+}
+
+// Restore last-used mode on first state arrival, BUT default a fresh boot
+// (no localStorage entry yet) to LIVE — never wake a hot Pi straight into a
+// half-finished preview.
+function maybeRestoreMode() {
+  try {
+    const saved = localStorage.getItem("ledctl.mode");
+    if (saved === "design" || saved === "live") {
+      if (state && state.mode !== saved) setMode(saved);
+    }
+  } catch (_) {}
 }
 
 // --- masters row ---
@@ -313,7 +326,12 @@ function renderParams() {
     setText($("side-layer-name"), "—");
     return;
   }
-  setText($("side-layer-name"), `${f.slot}#${f.index} · ${f.layer.name}`);
+  // Layer label includes a perf hint: "preview#0 · pulse_mono · 0.7 ms p95"
+  const perf = f.layer.perf || {};
+  const perfTxt = (typeof perf.p95_ms === "number" && perf.p95_ms > 0)
+    ? ` · ${perf.p95_ms.toFixed(1)}ms`
+    : "";
+  setText($("side-layer-name"), `${f.slot}#${f.index} · ${f.layer.name}${perfTxt}`);
   $("meta-blend").value = f.layer.blend;
   if (document.activeElement !== $("meta-opacity")) $("meta-opacity").value = f.layer.opacity;
   $("meta-opacity-v").textContent = (f.layer.opacity).toFixed(2);
@@ -559,4 +577,8 @@ function applyState() {
 }
 
 connectStateStream();
-fetch("/state").then((r) => r.json()).then((s) => { state = s; applyState(); });
+fetch("/state").then((r) => r.json()).then((s) => {
+  state = s;
+  applyState();
+  maybeRestoreMode();
+});

@@ -1,0 +1,41 @@
+name: palette_wash_with_kick_sparkles
+summary: Slow palette wash + bright sparkles on every kick. The canonical 'X plus Y' pattern.
+source: bundled
+created_at: 0
+updated_at: 0
+params:
+  - key: palette
+    label: Wash palette
+    control: palette
+    default: warm
+  - key: wash_speed
+    label: Wash speed (cycles/s)
+    control: slider
+    min: 0.0
+    max: 2.0
+    step: 0.01
+    default: 0.15
+  - key: sparkle_color
+    label: Sparkle colour
+    control: color
+    default: "#ffffff"
+  - key: sparkle_count
+    label: Sparkles per kick
+    control: int_slider
+    min: 0
+    max: 80
+    step: 1
+    default: 20
+  - key: sparkle_decay
+    label: Sparkle fade time (s)
+    control: slider
+    min: 0.05
+    max: 3.0
+    step: 0.01
+    default: 0.6
+param_values:
+  palette: warm
+  wash_speed: 0.15
+  sparkle_color: "#ffffff"
+  sparkle_count: 20
+  sparkle_decay: 0.6

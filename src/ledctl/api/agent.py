@@ -136,70 +136,105 @@ def build_router(app: FastAPI) -> APIRouter:
         accumulated: list[dict[str, Any]] = [user_msg]
         msgs_for_call: list[dict[str, Any]] = list(sess.messages) + [user_msg]
 
-        # v1: no auto-retry. Surface the first error to the operator.
         last_error: dict[str, Any] | None = None
         primary_call: dict[str, Any] | None = None
         primary_tool_result: dict[str, Any] | None = None
         primary_usage: dict[str, int] | None = None
         result = None
+        retries_used = 0
 
-        system_prompt = build_system_prompt(
-            topology=topology,
-            runtime=runtime,
-            audio_state=audio_state,
-            masters=engine.masters,
-            crossfade_seconds=cfg.default_crossfade_seconds,
-            last_error=last_error,
-        )
-        try:
-            result = await asyncio.to_thread(
-                client.complete,
-                system_prompt=system_prompt,
-                messages=msgs_for_call,
-                tools=[write_effect_tool_schema()],
-                model=req.model,
+        max_attempts = 1 + max(0, int(cfg.retry_on_tool_error))
+
+        for attempt in range(max_attempts):
+            system_prompt = build_system_prompt(
+                topology=topology,
+                runtime=runtime,
+                audio_state=audio_state,
+                masters=engine.masters,
+                crossfade_seconds=cfg.default_crossfade_seconds,
+                last_error=last_error,
             )
-        except MissingApiKey as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except Exception as e:
-            log.exception("agent: LLM call failed")
-            turn.error = f"llm_call_failed: {e}"
-            sess.turns.append(turn)
-            raise HTTPException(status_code=502, detail=f"LLM call failed: {e}") from e
-
-        attempt_msgs: list[dict[str, Any]] = [result.raw_message]
-        for tc in result.tool_calls:
-            if tc["name"] == WRITE_EFFECT_TOOL_NAME and primary_call is None:
-                primary_call = tc
-                tool_result = apply_write_effect(
-                    tc["arguments"],
-                    runtime=runtime,
-                    store=effect_store,
+            try:
+                result = await asyncio.to_thread(
+                    client.complete,
+                    system_prompt=system_prompt,
+                    messages=msgs_for_call,
+                    tools=[write_effect_tool_schema()],
+                    model=req.model,
                 )
-                primary_tool_result = tool_result
+            except MissingApiKey as e:
+                raise HTTPException(status_code=503, detail=str(e)) from e
+            except Exception as e:
+                log.exception("agent: LLM call failed")
+                turn.error = f"llm_call_failed: {e}"
+                turn.retries_used = retries_used
+                sess.turns.append(turn)
+                raise HTTPException(
+                    status_code=502, detail=f"LLM call failed: {e}",
+                ) from e
+
+            attempt_msgs: list[dict[str, Any]] = [result.raw_message]
+            attempt_primary: dict[str, Any] | None = None
+            attempt_primary_result: dict[str, Any] | None = None
+            any_tool_failed = False
+
+            for tc in result.tool_calls:
+                if tc["name"] == WRITE_EFFECT_TOOL_NAME and attempt_primary is None:
+                    attempt_primary = tc
+                    tool_result = apply_write_effect(
+                        tc["arguments"],
+                        runtime=runtime,
+                        store=effect_store,
+                    )
+                    attempt_primary_result = tool_result
+                else:
+                    tool_result = {
+                        "ok": False,
+                        "error": "unsupported_tool",
+                        "details": (
+                            f"only {WRITE_EFFECT_TOOL_NAME!r} is supported; "
+                            f"got {tc['name']!r}"
+                        ),
+                    }
+                if not tool_result.get("ok"):
+                    any_tool_failed = True
+                attempt_msgs.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": json.dumps(tool_result, default=str),
+                    }
+                )
+
+            accumulated.extend(attempt_msgs)
+            msgs_for_call = msgs_for_call + attempt_msgs
+
+            if attempt_primary is not None:
+                primary_call = attempt_primary
+                primary_tool_result = attempt_primary_result
                 primary_usage = result.usage
-            else:
-                tool_result = {
-                    "ok": False,
-                    "error": "unsupported_tool",
-                    "details": (
-                        f"only {WRITE_EFFECT_TOOL_NAME!r} is supported; "
-                        f"got {tc['name']!r}"
-                    ),
-                }
-            attempt_msgs.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": json.dumps(tool_result, default=str),
-                }
+            elif primary_usage is None:
+                primary_usage = result.usage
+
+            # Done if model didn't tool-call or every tool succeeded.
+            if not result.tool_calls or not any_tool_failed:
+                break
+            if attempt + 1 >= max_attempts:
+                break
+            # Otherwise: surface the failure to the LLM for the next attempt.
+            last_error = {
+                "error": (attempt_primary_result or {}).get("error"),
+                "details": (attempt_primary_result or {}).get("details"),
+            }
+            retries_used = attempt + 1
+            log.warning(
+                "agent.retry: session=%s attempt=%d/%d error=%s",
+                sess.id, attempt + 1, max_attempts,
+                last_error.get("error"),
             )
-        accumulated.extend(attempt_msgs)
-        if primary_usage is None:
-            primary_usage = result.usage
 
         sess.append_messages(accumulated)
-        turn.assistant_text = result.text or ""
+        turn.assistant_text = (result.text if result else "") or ""
         if primary_call is not None:
             turn.tool_call = {
                 "name": primary_call["name"],
@@ -207,17 +242,18 @@ def build_router(app: FastAPI) -> APIRouter:
             }
             turn.tool_result = primary_tool_result
         turn.usage = primary_usage
+        turn.retries_used = retries_used
         sess.turns.append(turn)
 
         return {
             "session_id": sess.id,
-            "model": result.model,
+            "model": result.model if result else "",
             "assistant_text": turn.assistant_text,
             "tool_call": turn.tool_call,
             "tool_result": turn.tool_result,
-            "finish_reason": result.finish_reason,
+            "finish_reason": result.finish_reason if result else "",
             "history_size": len(sess.messages),
-            "retries_used": 0,
+            "retries_used": retries_used,
             "usage": turn.usage,
         }
 

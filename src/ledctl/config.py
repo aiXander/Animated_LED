@@ -267,15 +267,24 @@ class AgentConfig(BaseModel):
         ),
     )
     retry_on_tool_error: int = Field(
-        1,
+        2,
         ge=0,
         le=5,
         description=(
-            "On a failed `update_leds` tool call (validation/compile error), "
+            "On a failed `write_effect` tool call (validation/compile error), "
             "automatically re-prompt the LLM up to this many extra times. "
             "The failed tool result stays in the rolling buffer, so the model "
             "sees the structured error path on each retry and can self-correct. "
             "0 disables retries (the operator sees the first failure)."
+        ),
+    )
+    strict_params: bool = Field(
+        False,
+        description=(
+            "When True, an LLM-authored effect that tries to write `ctx.params.*` "
+            "raises `TypeError` (loud failure). When False (v1 default), it logs a "
+            "warning and silently no-ops so a sloppy assignment doesn't blackout "
+            "the dance floor. Flip on once the prompt is reliable."
         ),
     )
 
