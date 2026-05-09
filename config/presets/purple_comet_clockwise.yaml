@@ -1,0 +1,17 @@
+crossfade_seconds: 5.0
+masters:
+  brightness: 1.5
+  speed: 0.34
+  audio_reactivity: 0.93
+  saturation: 1.0
+  freeze: false
+layers:
+- blend: normal
+  opacity: 1.0
+  node:
+    kind: comet
+    params:
+      speed: 0.5
+      axis: u_loop
+      trail_sparseness: 0.8
+      palette: mono_bf00ff
