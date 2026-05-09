@@ -1,134 +1,172 @@
+"""Fixed-timestep render loop driving Runtime → SplitTransport.
+
+Per tick:
+  1. Compute wall_t / dt / effective_t (master-speed-scaled).
+  2. Build an AudioView (already-scaled by masters.audio_reactivity).
+  3. Runtime.render → (live_buf, sim_buf) float32.
+  4. Encode each via PixelBuffer (gamma + uint8) and ship via SplitTransport.
+
+Frames drop rather than spiral on lag — same as v1.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import contextlib
-import dataclasses
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
+
+import numpy as np
 
 from .audio.state import AudioState
 from .config import AppConfig
-from .masters import MasterControls, RenderContext
-from .mixer import BLEND_MODES, Layer, Mixer
+from .masters import MasterControls
 from .pixelbuffer import PixelBuffer
-from .surface import (
-    Compiler,
-    LayerSpec,
-    NodeSpec,
-    UpdateLedsSpec,
-    set_lut_size,
-)
+from .surface import AudioView, EffectStore, Runtime
 from .topology import Topology
-from .transports.base import Transport
+from .transports.split import SplitTransport
 
 log = logging.getLogger(__name__)
 
-# Default calibration colour: pure red at full brightness. Picked so it's
-# unmistakeable against an off strip and never produced by an effect by accident.
+
 _CAL_COLOR: tuple[float, float, float] = (1.0, 0.0, 0.0)
 
 
 @dataclass
 class CalibrationState:
-    """Active calibration override.
-
-    `solo` lights a fixed set of indices; `walk` advances through the strip,
-    one index every `interval` seconds. Either mode bypasses the mixer.
-    """
-
     mode: Literal["solo", "walk"]
     color: tuple[float, float, float] = _CAL_COLOR
-    indices: tuple[int, ...] = ()           # solo
-    step: int = 100                         # walk
-    interval: float = 1.0                   # walk
-    start_t: float = 0.0                    # walk
-    current: int = 0                        # walk: index lit right now
-
-
-def _validate_blend(blend: str) -> str:
-    if blend not in BLEND_MODES:
-        raise ValueError(f"unknown blend mode {blend!r}; must be one of {BLEND_MODES}")
-    return blend
-
-
-def _layer_from_spec(
-    spec: dict[str, Any] | LayerSpec, topology: Topology
-) -> Layer:
-    """Validate + compile a single LayerSpec dict into a runtime Layer."""
-    layer_spec = spec if isinstance(spec, LayerSpec) else LayerSpec.model_validate(spec)
-    compiled = Compiler(topology).compile_layer(layer_spec)
-    return Layer(
-        node=compiled.node,
-        spec_node=layer_spec.node.model_dump(),
-        blend=_validate_blend(compiled.blend),
-        opacity=float(compiled.opacity),
-    )
+    indices: tuple[int, ...] = ()
+    step: int = 100
+    interval: float = 1.0
+    start_t: float = 0.0
+    current: int = 0
 
 
 class Engine:
-    """Fixed-timestep render loop.
-
-    Targets `target_fps` using `time.perf_counter`. If the encode/transport
-    falls behind, drop the schedule forward rather than spiral-of-death
-    catching up — better to skip a frame than queue them.
-
-    `effective_t` is master-speed-scaled monotonic time; primitives read
-    `ctx.t` (which is effective_t). Crossfade alpha uses `ctx.wall_t` (raw
-    monotonic) so operator direction never gets slowed by `masters.speed`,
-    and a frozen pattern still breathes with the room because `audio_band`
-    reads the externally-smoothed feed directly.
-    """
+    """Fixed-timestep async render loop."""
 
     def __init__(
         self,
         cfg: AppConfig,
         topology: Topology,
-        transport: Transport,
+        transport: SplitTransport,
+        runtime: Runtime,
+        store: EffectStore,
         masters: MasterControls | None = None,
     ):
         self.cfg = cfg
         self.topology = topology
         self.transport = transport
-        self.buffer = PixelBuffer(topology.pixel_count)
-        self.mixer = Mixer(topology.pixel_count)
+        self.runtime = runtime
+        self.store = store
+        self.masters: MasterControls = masters or MasterControls()
+        # Runtime keeps its own ref to masters so its master output stage stays in sync.
+        self.runtime.masters = self.masters
         self.target_fps = cfg.project.target_fps
         self.gamma = cfg.output.gamma
-        # Palette LUTs bake on first compile (after this returns), so set the
-        # configured size before any layer pushes happen.
-        set_lut_size(cfg.output.lut_size)
+        self.live_pb = PixelBuffer(topology.pixel_count)
+        self.sim_pb = PixelBuffer(topology.pixel_count)
         self.fps: float = 0.0
         self.frame_count: int = 0
         self.dropped_frames: int = 0
-        self.elapsed: float = 0.0          # wall-clock since start
-        self.effective_t: float = 0.0      # master-speed-scaled time
+        self.elapsed: float = 0.0
+        self.effective_t: float = 0.0
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
-        self.calibration: CalibrationState | None = None
         self.audio_state: AudioState | None = None
-        self.masters: MasterControls = masters or MasterControls()
-        # Event-driven render kick: the audio bridge calls `kick_audio()` from
-        # its OSC listener thread after every /audio/lmh packet. The render
-        # loop waits on this event so a fresh band value reaches the next
-        # frame within ~µs of arrival instead of waiting up to a full period.
-        # Created lazily when the loop starts so we capture the running loop.
         self._audio_kick: asyncio.Event | None = None
         self._asyncio_loop: asyncio.AbstractEventLoop | None = None
 
-    def attach_audio(self, state: AudioState | None) -> None:
-        """Make an AudioState visible to audio_band primitives via ctx.
+    # ---- audio plumbing ---- #
 
-        The state is owned by the external-audio bridge — this method just
-        wires the reference into the render loop and topology. Updates flow
-        in continuously via OSC; the render loop reads the latest scalars
-        each tick.
-        """
+    def attach_audio(self, state: AudioState | None) -> None:
         self.audio_state = state
-        self.topology.audio_state = state
+
+    def kick_audio(self) -> None:
+        loop = self._asyncio_loop
+        ev = self._audio_kick
+        if loop is None or ev is None:
+            return
+        loop.call_soon_threadsafe(ev.set)
+
+    # ---- masters ---- #
 
     def set_masters(self, **patch: object) -> MasterControls:
-        """Apply a partial master update; returns the post-clamp result."""
         self.masters = self.masters.merge(**patch)
+        self.runtime.masters = self.masters
         return self.masters
+
+    # ---- calibration ---- #
+
+    def set_calibration_solo(self, indices: list[int]) -> CalibrationState:
+        n = self.topology.pixel_count
+        clean = tuple(sorted({int(i) for i in indices if 0 <= int(i) < n}))
+        if not clean:
+            raise ValueError(f"no valid global_index in {list(indices)} for {n} pixels")
+        cal = CalibrationState(mode="solo", indices=clean, current=clean[0])
+        self.runtime.calibration = cal
+        return cal
+
+    def set_calibration_walk(self, step: int, interval: float) -> CalibrationState:
+        if step <= 0:
+            raise ValueError(f"step must be > 0, got {step}")
+        if interval <= 0:
+            raise ValueError(f"interval must be > 0, got {interval}")
+        cal = CalibrationState(
+            mode="walk", step=int(step), interval=float(interval),
+            start_t=self.elapsed, current=0,
+        )
+        self.runtime.calibration = cal
+        return cal
+
+    def clear_calibration(self) -> None:
+        self.runtime.calibration = None
+
+    def calibration_summary(self) -> dict | None:
+        cal = self.runtime.calibration
+        if cal is None:
+            return None
+        if cal.mode == "solo":
+            return {"mode": "solo", "indices": list(cal.indices), "current": cal.current}
+        return {
+            "mode": "walk", "step": cal.step,
+            "interval": cal.interval, "current": cal.current,
+        }
+
+    # ---- topology hot-swap ---- #
+
+    def swap_topology(self, new_topology: Topology) -> None:
+        self.topology = new_topology
+        self.live_pb = PixelBuffer(new_topology.pixel_count)
+        self.sim_pb = PixelBuffer(new_topology.pixel_count)
+        self.runtime.swap_topology(new_topology)
+
+    # ---- audio view (apply masters.audio_reactivity once per tick) ---- #
+
+    def _build_audio_view(self) -> AudioView:
+        s = self.audio_state
+        if s is None:
+            return AudioView(connected=False)
+        gain = max(0.0, float(self.masters.audio_reactivity))
+        # Latch beat as new-since-last-render delta.
+        beats_seen = getattr(self, "_last_beats", 0)
+        beats_now = int(getattr(s, "beat_count", 0))
+        delta = max(0, beats_now - beats_seen)
+        self._last_beats = beats_now
+        return AudioView(
+            low=float(s.low) * gain,
+            mid=float(s.mid) * gain,
+            high=float(s.high) * gain,
+            beat=delta,
+            beats_since_start=beats_now,
+            bpm=float(s.bpm) if s.bpm is not None else 120.0,
+            connected=bool(s.connected),
+        )
+
+    # ---- main loop ---- #
 
     async def start(self) -> None:
         if self._task is not None:
@@ -136,21 +174,10 @@ class Engine:
         self._stop.clear()
         self._asyncio_loop = asyncio.get_running_loop()
         self._audio_kick = asyncio.Event()
+        self._last_beats = (
+            int(self.audio_state.beat_count) if self.audio_state is not None else 0
+        )
         self._task = asyncio.create_task(self._loop(), name="ledctl-engine")
-
-    def kick_audio(self) -> None:
-        """Wake the render loop on a fresh OSC packet (thread-safe).
-
-        Called by the OSC listener thread after every /audio/lmh write. Uses
-        `call_soon_threadsafe` so we can poke an asyncio.Event from outside
-        the loop. No-op before `start()` runs (kick is dropped silently — the
-        next fixed-cadence wake will pick up the new audio value anyway).
-        """
-        loop = self._asyncio_loop
-        ev = self._audio_kick
-        if loop is None or ev is None:
-            return
-        loop.call_soon_threadsafe(ev.set)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -160,202 +187,18 @@ class Engine:
                 await self._task
             self._task = None
 
-    # ---- layer mutation API (called from FastAPI handlers) ----
-
-    def push_layer(
-        self,
-        node: dict[str, Any] | NodeSpec,
-        blend: str = "normal",
-        opacity: float = 1.0,
-    ) -> int:
-        """Append a new compiled layer to the stack and return its index."""
-        spec_dict = {
-            "node": node.model_dump() if isinstance(node, NodeSpec) else node,
-            "blend": blend,
-            "opacity": float(opacity),
-        }
-        self.mixer.layers.append(_layer_from_spec(spec_dict, self.topology))
-        return len(self.mixer.layers) - 1
-
-    def update_layer(
-        self,
-        i: int,
-        node: dict[str, Any] | NodeSpec | None = None,
-        blend: str | None = None,
-        opacity: float | None = None,
-    ) -> None:
-        """Patch a layer in place. `node` recompiles the tree (resets state)."""
-        layer = self.mixer.layers[i]
-        if blend is not None:
-            layer.blend = _validate_blend(blend)
-        if opacity is not None:
-            layer.opacity = float(opacity)
-        if node is not None:
-            new_node = (
-                node.model_dump() if isinstance(node, NodeSpec) else node
-            )
-            spec_dict = {
-                "node": new_node,
-                "blend": layer.blend,
-                "opacity": layer.opacity,
-            }
-            new_layer = _layer_from_spec(spec_dict, self.topology)
-            layer.node = new_layer.node
-            layer.spec_node = new_layer.spec_node
-
-    def remove_layer(self, i: int) -> None:
-        self.mixer.layers.pop(i)
-
-    def crossfade_to(
-        self,
-        layer_specs: list[dict[str, Any]] | list[LayerSpec],
-        duration: float,
-    ) -> None:
-        """Replace the layer stack and crossfade from the previous one."""
-        new_layers = [_layer_from_spec(spec, self.topology) for spec in layer_specs]
-        self.mixer.crossfade_to(new_layers, duration, self.elapsed)
-
-    def layer_state(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "node": dict(layer.spec_node),
-                "blend": layer.blend,
-                "opacity": layer.opacity,
-            }
-            for layer in self.mixer.layers
-        ]
-
-    # ---- calibration override ----
-
-    def set_calibration_solo(self, indices: list[int]) -> CalibrationState:
-        n = self.topology.pixel_count
-        clean = tuple(sorted({int(i) for i in indices if 0 <= int(i) < n}))
-        if not clean:
-            raise ValueError(f"no valid global_index in {list(indices)} for {n} pixels")
-        self.calibration = CalibrationState(mode="solo", indices=clean, current=clean[0])
-        return self.calibration
-
-    def set_calibration_walk(self, step: int, interval: float) -> CalibrationState:
-        if step <= 0:
-            raise ValueError(f"step must be > 0, got {step}")
-        if interval <= 0:
-            raise ValueError(f"interval must be > 0, got {interval}")
-        self.calibration = CalibrationState(
-            mode="walk",
-            step=int(step),
-            interval=float(interval),
-            start_t=self.elapsed,
-            current=0,
-        )
-        return self.calibration
-
-    def clear_calibration(self) -> None:
-        self.calibration = None
-
-    def calibration_summary(self) -> dict[str, Any] | None:
-        cal = self.calibration
-        if cal is None:
-            return None
-        if cal.mode == "solo":
-            return {"mode": "solo", "indices": list(cal.indices), "current": cal.current}
-        return {
-            "mode": "walk",
-            "step": cal.step,
-            "interval": cal.interval,
-            "current": cal.current,
-        }
-
-    # ---- topology hot-swap (Phase 4 editor) ----
-
-    def swap_topology(self, new_topology: Topology) -> None:
-        """Replace topology and rebuild dependent state, preserving the layer stack.
-
-        Layer trees close over per-LED arrays (e.g. normalised positions), so
-        they must be recompiled against the new topology — even if pixel_count
-        is unchanged. Layer specs (node tree, blend, opacity) survive.
-        """
-        specs = self.layer_state()
-        n_old = self.topology.pixel_count
-        self.topology = new_topology
-        self.topology.audio_state = self.audio_state
-        if new_topology.pixel_count != n_old:
-            self.buffer = PixelBuffer(new_topology.pixel_count)
-            self.mixer = Mixer(new_topology.pixel_count)
-        else:
-            self.mixer.layers.clear()
-        for spec in specs:
-            self.push_layer(spec["node"], blend=spec["blend"], opacity=spec["opacity"])
-        cal = self.calibration
-        if cal is not None and cal.mode == "solo":
-            valid = tuple(i for i in cal.indices if i < new_topology.pixel_count)
-            if not valid:
-                self.calibration = None
-            elif valid != cal.indices:
-                self.calibration = CalibrationState(
-                    mode="solo", indices=valid, current=valid[0]
-                )
-
-    def _apply_calibration(self, t: float) -> None:
-        cal = self.calibration
-        if cal is None:
-            return
-        rgb = self.buffer.rgb
-        rgb.fill(0.0)
-        n = self.topology.pixel_count
-        if cal.mode == "solo":
-            for i in cal.indices:
-                rgb[i] = cal.color
-            return
-        steps = int(max(0.0, t - cal.start_t) / cal.interval)
-        idx = (steps * cal.step) % n
-        cal.current = idx
-        rgb[idx] = cal.color
-
-    # ---- per-frame audio scaling ----
-
-    def _build_audio_view(self) -> AudioState | None:
-        """Apply masters.audio_reactivity to the band fields once per tick.
-
-        The external audio-server publishes low/mid/high already auto-scaled
-        to ~[0, 1]. The reactivity master applies uniformly regardless of how
-        many `audio_band` references the tree holds. When the bridge is
-        disconnected we still hand the AudioState through (zeros) so the
-        render loop has a stable contract.
-        """
-        s = self.audio_state
-        if s is None:
-            return None
-        gain = max(0.0, float(self.masters.audio_reactivity))
-        if gain == 1.0:
-            return s
-        return dataclasses.replace(
-            s,
-            low=s.low * gain,
-            mid=s.mid * gain,
-            high=s.high * gain,
-        )
-
-    # ---- main loop ----
-
     async def _loop(self) -> None:
         period = 1.0 / float(self.target_fps)
-        # Lower bound on the gap between two renders. Setting this slightly
-        # below `period` lets a fresh audio packet pull the next render
-        # forward (at the tail of the period) — saves up to ~5 ms of audio
-        # staleness without letting the effective rate exceed ~1.4×target_fps.
-        # WLED + WS2815 absorb the small variance comfortably.
         kick_min_interval = period * 0.7
         t0 = time.perf_counter()
         fps_window_start = t0
         fps_window_frames = 0
         last_wall = t0
-        last_render = t0 - period  # fire first frame immediately
+        last_render = t0 - period
         kick = self._audio_kick
 
         try:
             while not self._stop.is_set():
-                # ---- wait until either: period fully elapsed, or audio
-                # kicked us at least `kick_min_interval` after the last frame.
                 deadline = last_render + period
                 while True:
                     now = time.perf_counter()
@@ -383,37 +226,39 @@ class Engine:
                         kick.clear()
                         if time.perf_counter() - last_render >= kick_min_interval:
                             break
-                        continue  # too soon since last frame; keep waiting
-                    break  # timeout — period elapsed
+                        continue
+                    break
 
-                # ---- render ----
                 now = time.perf_counter()
                 wall_t = now - t0
                 dt_wall = wall_t - last_wall
                 last_wall = wall_t
                 self.elapsed = wall_t
 
-                # Advance effective_t by dt × speed; freeze short-circuits to 0.
                 speed = 0.0 if self.masters.freeze else float(self.masters.speed)
                 self.effective_t += dt_wall * speed
 
-                ctx = RenderContext(
-                    t=self.effective_t,
+                audio_view = self._build_audio_view()
+
+                live_rgb, sim_rgb = self.runtime.render(
                     wall_t=wall_t,
-                    audio=self._build_audio_view(),
-                    masters=self.masters,
+                    dt=dt_wall,
+                    t_eff=self.effective_t,
+                    audio=audio_view,
                 )
 
-                self.buffer.clear()
-                self.mixer.render(ctx, self.buffer.rgb)
-                if self.calibration is not None:
-                    self._apply_calibration(wall_t)
-                await self.transport.send_frame(self.buffer.to_uint8(self.gamma))
+                # Encode + send.
+                np.copyto(self.live_pb.rgb, live_rgb)
+                live_bytes = self.live_pb.to_uint8(self.gamma)
+                if sim_rgb is live_rgb:
+                    sim_bytes = live_bytes
+                else:
+                    np.copyto(self.sim_pb.rgb, sim_rgb)
+                    sim_bytes = self.sim_pb.to_uint8(self.gamma)
+                await self.transport.send(led_frame=live_bytes, sim_frame=sim_bytes)
 
                 last_render = time.perf_counter()
                 if kick is not None:
-                    # Drop any kick that arrived during our render — we just
-                    # sampled the freshest audio, so this kick is consumed.
                     kick.clear()
 
                 self.frame_count += 1
@@ -423,14 +268,10 @@ class Engine:
                     fps_window_start = now
                     fps_window_frames = 0
                 if last_render - deadline > period:
-                    # We finished a full period past our deadline — count it
-                    # as a dropped frame for diagnostics (we don't try to
-                    # catch up; better to skip than queue).
                     self.dropped_frames += 1
         except Exception:
             log.exception("engine loop crashed")
             raise
 
 
-# Re-export so callers keep `from ledctl.engine import UpdateLedsSpec` ergonomic.
-__all__ = ["CalibrationState", "Engine", "UpdateLedsSpec"]
+__all__ = ["CalibrationState", "Engine"]

@@ -1,12 +1,11 @@
 """Per-conversation rolling-buffer state.
 
-Each session keeps the last `history_max_messages` messages (excluding the
-system prompt — the system prompt is regenerated fresh on every turn). One
-user turn produces three messages: `user`, `assistant` (with optional
-tool_calls), `tool` (the tool result), so a 20-message cap covers ~6 turns.
+Each session keeps the last `history_max` messages (excluding the system
+prompt — system prompt is rebuilt fresh every turn). One user turn produces
+three messages: user / assistant (with optional tool_calls) / tool, so a
+20-message cap covers ~6 turns.
 
-Sessions live in memory for v1 — restart wipes them. That's fine while we
-learn how the panel gets used.
+In-memory only — restart wipes them.
 """
 
 from __future__ import annotations
@@ -20,19 +19,12 @@ from typing import Any
 
 @dataclass
 class AgentTurn:
-    """One operator-visible turn (user → assistant text + optional tool call → tool result)."""
-
     user: str
     assistant_text: str = ""
-    tool_call: dict[str, Any] | None = None  # {name, arguments}
+    tool_call: dict[str, Any] | None = None
     tool_result: dict[str, Any] | None = None
     error: str | None = None
-    # Number of automatic retries the agent ran on top of the initial attempt
-    # before the loop exited (success, no-tool, or budget-exhausted).
     retries_used: int = 0
-    # Token usage of the LLM call that produced `tool_call` (or the last
-    # attempt if no tool call was emitted). `{input_tokens, output_tokens,
-    # total_tokens}` — None when the provider didn't return a usage block.
     usage: dict[str, int] | None = None
     created_at: float = field(default_factory=time.time)
 
@@ -41,34 +33,23 @@ class AgentTurn:
 class ChatSession:
     id: str
     created_at: float = field(default_factory=time.time)
-    # Rolling LLM message buffer in OpenAI format. Capped via `history_max`.
     messages: deque[dict[str, Any]] = field(default_factory=deque)
-    # Operator-visible transcript (one entry per user turn). Not capped — UI
-    # rehydration wants the full thing while the session is alive.
     turns: list[AgentTurn] = field(default_factory=list)
     history_max: int = 20
-    # Rolling-window rate limit timestamps (seconds since epoch).
     _rate_window: deque[float] = field(default_factory=deque)
 
     def append_messages(self, msgs: list[dict[str, Any]]) -> None:
         for m in msgs:
             self.messages.append(m)
-        # Cap to the most recent `history_max` messages. We never split a
-        # tool_calls / tool pair: pop in 3-message chunks (user/asst/tool)
-        # so the buffer stays well-formed for the next request.
         while len(self.messages) > self.history_max:
             self.messages.popleft()
         self._heal_dangling_tool_messages()
 
     def _heal_dangling_tool_messages(self) -> None:
-        """If the buffer's first message is a `tool` reply (because we trimmed
-        the assistant's tool_calls turn off the front), drop it — most providers
-        reject a `tool` message that isn't preceded by an assistant tool_calls."""
         while self.messages and self.messages[0].get("role") == "tool":
             self.messages.popleft()
 
     def check_rate_limit(self, per_minute: int, now: float | None = None) -> bool:
-        """Return True if the call is allowed; False if it should be denied."""
         if per_minute <= 0:
             return True
         t = time.time() if now is None else now
@@ -82,8 +63,6 @@ class ChatSession:
 
 
 class SessionStore:
-    """Process-local store for chat sessions (in-memory, v1)."""
-
     def __init__(self, history_max: int = 20):
         self.history_max = int(history_max)
         self._sessions: dict[str, ChatSession] = {}
@@ -91,7 +70,7 @@ class SessionStore:
     def get_or_create(self, session_id: str | None) -> ChatSession:
         if session_id and session_id in self._sessions:
             return self._sessions[session_id]
-        sid = session_id or _new_session_id()
+        sid = session_id or uuid.uuid4().hex
         sess = ChatSession(id=sid, history_max=self.history_max)
         self._sessions[sid] = sess
         return sess
@@ -103,20 +82,5 @@ class SessionStore:
         return self._sessions.pop(session_id, None) is not None
 
     def reset_all_buffers(self) -> None:
-        """Wipe the LLM-visible message deque for every active session.
-
-        Called when the operator mutates the layer stack via the UI or
-        applies a preset. The LLM's prior `update_leds` tool-call args then
-        reference layers that may no longer exist (or no longer match), and
-        without a wipe the model pattern-matches against those args and
-        steamrolls the operator's edit on the next turn. Operator-visible
-        `turns` and the session id are preserved — only `messages` is
-        cleared, so the chat panel keeps its transcript and the next turn
-        reuses the same session id.
-        """
         for sess in self._sessions.values():
             sess.messages.clear()
-
-
-def _new_session_id() -> str:
-    return uuid.uuid4().hex

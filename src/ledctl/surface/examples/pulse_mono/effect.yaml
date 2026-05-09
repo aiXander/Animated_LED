@@ -1,0 +1,20 @@
+name: pulse_mono
+summary: Solid colour breathing on audio.low — the safe-idle effect.
+source: bundled
+created_at: 0
+updated_at: 0
+params:
+  - key: color
+    label: Colour
+    control: color
+    default: "#ff5566"
+  - key: floor
+    label: Brightness floor
+    control: slider
+    min: 0.0
+    max: 1.0
+    step: 0.01
+    default: 0.4
+param_values:
+  color: "#ff5566"
+  floor: 0.4
