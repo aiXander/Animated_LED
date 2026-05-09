@@ -139,6 +139,21 @@ $("btn-blackout").addEventListener("click", async () => {
   const on = state && state.blackout;
   await fetch(on ? "/resume" : "/blackout", { method: "POST" });
 });
+// DDP transport toggle. "Pi control" = ledctl streaming DDP (button .on);
+// click → POST /transport/pause, after ~2.5s WLED's realtime override
+// times out and the Gledopto resumes its own preset. Click again to take
+// control back. Disabled when /state reports no DDP transport (dev mode).
+let ddpEditAt = 0;
+$("btn-ddp").addEventListener("click", async () => {
+  const ddp = state && state.ddp;
+  if (!ddp || !ddp.available) return;
+  const turningOff = !ddp.paused;
+  ddpEditAt = performance.now();
+  try {
+    await fetch(turningOff ? "/transport/pause" : "/transport/resume",
+      { method: "POST" });
+  } catch (_) { /* WS will resync */ }
+});
 $("btn-promote").addEventListener("click", async () => {
   await fetch("/promote", { method: "POST" });
 });
@@ -710,6 +725,38 @@ function setMeter(el, v) {
   }
 }
 
+// Reflect the current /state.ddp into the topbar Pi/Gledopto toggle.
+// Suppresses transient WS pushes for 600ms after a local click so the
+// optimistic UI doesn't flicker between request and resync.
+function applyDdp(ddp) {
+  const btn = $("btn-ddp");
+  if (!btn) return;
+  if (performance.now() - ddpEditAt < 600) return;
+  if (!ddp || !ddp.available) {
+    btn.disabled = true;
+    btn.classList.remove("danger");
+    btn.classList.add("ghost");
+    setText(btn, "no DDP");
+    btn.title = "Current transport mode has no DDP leg (e.g. simulator-only).";
+    return;
+  }
+  btn.disabled = false;
+  const piOn = !ddp.paused;
+  if (piOn) {
+    btn.classList.remove("danger");
+    btn.classList.add("ghost");
+  } else {
+    btn.classList.remove("ghost");
+    btn.classList.add("danger");
+  }
+  setText(btn, piOn ? "Pi control" : "Gledopto");
+  const sentBits = ` · ${ddp.frames_sent} frames → ${ddp.host}:${ddp.port}`;
+  btn.title = (piOn
+    ? "ledctl is sending DDP. Click to release: WLED reverts to its own preset after ~2.5s."
+    : "DDP paused — Gledopto's own preset is on. Click to take Pi control back.")
+    + sentBits;
+}
+
 // --- per-tick state apply ---
 function applyState() {
   if (!state) return;
@@ -748,6 +795,8 @@ function applyState() {
     $("btn-blackout").classList.add("ghost");
     setText($("btn-blackout"), "⚫ blackout");
   }
+
+  applyDdp(state.ddp);
 
   viz.applyCalibration(state.calibration);
   renderDecks();
