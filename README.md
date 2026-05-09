@@ -16,6 +16,9 @@ ssh xander@XanderPi.local
 cd /home/xander/audio_LED/Animated_LED
 .venv/bin/ledctl run --config config/config.pi.yaml
 
+
+.venv/bin/ledctl run --config config/config.dev.yaml --open
+
 --------
 --------
 

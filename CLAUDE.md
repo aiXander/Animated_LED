@@ -92,7 +92,7 @@ The system is a real-time LED controller for an 1800-LED festival install (4 × 
 - `transports/` — Pluggable output: `simulator` (WebSocket to browser), `ddp` (UDP to WLED, 480 px/packet, PUSH on the final packet only), `multi` (both). Swapped via `config.transport.mode`.
 - `audio/` — Thin bridge to the external [Realtime_PyAudio_FFT](https://github.com/Jaymon/Realtime_PyAudio_FFT) audio-feature server. The LED controller does **not** capture or analyse audio itself — it spawns the audio-server as a subprocess and consumes its OSC feed:
   - `state.py` — `AudioState` holds the latest `low/mid/high` band energies (already auto-scaled to ~[0, 1] on the audio server side), plus device name, samplerate, blocksize, band cutoffs, and a `connected` flag. Single writer (the OSC listener thread), many lock-free readers.
-  - `bridge.py` — `OscFeatureListener` (UDP socket on port 9000 by default; `/audio/lmh` + `/audio/meta` handlers; staleness watchdog), `AudioServerSupervisor` (launches the `audio-server` console script as a subprocess, pipes its stdout into the LED logger, terminates cleanly on shutdown), and `AudioBridge` that owns both. Failures are deliberately soft: if the binary is missing, port is taken, or packets stop arriving, the LED render loop keeps going with `audio_band` returning 0 and a warning in the terminal.
+  - `bridge.py` — `OscFeatureListener` (UDP socket on port 9000 by default; `/audio/lmh`, `/audio/meta`, `/audio/beat`, `/audio/bpm` handlers; staleness watchdog gated on `lmh` only), `AudioServerSupervisor` (launches the `audio-server` console script as a subprocess, pipes its stdout into the LED logger, terminates cleanly on shutdown), and `AudioBridge` that owns both. Failures are deliberately soft: if the binary is missing, port is taken, or packets stop arriving, the LED render loop keeps going with `audio_band → 0`, `audio_beat → 0`, `audio_bpm → fallback`, and a warning in the terminal.
   - The audio-server's own browser UI (default `http://127.0.0.1:8766`) is the canonical place to pick the input device, retune band cutoffs, and save presets. The 'audio' link in the LED operator UI opens that URL in a new tab.
 - `agent/` — Phase 6 language-driven control panel. Thin layer over OpenRouter, NOT a multi-tool agent loop:
   - `tool.py` — single `update_leds(layers, crossfade_seconds, blackout)` tool. The argument is the *complete* new layer stack as a tree of `{kind, params}` primitives, never a diff. The surface compiler type-checks the tree (palette in a scalar slot is rejected, leaf must be `rgb_field`, etc.); on failure the tool result carries a structured `{path, msg, valid_kinds}` error which the LLM sees on the next turn (via the rolling buffer) and self-corrects. Calls `Engine.crossfade_to` — same code path as `POST /presets/{name}`.
@@ -109,16 +109,43 @@ The system is a real-time LED controller for an 1800-LED festival install (4 × 
 
 ## The control surface
 
-Every visual primitive lives in `surface.py`. There are no named effects — a layer is a tree of `{kind, params}` nodes, each validated by its own pydantic `Params` model. The full catalogue (with JSON Schema for every primitive) is served live at `GET /surface/primitives` and embedded into the LLM system prompt every turn.
+Every visual primitive lives in the `surface/` package. There are no named effects — a layer is a tree of `{kind, params}` nodes, each validated by its own pydantic `Params` model. The full catalogue (with JSON Schema for every primitive) is served live at `GET /surface/primitives` and embedded into the LLM system prompt every turn.
 
-**The four output kinds the compiler enforces:**
+### Package layout (`src/ledctl/surface/`)
+
+The original 2300-line `surface.py` was split during the effect refactor (see `effect_refactor_plan.md`). Public API is unchanged — `from ledctl.surface import compile_layers, generate_docs, primitives_json, NodeSpec, LayerSpec, UpdateLedsSpec, Compiler, REGISTRY, set_lut_size, …` still works.
+
+```
+src/ledctl/surface/
+  __init__.py             — re-exports the public API
+  shapes.py               — hex_to_rgb01, hsv_to_rgb01, apply_shape (cosine/saw/pulse/gauss), clip_scalar
+  palettes.py             — NAMED_PALETTES, _bake_lut, _lut_from_*, set_lut_size, mutable LUT_SIZE
+  spec.py                 — NodeSpec / LayerSpec / UpdateLedsSpec + the Gemini flattened-params recovery validator
+  registry.py             — REGISTRY, @primitive, Primitive, CompiledNode, OutputKind, broadcast_kind/_to_rgb
+  compiler.py             — Compiler, CompileError, CompiledLayer, compile_layers, compile_unconstrained
+  frames.py               — FRAME_DESCRIPTIONS + build_frames(topology) → derived dict
+  docs.py                 — generate_docs, primitives_json, EXAMPLE_TREES, ANTI_PATTERNS, _compact_params_schema
+  primitives/
+    __init__.py           — imports every leaf module (registers via @primitive side-effect)
+    scalar_t.py           — Constant, Lfo, AudioBand, AudioBeat, AudioBpm, BpmClock, BeatCount, StepSelect, Pulse, Clamp, RangeMap
+    scalar_field.py       — Wave, Radial, Gradient, Position, Frame, Noise, Trail (+ _resolve_axis_or_index helper)
+    palette.py            — PaletteNamed, PaletteStops, PaletteHsv
+    rgb_field.py          — PaletteLookup, Solid, Sparkles
+    particles.py          — Comet, ChaseDots, Ripple (stateful per-frame integrators)
+    combinators.py        — Mix, Remap, Threshold, Add/Mul/Screen/Max/Min binary ops
+    recipes.py            — Breathing, Strobe (compile to a sub-tree of leaves via _expand_recipe)
+```
+
+`surface/__init__.py` imports the layers in the right order so `@primitive` decorators fire at module-load time. Adding a new primitive is still a single file change: drop a `@primitive` class into the appropriate file under `primitives/` and the doc generator + REST catalogue + LLM prompt pick it up automatically.
+
+### The four output kinds the compiler enforces
 
 | kind            | what it produces                       | typical primitives                                                |
 | --------------- | -------------------------------------- | ----------------------------------------------------------------- |
-| `scalar_field`  | per-LED scalar in [0, 1]               | `wave`, `radial`, `noise2d`, `sparkles`, `position`, `gradient`   |
-| `scalar_t`      | one scalar per frame                   | `lfo`, `audio_band`, `constant`                                   |
-| `palette`       | 256-entry RGB LUT                      | `palette_named`, `palette_stops`                                  |
-| `rgb_field`     | per-LED RGB (the layer leaf)           | `palette_lookup`, `solid`                                         |
+| `scalar_field`  | per-LED scalar in [0, 1]               | `wave`, `radial`, `noise`, `position`, `frame`, `gradient`        |
+| `scalar_t`      | one scalar per frame                   | `lfo`, `audio_band`, `audio_beat`, `audio_bpm`, `bpm_clock`, `beat_count`, `step_select`, `constant` |
+| `palette`       | LUT_SIZE-entry RGB LUT (default 256)   | `palette_named`, `palette_stops`, `palette_hsv`                   |
+| `rgb_field`     | per-LED RGB (the layer leaf)           | `palette_lookup`, `solid`, `sparkles`, `comet`, `chase_dots`, `ripple`, `breathing`, `strobe` |
 
 Polymorphic combinators (`mix`, `mul`, `add`, `screen`, `max`, `min`, `remap`, `threshold`, `clamp`, `range_map`, `trail`) resolve their output kind from their inputs at compile time and broadcast where it makes sense (`rgb_field × scalar_t → rgb_field`, `palette × palette → palette` for `mix`).
 
@@ -126,17 +153,92 @@ Polymorphic combinators (`mix`, `mul`, `add`, `screen`, `max`, `min`, `remap`, `
 - a bare number anywhere a node is expected becomes a `constant` (so `"speed": 0.3` is fine);
 - a bare palette string becomes a `palette_named` (so `"palette": "fire"` is fine).
 
-**Modulation lives directly on the parameter.** Instead of an old-style `bindings.brightness` slot, you pass an `audio_band(...)` node into `palette_lookup.brightness`. Audio reactivity is composable: `audio_band(band="low"|"mid"|"high")` returns a `scalar_t` sourced from the external audio-feature server (already smoothed and auto-scaled to ~[0, 1] — all attack/release/shaping live upstream and are tuned in the audio server's UI, not here). Wrap an `audio_band` in `range_map(in_min=0, in_max=1, out_min=floor, out_max=ceiling)` if you need a baseline glow or soft cap.
+### Named coordinate frames (`surface/frames.py`)
 
-**Adding a new primitive:**
-1. Write a `@primitive` class in `surface.py` with a pydantic `Params` model and a `compile()` that returns a `CompiledNode` of the right `output_kind`.
+`Topology.from_config()` precomputes a `derived: dict[str, np.ndarray]` of named per-LED scalars, and any primitive with an `axis: str` slot accepts any of these names (validated by `_resolve_axis_or_index`):
+
+| frame             | meaning                                                              |
+| ----------------- | -------------------------------------------------------------------- |
+| `x`, `y`, `z`     | Cartesian axis components in [0, 1] (legacy form)                    |
+| `signed_x/y/z`    | Same, but signed [-1, 1]                                             |
+| `radius`          | √(x²+y²) clipped to [0, 1] — concentric rings around centre column   |
+| `angle`           | atan2(y, x)/2π wrapped to [0, 1]                                     |
+| **`u_loop`**      | **Clockwise arc-position around the rig, [0, 1] from top centre**    |
+| `u_loop_signed`   | u_loop centred at top: [-0.5, +0.5]                                  |
+| `side_top` / `_bottom` / `_signed` | Top/bottom row masks (1/0, 1/0, +1/-1)                  |
+| `axial_dist`      | \|x\| ∈ [0, 1] — distance from the centre column (great for explode/collapse) |
+| `axial_signed`    | x ∈ [-1, 1] — symmetric explode coordinate                           |
+| `corner_dist`     | Distance to nearest corner, normalised                               |
+| `strip_id`        | Integer rank per strip (per config-listing order)                    |
+| `chain_index`     | Local index along the strip from the controller end, [0, 1]         |
+| `distance`        | √(x²+y²+z²) normalised — legacy alias                                |
+
+**`u_loop` is the headline frame.** It's a clockwise chain-order coordinate: the walker classifies each strip by `(y_sign, x sign of outer end)` and walks them in the order `top-right (forward) → bottom-right (reversed) → bottom-left (forward) → top-left (reversed)`. So a `wave(axis="u_loop", speed=0.3)` reads as motion *around the rectangle*, regardless of strip count or `reversed` flags. Same for `comet(axis="u_loop")`, `chase_dots(axis="u_loop")`, `ripple(axis="u_loop")`. Direction = sign of speed; flip via `mul(speed, step_select(beat_count(...), [1, -1]))`.
+
+`generate_docs()` emits a `FRAMES` section in the LLM system prompt listing every name with a one-line description. Operator UI receives the full list via `Topology.derived` keys.
+
+### Beat-aware time vocabulary
+
+| primitive              | output     | what it does                                                                 |
+| ---------------------- | ---------- | ---------------------------------------------------------------------------- |
+| `bpm_clock(bpm, divisor, phase)` | `scalar_t` | BPM-synced sawtooth in [0, 1) per beat-fraction. divisor=1=per beat, 2=half, 4=sixteenth. |
+| `beat_count(bpm, divisor, mod_n)` | `scalar_t` | Integer beat counter mod N. Pair with `step_select` for "every Nth beat" idioms. |
+| `step_select(index, values)` | `scalar_t` | Pick `values[int(index) mod len(values)]`. Canonical direction-flip = `step_select(beat_count(bpm, mod_n=2), [1, -1])`. |
+
+`bpm` and `divisor` are baked at compile time on `bpm_clock`/`beat_count` — they don't read the live `audio_bpm` value. To follow upstream tempo dynamically the operator re-applies the current preset (or compiles fresh layers) when the BPM changes — not a hot-swap path today (Phase G if it's ever needed).
+
+### Particle / transient primitives (`primitives/particles.py`)
+
+All three are stateful: they own per-instance buffers / RNGs / pool slots and read `ctx.t`, so `freeze` halts their state advance correctly.
+
+- **`comet(axis, speed, head_size, trail_length, trail_sparseness, palette, palette_pos, brightness, seed)`** — one head + exponential trail. `head_size` = head sigma (typical 0.02–0.1), `trail_length` = decay length behind the head, `trail_sparseness` 0..1 turns the trail from solid to meteor-grain via per-pixel stochastic cuts (seeded). Multiple comets via stacked layers (each with a distinct `seed` so trail grain doesn't lock together, and offset `speed` / start phase).
+- **`chase_dots(axis, count, width, speed, palette, palette_pos, palette_spread, brightness)`** — M evenly-spaced dots scrolling along an axis, vectorised gauss profile. `palette_spread > 0` colours each dot a different palette index across a window centred on `palette_pos`.
+- **`ripple(axis, rate, trigger, trigger_head_start_s, speed, width, decay_s, palette, palette_pos, brightness, seed)`** — concentric rings expanding outward along a distance frame (`radius`, `axial_dist`, `u_loop`). Two emission paths: continuous Poisson via `rate` (modulate with `audio_band` for energy-driven density) AND deterministic per-event via `trigger` (drive with `audio_beat()` for kick-locked rings — see "Audio reactivity contract" below). `trigger_head_start_s` (default 0.12 s) gives kick-locked rings a synthetic age at birth so they pop visibly on the beat instead of fading in from radius=0; only applies to `trigger` emissions, not the Poisson `rate` path. Up to 12 concurrent ripples per layer.
+
+### Recipes (`primitives/recipes.py`)
+
+Compound primitives whose `compile()` builds an inner NodeSpec and re-enters the compiler — from the LLM's view they're one node with a few params, but they expand to the same primitive subtrees the agent could have written by hand. Currently:
+
+- **`breathing(palette, period_s, floor, palette_pos)`** → `palette_lookup(constant, palette, pulse(lfo(sin), floor))`.
+- **`strobe(bpm, divisor, duty, palette, palette_pos)`** → `palette_lookup(constant, palette, lfo(pulse, period_s=60/(bpm·divisor), duty))`.
+
+Recipes go through the same type-checker, error paths, and schema as ordinary primitives.
+
+### Modulation lives directly on the parameter
+
+Instead of an old-style `bindings.brightness` slot, you pass an `audio_band(...)` node into `palette_lookup.brightness`. Audio reactivity is composable: `audio_band(band="low"|"mid"|"high")` returns a `scalar_t` sourced from the external audio-feature server (already smoothed and auto-scaled to ~[0, 1] — all attack/release/shaping live upstream and are tuned in the audio server's UI, not here). Wrap an `audio_band` in `range_map(in_min=0, in_max=1, out_min=floor, out_max=ceiling)` or in `pulse(by, floor)` if you need a baseline glow or soft cap.
+
+### Audio reactivity contract — `/audio/lmh` raw, `/audio/beat` for triggers
+
+The audio server now publishes four OSC addresses on port 9000 (see "External audio dependency" below):
+
+| address       | shape                         | surface primitive                                                |
+| ------------- | ----------------------------- | ---------------------------------------------------------------- |
+| `/audio/lmh`  | low/mid/high floats (~[0, 1]) | `audio_band(band="low"|"mid"|"high")` → `scalar_t`               |
+| `/audio/meta` | sample-rate / band cutoffs    | informational (system prompt + audio UI)                         |
+| `/audio/beat` | binary onset trigger          | `audio_beat()` → `scalar_t` (count of new beats since last frame, 0/1 typically) |
+| `/audio/bpm`  | continuous tempo float        | `audio_bpm(fallback)` → `scalar_t` (returns `fallback` while disconnected) |
+
+**The rule for new effects:**
+
+1. **Continuous reactivity** wants raw `audio_band(low|mid|high)` in its full dynamic range. **Never** introduce manual thresholding / Schmitt triggers / hand-rolled peak detectors against `audio_band(low)` — those produce mushy results and duplicate work the upstream onset detector already does correctly. The audio server's smoothing + auto-scaling lives in *its* UI; tune there, not here.
+2. **Discrete / one-shot triggers** wants `audio_beat()`. The packet semantics: the server sends `/audio/beat 1` *only* on rising edges (no `0`s), and the surface bridge increments a `beat_count` counter on each packet. `audio_beat()` returns the count of new beats since the last render — usually 0 or 1, occasionally 2 if two onsets fired between frames (no drops). Use as a binary trigger (`> 0`), as a multiplier (0 / 1), or feed directly into a primitive that interprets it as a count (`ripple.trigger`). Returns 0 cleanly while the upstream detector is silent or disconnected.
+3. **Tempo** wants `audio_bpm(fallback=120)`. Returns the latest published value, falls back to the literal when the tracker hasn't published yet.
+
+**If you find yourself writing `threshold(audio_band("low"), 0.6)` to detect kicks, stop and use `audio_beat()` instead.** Anything in the codebase that ever does the former must be migrated.
+
+### Adding a new primitive
+
+1. Write a `@primitive` class in the appropriate file under `surface/primitives/` with a pydantic `Params` model and a `compile()` that returns a `CompiledNode` of the right `output_kind`.
 2. That's it. The doc generator, REST primitive catalogue, and LLM system prompt all pick it up.
 
 The `Params` `description=` strings are user-facing — they feed both `GET /surface/primitives` and the LLM system prompt. **One line per field is the budget** (this is the dominant token cost).
 
-Named palettes ship in `surface.NAMED_PALETTES`: `rainbow`, `fire`, `ice`, `sunset`, `ocean`, `warm`, `white`, `black`, `mono_<hex>`. Custom palettes are `{kind: "palette_stops", params: {stops: [{pos, color}, …]}}`.
+### Other notes
 
-Presets live in `config/presets/<name>.yaml` (sibling of the active config file). Each preset is `{ crossfade_seconds, layers: [{ node: {kind, params}, blend, opacity }, …] }`. Seed presets shipped today: `default`, `chill`, `peak`, `color_waves`, `gentle_whiteblue_waves`, `red_waves_blue_base`, `snare_sparkles`, `soft_purple_blue_wave`, `sunset_breathing`. Loaded by `presets.py`; saved via `POST /presets`.
+- `palette_lookup.render()` (and similar leaves like `solid`, `sparkles`) returns its preallocated `_out` buffer — zero allocation per frame in the hot path. Tests that compare two consecutive frame snapshots must `.copy()` the first one explicitly.
+- Named palettes ship in `surface.NAMED_PALETTES`: `rainbow`, `fire`, `ice`, `sunset`, `ocean`, `warm`, `white`, `black`, `mono_<hex>`. Custom palettes are `{kind: "palette_stops", params: {stops: [{pos, color}, …]}}` or HSV-baked via `palette_hsv`.
+- Presets live in `config/presets/<name>.yaml` (sibling of the active config file). Each preset is `{ crossfade_seconds, layers: [{ node: {kind, params}, blend, opacity }, …] }`. Seed presets shipped today: `default`, `chill`, `peak`, `color_waves`, `gentle_whiteblue_waves`, `red_waves_blue_base`, `snare_sparkles`, `soft_purple_blue_wave`, `sunset_breathing`. Loaded by `presets.py`; saved via `POST /presets`.
 
 ## Coordinate convention
 
@@ -263,6 +365,19 @@ If the Info page never shows a Realtime line even after a Gledopto reboot, then 
 
 ## External audio dependency
 
-Audio capture / FFT / band-energy extraction is owned by [Realtime_PyAudio_FFT](https://github.com/Jaymon/Realtime_PyAudio_FFT). Install that package alongside `ledctl` so its `audio-server` console script is on PATH; ledctl will spawn it as a subprocess on boot (`audio_server.autostart: true`). If you'd rather run it manually (e.g. tuning bands via its UI on a different machine), set `audio_server.autostart: false` and start it however you like — the LED server will still happily consume the OSC feed.
+Audio capture / FFT / band-energy extraction / onset detection / tempo tracking is owned by [Realtime_PyAudio_FFT](https://github.com/Jaymon/Realtime_PyAudio_FFT). Install that package alongside `ledctl` so its `audio-server` console script is on PATH; ledctl will spawn it as a subprocess on boot (`audio_server.autostart: true`). If you'd rather run it manually (e.g. tuning bands via its UI on a different machine), set `audio_server.autostart: false` and start it however you like — the LED server will still happily consume the OSC feed.
 
-The audio-server stores its own settings in its own `config.yaml` (device, band cutoffs, smoothing, autoscale window). Tune those from its browser UI at `http://127.0.0.1:8766` — the 'audio' link in the LED operator UI opens it in a new tab. Soft-fail behaviour: if the audio-server isn't running, the OSC port is taken, or packets stop arriving, the LED render loop keeps going with `audio_band` returning 0 and a warning in the terminal.
+The audio-server stores its own settings in its own `config.yaml` (device, band cutoffs, smoothing, autoscale window, onset / tempo params). Tune those from its browser UI at `http://127.0.0.1:8766` — the 'audio' link in the LED operator UI opens it in a new tab.
+
+**OSC addresses consumed by the LED bridge** (handlers in `src/ledctl/audio/bridge.py`, fields in `src/ledctl/audio/state.py`):
+
+| address       | payload                          | written into AudioState | surface primitive               |
+| ------------- | -------------------------------- | ----------------------- | ------------------------------- |
+| `/audio/lmh`  | three floats (low, mid, high)    | `state.{low,mid,high}` + `mark_packet()` (gates `connected`) | `audio_band(band)`              |
+| `/audio/meta` | sr/blocksize/n_fft + band cutoffs (+ optional device-name string trail) | `state.{samplerate,blocksize,n_fft_bins,*_lo,*_hi,device_name}` | informational                   |
+| `/audio/beat` | empty (rising-edge trigger only) | `state.beat_count += 1`, `state.last_beat_at` | `audio_beat()` (delta since last frame) |
+| `/audio/bpm`  | one float                        | `state.bpm` (None until first packet) | `audio_bpm(fallback)`           |
+
+**Soft-fail across all four addresses**: if the audio-server isn't running, the OSC port is taken, or any individual stream stops, the LED render loop keeps going with `audio_band` → 0, `audio_beat` → 0, `audio_bpm` → fallback, and a warning in the terminal. The watchdog only flags `connected = False` when `/audio/lmh` packets stop — beat/bpm absence is normal between onsets.
+
+**Migration rule for new effects.** Continuous reactivity uses `audio_band(low|mid|high)` raw (no manual thresholding). Discrete triggers use `audio_beat()`. Tempo uses `audio_bpm()`. If you ever feel like writing `threshold(audio_band("low"), …)` to detect a kick — don't; that's exactly what `/audio/beat` is for, and the upstream onset detector has more signal than a level threshold ever will. Existing primitives that need beat semantics (e.g. `ripple.trigger`) take a `scalar_t` slot and the LLM is taught to wire `audio_beat()` in.

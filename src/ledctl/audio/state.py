@@ -35,6 +35,16 @@ class AudioState:
     low: float = 0.0
     mid: float = 0.0
     high: float = 0.0
+    # Onset / tempo metadata published by the audio server's upcoming
+    # `/audio/beat` (binary rising-edge trigger; only sent on onset blocks,
+    # never `0`) and `/audio/bpm` (continuous tempo) addresses. While those
+    # addresses haven't shipped yet, `beat_count` stays 0 and `bpm` stays
+    # None — the surface primitives that read them (`audio_beat`,
+    # `audio_bpm`) soft-fail to 0 / fallback. As soon as the server starts
+    # publishing, the LED side picks them up automatically.
+    bpm: float | None = None
+    beat_count: int = 0
+    last_beat_at: float = 0.0
     connected: bool = False
     last_packet_at: float = 0.0
     error: str = ""

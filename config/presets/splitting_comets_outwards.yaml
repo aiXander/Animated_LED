@@ -1,0 +1,51 @@
+crossfade_seconds: 5.0
+masters:
+  brightness: 1.0
+  speed: 0.16
+  audio_reactivity: 0.99
+  saturation: 1.0
+  freeze: false
+layers:
+- blend: normal
+  opacity: 1.0
+  node:
+    kind: comet
+    params:
+      axis: axial_dist
+      speed: 2
+      palette_pos: 0.5
+      trail_length: 0.3
+      palette: fire
+      trigger: 0
+      spawn_position: 0
+      head_size: 0.04
+- blend: normal
+  opacity: 0.0
+  node:
+    kind: palette_lookup
+    params:
+      palette: warm
+      brightness:
+        kind: beat_envelope
+        params:
+          decay_s: 0.4
+      scalar:
+        kind: wave
+        params:
+          shape: sawtooth
+          speed: 0.4
+          axis: radius
+          wavelength: 0.333
+- blend: add
+  opacity: 0.0
+  node:
+    kind: sparkles
+    params:
+      brightness:
+        by:
+          params:
+            band: high
+          kind: audio_band
+        kind: pulse
+        floor: 0
+      palette: white

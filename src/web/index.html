@@ -222,6 +222,13 @@
     .stat .k { opacity: 0.6; min-width: 5.25rem; }
     .stat .v { font-variant-numeric: tabular-nums; word-break: break-word; flex: 1; }
     #audio-meter { margin-top: 0.25rem; }
+    #status-panel h3.audio-header {
+      display: flex; align-items: baseline; justify-content: space-between;
+    }
+    #status-panel h3.audio-header .audio-bpm {
+      font-size: 0.6875rem; letter-spacing: 0; text-transform: none;
+      font-variant-numeric: tabular-nums;
+    }
     .layer-row {
       position: relative; padding: 0.3125rem 0.5rem; margin: 0.1875rem 0; border-radius: 0.25rem;
       border: 1px solid #1a1a1a; font-size: 0.6875rem; line-height: 1.3;
@@ -483,7 +490,7 @@
           <button id="m-sim" type="button" title="Pause the simulator stream to stop broadcasting frames to browser viz clients. Useful to offload the Pi when DDP is the only output that matters.">sim stream</button>
         </div>
 
-        <h3>audio</h3>
+        <h3 class="audio-header"><span>audio</span><span class="audio-bpm v dim" id="audio-bpm">—</span></h3>
         <div class="stat"><span class="k">status</span><span class="v dim" id="audio-status">—</span></div>
         <div id="audio-meter"></div>
 
