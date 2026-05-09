@@ -125,6 +125,12 @@ class OscFeatureListener:
         d = dispatcher.Dispatcher()
         d.map("/audio/lmh", self._on_lmh)
         d.map("/audio/meta", self._on_meta)
+        # `/audio/beat` and `/audio/bpm` are forthcoming addresses on the
+        # external audio server (onset detector + continuous tempo). Map
+        # them now so the LED side picks them up the moment they start
+        # arriving — silently no-ops while the server isn't sending.
+        d.map("/audio/beat", self._on_beat)
+        d.map("/audio/bpm", self._on_bpm)
         # /audio/fft is not consumed (the server only sends it when explicitly
         # enabled); register a no-op so we don't log "no handler" each frame.
         d.map("/audio/fft", lambda *_: None)
@@ -221,6 +227,32 @@ class OscFeatureListener:
                 s.device_name = extra
                 break
         s.mark_packet()
+
+    def _on_beat(self, _addr: str, *_args: Any) -> None:
+        """Rising-edge beat trigger: bumps a monotonic counter.
+
+        The server only sends `/audio/beat` on detected onsets — silence is
+        the absence of packets, not a `0`. Surface primitives that want
+        beat semantics read `beat_count` and detect changes between frames
+        (see `audio_beat`). Doesn't gate `connected` — the lmh stream
+        remains the heartbeat used by the watchdog."""
+        s = self.state
+        s.beat_count = (s.beat_count + 1) & 0x7FFFFFFF
+        s.last_beat_at = monotonic()
+
+    def _on_bpm(self, _addr: str, *args: Any) -> None:
+        """Continuous tempo update from the audio server's BPM tracker.
+
+        Soft-fail on malformed packets: leave the previous value in place
+        rather than zeroing the BPM display."""
+        if not args:
+            return
+        try:
+            bpm = float(args[0])
+        except (TypeError, ValueError):
+            return
+        if bpm > 0:
+            self.state.bpm = bpm
 
     def _watchdog_loop(self) -> None:
         # Poll twice per stale_after_s so the worst-case detection latency is

@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>surface.py refactor — VJ vocabulary plan</title>
+<style>
+  :root {
+    --bg: #0c0d12;
+    --bg-2: #14161e;
+    --bg-3: #1c1f2a;
+    --line: #262a37;
+    --ink: #e8eaf3;
+    --ink-2: #a3a8b8;
+    --ink-3: #6b7185;
+    --accent: #ff5c8a;       /* hot pink — the "kick" */
+    --accent-2: #4ec9ff;      /* cyan — "hi-hat" */
+    --accent-3: #ffd66e;      /* warm — "snare" */
+    --accent-4: #b78bff;      /* lilac — "loop" */
+    --good: #6ee29a;
+    --warn: #ff9c4d;
+    --code-bg: #0a0b0f;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent); color: #fff; }
+  a { color: var(--accent-2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre {
+    font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13.5px;
+  }
+  code {
+    background: var(--bg-3);
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: var(--accent-3);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    line-height: 1.55;
+    color: #d6dbed;
+  }
+  pre code {
+    background: transparent;
+    padding: 0;
+    color: inherit;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    max-width: 1280px;
+    margin: 0 auto;
+  }
+  nav.toc {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 32px 16px 32px 24px;
+    border-right: 1px solid var(--line);
+    font-size: 13.5px;
+  }
+  nav.toc h4 {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 18px 0 6px;
+    font-weight: 600;
+  }
+  nav.toc a {
+    display: block;
+    color: var(--ink-2);
+    padding: 3px 0;
+    border-left: 2px solid transparent;
+    padding-left: 10px;
+    margin-left: -12px;
+  }
+  nav.toc a:hover { color: var(--ink); text-decoration: none; }
+  nav.toc .nav-h2 { padding-left: 22px; color: var(--ink-3); font-size: 12.5px; }
+  main {
+    padding: 48px 64px 96px;
+    min-width: 0;
+  }
+  h1 {
+    font-size: 44px;
+    line-height: 1.1;
+    margin: 0 0 12px;
+    letter-spacing: -0.02em;
+    font-weight: 700;
+  }
+  h1 .glow {
+    background: linear-gradient(90deg, var(--accent), var(--accent-3) 50%, var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  h2 {
+    font-size: 28px;
+    margin: 64px 0 16px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+    letter-spacing: -0.01em;
+  }
+  h2 .num {
+    color: var(--accent);
+    font-feature-settings: "tnum";
+    margin-right: 14px;
+    font-weight: 600;
+  }
+  h3 {
+    font-size: 18px;
+    margin: 32px 0 10px;
+    color: var(--ink);
+    font-weight: 600;
+  }
+  h4 {
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--ink-3);
+    margin: 24px 0 8px;
+    font-weight: 600;
+  }
+  p { margin: 10px 0; color: var(--ink); }
+  .lede { font-size: 18px; color: var(--ink-2); max-width: 740px; line-height: 1.55; }
+  .kicker {
+    display: inline-block;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 16px;
+    padding: 4px 10px;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+  }
+
+  /* Callouts */
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: rgba(255, 92, 138, 0.06);
+    padding: 14px 18px;
+    margin: 18px 0;
+    border-radius: 0 8px 8px 0;
+  }
+  .callout.info { border-left-color: var(--accent-2); background: rgba(78, 201, 255, 0.06); }
+  .callout.warn { border-left-color: var(--warn); background: rgba(255, 156, 77, 0.06); }
+  .callout.tldr { border-left-color: var(--accent-3); background: rgba(255, 214, 110, 0.06); }
+  .callout strong { color: var(--ink); }
+
+  /* Cards */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px;
+    margin: 16px 0;
+  }
+  .card {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .card h5 {
+    margin: 0 0 6px;
+    font-size: 14px;
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .card p { font-size: 13.5px; color: var(--ink-2); margin: 4px 0; }
+  .card .pill {
+    display: inline-block;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  .pill.scalar-t   { background: rgba(78, 201, 255, 0.15); color: var(--accent-2); }
+  .pill.scalar-fld { background: rgba(183, 139, 255, 0.15); color: var(--accent-4); }
+  .pill.palette    { background: rgba(255, 214, 110, 0.15); color: var(--accent-3); }
+  .pill.rgb-field  { background: rgba(255, 92, 138, 0.15); color: var(--accent); }
+  .pill.combinator { background: rgba(110, 226, 154, 0.15); color: var(--good); }
+  .pill.recipe     { background: linear-gradient(90deg, rgba(255,92,138,0.18), rgba(78,201,255,0.18)); color: var(--ink); }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0 22px;
+    font-size: 14px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  th {
+    background: var(--bg-3);
+    color: var(--ink);
+    font-weight: 600;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  tr:last-child td { border-bottom: none; }
+  td code { font-size: 12.5px; }
+  td.kind code { color: var(--accent); }
+  td.checkmark { font-family: monospace; font-size: 16px; }
+  .y { color: var(--good); }
+  .n { color: var(--accent); }
+  .m { color: var(--warn); }
+
+  /* Diagrams */
+  .diagram {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 24px 0;
+  }
+  .diagram-caption {
+    font-size: 13px;
+    color: var(--ink-3);
+    margin-top: 12px;
+    text-align: center;
+    font-style: italic;
+  }
+  svg .lbl { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px; fill: var(--ink-2); }
+  svg .lbl-sm { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 9px; fill: var(--ink-3); }
+  svg .lbl-strong { fill: var(--ink); font-weight: 600; }
+
+  /* Comparison: before vs after */
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 18px 0;
+  }
+  .compare > div {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px;
+  }
+  .compare h5 {
+    margin: 0 0 10px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .compare .before h5 { color: var(--warn); }
+  .compare .after h5 { color: var(--good); }
+
+  /* Token budget bar */
+  .budget {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 18px 0;
+  }
+  .budget-row {
+    display: grid;
+    grid-template-columns: 130px 1fr 80px;
+    align-items: center;
+    gap: 12px;
+    font-size: 13.5px;
+  }
+  .budget-row .label { color: var(--ink-2); }
+  .budget-row .val { text-align: right; color: var(--ink); font-feature-settings: "tnum"; font-family: "JetBrains Mono", monospace; font-size: 12.5px; }
+  .budget-bar {
+    height: 22px;
+    background: var(--bg-3);
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+  }
+  .budget-fill-now, .budget-fill-after {
+    position: absolute;
+    top: 0;
+    height: 11px;
+    border-radius: 3px;
+    transition: width 0.6s ease;
+  }
+  .budget-fill-now { background: var(--ink-3); top: 1px; }
+  .budget-fill-after { background: linear-gradient(90deg, var(--accent), var(--accent-4)); top: 12px; }
+  .budget-key {
+    display: flex;
+    gap: 22px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: var(--ink-3);
+  }
+  .budget-key .swatch { display: inline-block; width: 16px; height: 6px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+  .swatch.now { background: var(--ink-3); }
+  .swatch.after { background: linear-gradient(90deg, var(--accent), var(--accent-4)); }
+
+  /* Phasing gantt */
+  .gantt {
+    margin: 18px 0 24px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px 24px;
+  }
+  .gantt-row {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    align-items: center;
+    gap: 12px;
+    margin: 6px 0;
+    font-size: 13px;
+  }
+  .gantt-label { color: var(--ink); font-weight: 500; }
+  .gantt-label .ph { color: var(--accent); font-weight: 600; margin-right: 8px; }
+  .gantt-track { position: relative; height: 26px; background: var(--bg-3); border-radius: 4px; }
+  .gantt-bar {
+    position: absolute;
+    top: 4px;
+    height: 18px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #0c0d12;
+  }
+  .gantt-bar.a { background: var(--ink-2); color: var(--bg); }
+  .gantt-bar.b { background: var(--accent-2); }
+  .gantt-bar.c { background: var(--accent-4); }
+  .gantt-bar.d { background: var(--accent); color: #fff; }
+  .gantt-bar.e { background: var(--accent-3); }
+  .gantt-bar.f { background: var(--good); }
+  .gantt-bar.g { background: var(--ink-3); color: var(--bg); }
+  .gantt-axis {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 12px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--ink-3);
+  }
+  .gantt-ticks { display: flex; justify-content: space-between; }
+
+  /* Recipe expansion */
+  .recipe-expand {
+    display: grid;
+    grid-template-columns: 1fr auto 2fr;
+    align-items: center;
+    gap: 16px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 18px 0;
+  }
+  .recipe-node {
+    background: linear-gradient(135deg, rgba(255,92,138,0.18), rgba(78,201,255,0.18));
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12.5px;
+    color: var(--ink);
+  }
+  .arrow {
+    font-size: 28px;
+    color: var(--accent);
+    text-align: center;
+  }
+  .expanded-tree {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    color: #cad0e3;
+    line-height: 1.55;
+    overflow-x: auto;
+  }
+  .expanded-tree .k { color: var(--accent); }
+  .expanded-tree .p { color: var(--accent-2); }
+  .expanded-tree .s { color: var(--accent-3); }
+  .expanded-tree .n { color: var(--good); }
+
+  /* What's missing list */
+  .gap-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin: 14px 0;
+  }
+  .gap {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-size: 13px;
+  }
+  .gap strong { color: var(--ink); display: block; margin-bottom: 4px; font-size: 13.5px; }
+  .gap p { margin: 0; color: var(--ink-2); font-size: 12.5px; }
+
+  hr { border: none; border-top: 1px solid var(--line); margin: 32px 0; }
+
+  /* Footer */
+  footer {
+    margin-top: 64px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+    color: var(--ink-3);
+  }
+
+  @media (max-width: 1024px) {
+    .layout { grid-template-columns: 1fr; }
+    nav.toc { display: none; }
+    main { padding: 32px 24px 64px; }
+    h1 { font-size: 32px; }
+    .compare { grid-template-columns: 1fr; }
+    .recipe-expand { grid-template-columns: 1fr; }
+    .arrow { transform: rotate(90deg); }
+  }
+</style>
+</head>
+<body>
+
+<div class="layout">
+
+<nav class="toc">
+  <h4>Refactor Plan</h4>
+  <a href="#tldr">TL;DR</a>
+  <a href="#current">1 · Current state</a>
+  <a href="#wled">2 · What WLED teaches</a>
+  <a href="#topology">3 · Topology frames</a>
+  <a href="#families">4 · Primitive families</a>
+  <a href="#recipes">5 · Recipes</a>
+  <a href="#audio">6 · Audio + beat</a>
+  <a href="#tokens">7 · Token budget</a>
+  <a href="#package">8 · Package layout</a>
+  <a href="#phasing">9 · Phasing</a>
+  <a href="#examples">10 · Examples</a>
+  <a href="#testing">11 · Testing</a>
+  <a href="#nondoing">12 · Not doing</a>
+</nav>
+
+<main>
+
+<span class="kicker">surface.py refactor · ledctl</span>
+<h1>From <span class="glow">spatial graph</span> to <span class="glow">VJ vocabulary</span>.</h1>
+
+<p class="lede">
+  The current control surface is a clean, typed graph of
+  <code>scalar_field × scalar_t × palette → rgb_field</code> — and the LLM uses it
+  beautifully. What it can't say yet is <em>"around the loop"</em>, <em>"shoot from
+  centre"</em>, <em>"flip every 4 beats"</em>, <em>"ripple on kick"</em>. This plan
+  adds those words without doubling the system-prompt budget.
+</p>
+
+<div class="callout tldr" id="tldr">
+  <strong>TL;DR.</strong> Keep the {kind, params} tree paradigm. Add (1)
+  <strong>named topology frames</strong> like <code>u_loop</code>, <code>axial_dist</code>,
+  <code>side_signed</code> so motion can address the rectangle's perimeter and centre.
+  (2) <strong>Transient / particle leaves</strong> — <code>comet</code>,
+  <code>ripple</code>, <code>bouncing</code>, <code>geq_bars</code>, <code>starburst</code>,
+  <code>fire</code>. (3) <strong>Beat-aware time</strong> — <code>bpm_clock</code>,
+  <code>beat_count</code>, <code>audio_peak</code>, <code>step_select</code>.
+  (4) <strong>Recipes</strong> — compound effects exposed as one node so the
+  LLM and operators get expressive shorthand without a token-prompt explosion.
+  Token budget projected 2.5k → 6.2k. Roughly 14–16 days, phased so the system
+  stays working after every step.
+</div>
+
+<!-- ===================================================================== -->
+<h2 id="current"><span class="num">1</span>What we keep · what's missing</h2>
+
+<p>
+  The compiler, the strict per-primitive pydantic validation, the polymorphic
+  combinators, the live <code>generate_docs()</code> that feeds both the system
+  prompt and <code>GET /surface/primitives</code> — all load-bearing, all
+  preserved. Same with <code>pulse(by, floor)</code>, the HSV palette baking, and
+  the numeric / palette-string sugar in node slots. The refactor is purely
+  <em>additive on vocabulary</em>; nothing in <code>engine.py / mixer.py /
+  masters.py</code> needs to change behaviourally.
+</p>
+
+<p>The five gaps the festival-day shows up in:</p>
+
+<div class="gap-list">
+  <div class="gap">
+    <strong>No path-aware spatial frames</strong>
+    <p>Only Cartesian x/y/z + radial-from-point. The rig is a perimeter rectangle;
+    "around the loop" requires manual top/bottom glue.</p>
+  </div>
+  <div class="gap">
+    <strong>No transient / event primitives</strong>
+    <p>No comet, ripple, meteor, bouncing balls, GEQ bars, starburst — the moves
+    that earn WLED its expressiveness budget.</p>
+  </div>
+  <div class="gap">
+    <strong>No beat-aware time</strong>
+    <p>Only wall-clock LFO + smoothed audio bands. Can't say "every 4 beats",
+    "trigger on kick peak", "increment a counter on snare".</p>
+  </div>
+  <div class="gap">
+    <strong>Limited spatial → spatial transforms</strong>
+    <p>No spatial blur, mirror, kaleido, displace, region-mask, integer
+    pixel-shift. WLED uses these constantly.</p>
+  </div>
+  <div class="gap">
+    <strong>Token economy not yet a design pressure</strong>
+    <p>Adding 50 leaf primitives the WLED way explodes the prompt. We need
+    <em>recipes</em> on top of an expanded leaf set.</p>
+  </div>
+</div>
+
+<!-- ===================================================================== -->
+<h2 id="wled"><span class="num">2</span>What WLED teaches</h2>
+
+<p>
+  I read all 300+ <code>mode_*()</code> functions in <code>FX.cpp</code>. Strip
+  the C++ and the historical accretion and they collapse to a small set of
+  building blocks. Here's the distilled list — and how today's surface fares
+  against each one.
+</p>
+
+<table>
+  <thead>
+    <tr><th>WLED idea</th><th>What it really is</th><th style="width:140px">In our surface?</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>mode_palette</code></td><td>Scalar-field along arbitrary axis × palette</td><td class="checkmark"><span class="y">●</span> yes</td></tr>
+    <tr><td><code>mode_plasma / lake</code></td><td>Sum of 2–3 phase-offset waves</td><td class="checkmark"><span class="m">◐</span> verbose</td></tr>
+    <tr><td><code>mode_pacifica</code></td><td>4 layered noises, independent palettes + clocks</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+    <tr><td><code>mode_juggle</code></td><td>N indexed sine-positioned dots, faded</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+    <tr><td><code>mode_two_dots</code></td><td>Two equally-spaced dots, loop-aware</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+    <tr><td><code>mode_comet / meteor</code></td><td>Head + decaying trail (state)</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+    <tr><td><code>mode_bouncing_balls</code></td><td>Gravity-integrated ballistics</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+    <tr><td><code>mode_ripple / ripplepeak</code></td><td>N propagating bumps, peak-emitted</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+    <tr><td><code>mode_2DGEQ / pixels</code></td><td>FFT-bin → bar height / pixel pos</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+    <tr><td><code>mode_gravcenter</code></td><td>Fast-attack / linear-decay scalar</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+    <tr><td><code>mode_starburst / particlefireworks</code></td><td>Source emits N fragments at random angles, fades</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+    <tr><td><code>mode_fire_2012</code></td><td>1-D heat lattice (cool, drift, spark, palette)</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+    <tr><td><code>beat8 / beatsin8 / beat16</code></td><td>BPM-synced sawtooth / cosine</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+    <tr><td><code>SEGMENT.blur(n)</code></td><td>Spatial smoothing along the strip</td><td class="checkmark"><span class="n">○</span> no</td></tr>
+  </tbody>
+</table>
+
+<p class="lede" style="font-size: 15px; color: var(--ink-2);">
+  Three meta-patterns the surface is missing words for:
+</p>
+
+<div class="card-grid">
+  <div class="card">
+    <h5>Emitter + integrator + fade buffer</h5>
+    <p>Comet / meteor / ripple / bouncing / starburst are all the same shape:
+    a small list of <code>(pos, vel, ttl, hue)</code> structs, an
+    <code>update(dt)</code>, a <code>render()</code> into a fade buffer.</p>
+  </div>
+  <div class="card">
+    <h5>Peak triggers</h5>
+    <p>A boolean impulse on transient detection. Lets emitters fire on the
+    music, not the clock — the difference between "audio-reactive" and
+    "audio-driven".</p>
+  </div>
+  <div class="card">
+    <h5>Indexed sines (BPM-locked)</h5>
+    <p>Half of WLED's "magic" is N independent <code>beatsin8(speed*i)</code>
+    positions, each a different colour. Lock them to BPM and they breathe with
+    the room.</p>
+  </div>
+</div>
+
+<!-- ===================================================================== -->
+<h2 id="topology"><span class="num">3</span>Topology frames — the centre of gravity</h2>
+
+<p>
+  Today the agent only has Cartesian <code>x / y / z</code>. To prompt
+  <em>"clockwise around the rectangle"</em> the LLM has to manually compose
+  <code>wave(x) * mask(y &gt; 0) + reverse_wave(x) * mask(y &lt; 0)</code>. It
+  doesn't. The fix is to expose <strong>named coordinate frames</strong> —
+  derived <em>once</em> at topology build time, indexed by name.
+</p>
+
+<div class="diagram">
+  <svg viewBox="0 0 800 360" width="100%" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+        <path d="M2,2 L11,6 L2,10" fill="none" stroke="#ff5c8a" stroke-width="2"/>
+      </marker>
+      <marker id="arrow2" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+        <path d="M2,2 L11,6 L2,10" fill="none" stroke="#4ec9ff" stroke-width="2"/>
+      </marker>
+      <marker id="arrow3" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+        <path d="M2,2 L11,6 L2,10" fill="none" stroke="#b78bff" stroke-width="2"/>
+      </marker>
+      <linearGradient id="topL" x1="0" x2="1"><stop offset="0" stop-color="#4ec9ff"/><stop offset="1" stop-color="#ff5c8a"/></linearGradient>
+      <linearGradient id="topR" x1="0" x2="1"><stop offset="0" stop-color="#ff5c8a"/><stop offset="1" stop-color="#ffd66e"/></linearGradient>
+      <linearGradient id="botR" x1="0" x2="1"><stop offset="0" stop-color="#ffd66e"/><stop offset="1" stop-color="#b78bff"/></linearGradient>
+      <linearGradient id="botL" x1="0" x2="1"><stop offset="0" stop-color="#b78bff"/><stop offset="1" stop-color="#4ec9ff"/></linearGradient>
+    </defs>
+
+    <!-- background grid -->
+    <line x1="400" y1="20" x2="400" y2="340" stroke="#262a37" stroke-dasharray="3 4"/>
+    <line x1="60" y1="180" x2="740" y2="180" stroke="#262a37" stroke-dasharray="3 4"/>
+
+    <!-- top row strips -->
+    <line x1="400" y1="100" x2="80" y2="100" stroke="url(#topL)" stroke-width="6" stroke-linecap="round"/>
+    <line x1="400" y1="100" x2="720" y2="100" stroke="url(#topR)" stroke-width="6" stroke-linecap="round"/>
+    <!-- bottom row strips -->
+    <line x1="400" y1="260" x2="80" y2="260" stroke="url(#botL)" stroke-width="6" stroke-linecap="round"/>
+    <line x1="400" y1="260" x2="720" y2="260" stroke="url(#botR)" stroke-width="6" stroke-linecap="round"/>
+
+    <!-- centre feed dot -->
+    <circle cx="400" cy="100" r="6" fill="#fff" stroke="#0c0d12" stroke-width="2"/>
+    <circle cx="400" cy="260" r="6" fill="#fff" stroke="#0c0d12" stroke-width="2"/>
+
+    <!-- strip labels -->
+    <text x="240" y="92" class="lbl lbl-strong" text-anchor="middle">top_left · 450</text>
+    <text x="560" y="92" class="lbl lbl-strong" text-anchor="middle">top_right · 450</text>
+    <text x="240" y="278" class="lbl lbl-strong" text-anchor="middle">bottom_left · 450</text>
+    <text x="560" y="278" class="lbl lbl-strong" text-anchor="middle">bottom_right · 450</text>
+
+    <!-- centre-fed callout -->
+    <text x="400" y="180" class="lbl lbl-strong" text-anchor="middle" fill="#fff">centre-fed · pixel 0 of all 4 strips</text>
+    <text x="400" y="196" class="lbl-sm" text-anchor="middle" fill="#a3a8b8">y = ±0.5 · x = ±15 m · 1800 LEDs total</text>
+
+    <!-- u_loop arrow (clockwise dotted curve around outside) -->
+    <path d="M 400 70 Q 740 70 740 100 Q 740 260 720 260 Q 480 260 400 290 Q 320 260 80 260 Q 60 260 60 100 Q 60 70 400 70"
+          fill="none" stroke="#b78bff" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow3)" opacity="0.85"/>
+    <text x="600" y="62" class="lbl" fill="#b78bff" font-weight="600">u_loop · arc length, 0 → 1 clockwise</text>
+
+    <!-- axial arrows -->
+    <line x1="400" y1="180" x2="200" y2="180" stroke="#ff5c8a" stroke-width="2" marker-end="url(#arrow)"/>
+    <line x1="400" y1="180" x2="600" y2="180" stroke="#ff5c8a" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="320" y="172" class="lbl" fill="#ff5c8a" font-weight="600">← axial_signed</text>
+    <text x="480" y="172" class="lbl" fill="#ff5c8a" font-weight="600">axial_dist →</text>
+
+    <!-- side labels -->
+    <text x="60" y="120" class="lbl" fill="#4ec9ff" font-weight="600">side_top = 1</text>
+    <text x="60" y="248" class="lbl" fill="#4ec9ff" font-weight="600">side_bottom = 1</text>
+
+    <!-- corner_dist hints -->
+    <circle cx="80" cy="100" r="14" fill="none" stroke="#ffd66e" stroke-dasharray="2 2"/>
+    <circle cx="720" cy="100" r="14" fill="none" stroke="#ffd66e" stroke-dasharray="2 2"/>
+    <circle cx="80" cy="260" r="14" fill="none" stroke="#ffd66e" stroke-dasharray="2 2"/>
+    <circle cx="720" cy="260" r="14" fill="none" stroke="#ffd66e" stroke-dasharray="2 2"/>
+    <text x="100" y="320" class="lbl" fill="#ffd66e">corner_dist · radius from nearest corner</text>
+
+    <!-- coord legend -->
+    <text x="60" y="350" class="lbl-sm">+x →</text>
+    <text x="730" y="350" class="lbl-sm" text-anchor="end">x = +15 m</text>
+  </svg>
+  <div class="diagram-caption">
+    The rig — verified <code>2026-05-08</code>. Spatially two parallel 30 m rows
+    1 m apart, all four strips centre-fed. Conceptually, a perimeter loop the
+    agent should be able to address by name.
+  </div>
+</div>
+
+<h3>Frames precomputed once at <code>Topology.from_config()</code></h3>
+
+<table>
+  <thead><tr><th>Frame name</th><th>Per-LED scalar</th><th>What it unlocks</th></tr></thead>
+  <tbody>
+    <tr><td class="kind"><code>x</code> · <code>y</code> · <code>z</code></td><td>Cartesian, normalised [0, 1]</td><td>What we have today</td></tr>
+    <tr><td class="kind"><code>signed_x</code> · <code>signed_y</code></td><td>Same, but [-1, 1]</td><td>"From centre going outward"</td></tr>
+    <tr><td class="kind"><code>radius</code></td><td>√(x² + y²), normalised</td><td>Concentric rings</td></tr>
+    <tr><td class="kind"><code>angle</code></td><td>atan2(y, x) / 2π</td><td>Lighthouse-style sweeps</td></tr>
+    <tr><td class="kind"><code>u_loop</code></td><td>Arc length around perimeter, 0→1 CW from top centre</td><td><strong>The killer feature</strong> — patterns travel <em>around</em></td></tr>
+    <tr><td class="kind"><code>u_loop_signed</code></td><td>Same, [-0.5, +0.5] centred at top</td><td>Symmetric prompts</td></tr>
+    <tr><td class="kind"><code>side_top</code> · <code>side_bottom</code></td><td>1 if on that row else 0</td><td>Region masking</td></tr>
+    <tr><td class="kind"><code>side_signed</code></td><td>+1 top / −1 bottom</td><td>"Swap top/bottom direction"</td></tr>
+    <tr><td class="kind"><code>axial_dist</code></td><td>|x| ∈ [0, 1]</td><td>Explode / collapse axially</td></tr>
+    <tr><td class="kind"><code>axial_signed</code></td><td>x ∈ [-1, 1]</td><td>Mirrored explode</td></tr>
+    <tr><td class="kind"><code>corner_dist</code></td><td>distance to nearest corner, normalised</td><td>Fade towards corners</td></tr>
+    <tr><td class="kind"><code>strip_id</code></td><td>0 / 1 / 2 / 3</td><td>Per-quadrant masking</td></tr>
+    <tr><td class="kind"><code>chain_index</code></td><td>local pixel index along controller chain</td><td>Mirrors physical wiring</td></tr>
+  </tbody>
+</table>
+
+<div class="callout info">
+  <strong>API.</strong> Existing primitives' <code>axis: Literal["x","y","z"]</code> becomes
+  <code>axis: str</code> validated against <code>topology.derived</code>. Old presets keep
+  working unchanged (<code>position(axis="x")</code> aliases to <code>frame(axis="x")</code>).
+  Operators register new frames in code — no surface refactor needed.
+</div>
+
+<!-- ===================================================================== -->
+<h2 id="families"><span class="num">4</span>Expanded primitive families</h2>
+
+<p>
+  Each new leaf fills a gap WLED has shown is musically valuable, has a small
+  <code>Params</code> (≤ 5 numeric/discrete fields), and a one-line summary in
+  the registered docs. Compound multi-step recipes go in §5 — this section is
+  the leaves they compose from.
+</p>
+
+<h3 style="margin-top:24px"><span class="pill scalar-t">scalar_t</span> — clock + audio</h3>
+<div class="card-grid">
+  <div class="card"><h5><code>bpm_clock</code></h5><p>BPM-synced sawtooth in [0, 1) per beat. Divisor 1/2/4/8 = beat / half / quarter / eighth.</p></div>
+  <div class="card"><h5><code>beat_count</code></h5><p>Floor of <code>wall_t · bpm / 60</code> mod N. The integer index for <code>step_select</code>.</p></div>
+  <div class="card"><h5><code>audio_peak</code></h5><p>Schmitt trigger: 1.0 for <code>hold_s</code> after rising edge above threshold, else 0. <strong>The kick detector.</strong></p></div>
+  <div class="card"><h5><code>audio_envelope</code></h5><p>Per-band attack/release if the audio server's smoothing is wrong for the visual.</p></div>
+  <div class="card"><h5><code>audio_band_n</code></h5><p>Direct read of bin 0..15 from the 16-bin GEQ. Underlies <code>geq_bars</code>.</p></div>
+  <div class="card"><h5><code>gravity_meter</code></h5><p>Fast attack / linear decay. The <code>mode_gravcenter</code> top-LED state shape.</p></div>
+  <div class="card"><h5><code>latch</code></h5><p>Sample-and-hold: hold input while gate is high, release on falling edge.</p></div>
+  <div class="card"><h5><code>random_each</code></h5><p>New PRNG draw every <code>period_s</code> (or every <code>gate</code> rising edge).</p></div>
+  <div class="card"><h5><code>slew</code></h5><p>Rate-limit a scalar — max change up/down per second.</p></div>
+  <div class="card"><h5><code>step_select</code></h5><p>Pick element <code>i</code> from a list. <em>The direction-flip primitive.</em></p></div>
+  <div class="card"><h5><code>counter</code></h5><p>Increments on rising edge of <code>trigger</code>. Use with <code>step_select</code> to advance through states.</p></div>
+</div>
+
+<h3><span class="pill scalar-fld">scalar_field</span> — spatial generators</h3>
+<div class="card-grid">
+  <div class="card"><h5><code>frame</code></h5><p>Replaces <code>position</code>. Reads any registered topology frame by name.</p></div>
+  <div class="card"><h5><code>multi_wave</code></h5><p>Sum of 2–3 phase-offset waves. Plasma / lake collapsed to one node.</p></div>
+  <div class="card"><h5><code>radial_loop</code></h5><p>Radial but along the perimeter — distance is <code>u_loop</code> arc length, not Cartesian.</p></div>
+  <div class="card"><h5><code>pulse_train</code></h5><p>N evenly-spaced gaussian bumps moving along an axis. <em>"Two dots", "four dots", "eight-segment chase"</em> in one node.</p></div>
+  <div class="card"><h5><code>lighthouse</code></h5><p>Rotating beam — narrow gaussian indexed by <code>angle</code> minus phase.</p></div>
+  <div class="card"><h5><code>gradient_mask</code></h5><p>Piecewise linear ramp with N stops on an axis. Region-masking workhorse.</p></div>
+  <div class="card"><h5><code>voronoi</code></h5><p>Nearest-of-N moving seeds → cell-ID field. Cellular shapes.</p></div>
+</div>
+
+<h3><span class="pill rgb-field">rgb_field</span> — transient / particle leaves</h3>
+<p style="color:var(--ink-2);font-size:14px">
+  Each owns a fixed-size particle pool, integrates per frame, draws into an
+  internal fade buffer. Determinism guaranteed by <code>seed</code>.
+</p>
+<div class="card-grid">
+  <div class="card"><h5><code>comet</code> · <code>comets</code></h5><p>One head + exp. fading tail, or N phase-offset comets along an axis.</p></div>
+  <div class="card"><h5><code>meteor</code></h5><p>Like comet but stochastic per-pixel decay (the WLED <code>meteor</code> shape).</p></div>
+  <div class="card"><h5><code>ripple</code></h5><p>Outward propagating bumps. Auto-emits on <code>trigger</code> rising edge. <strong>Combine with <code>audio_peak</code></strong> for kick-driven ripples.</p></div>
+  <div class="card"><h5><code>bouncing</code></h5><p>Gravity-integrated balls along an axis. Bounce loss + random impact restart.</p></div>
+  <div class="card"><h5><code>geq_bars</code></h5><p>16-bar spectrum analyser along any axis. Mirror, peak hold, palette.</p></div>
+  <div class="card"><h5><code>starburst</code></h5><p>Emit a fragment burst on <code>trigger</code>. Fragments fly out and fade.</p></div>
+  <div class="card"><h5><code>lightning</code></h5><p>Multi-flash strobe envelope on <code>trigger</code>. <code>flashes</code>, <code>decay_ms</code>.</p></div>
+  <div class="card"><h5><code>fire</code></h5><p>1-D heat lattice along an axis (<code>mode_fire_2012</code>). Cooling / sparking.</p></div>
+  <div class="card"><h5><code>chase_dots</code></h5><p>M evenly-spaced dots scrolling — clean, no fade, the WLED-style chase.</p></div>
+</div>
+
+<h3><span class="pill combinator">combinators</span> — spatial transforms</h3>
+<div class="card-grid">
+  <div class="card"><h5><code>blur_axis</code></h5><p>Box-blur a scalar/rgb field along one axis. Hides the centre seam.</p></div>
+  <div class="card"><h5><code>mirror</code></h5><p>Fold a field along an axis (<code>x → |x|</code> then re-stretch).</p></div>
+  <div class="card"><h5><code>kaleido</code></h5><p>N-way fold (replicate + mirror). Pair with <code>u_loop</code> for "8-fold around".</p></div>
+  <div class="card"><h5><code>displace</code></h5><p>Sample input field at offset positions modulated by another scalar field. <em>Turbulence.</em></p></div>
+  <div class="card"><h5><code>where</code></h5><p>Per-LED ternary: <code>mask &gt;= 0.5 ? a : b</code>. <strong>Finally fixes</strong> the "use mix.t to split top/bottom" anti-pattern.</p></div>
+  <div class="card"><h5><code>region_mask</code></h5><p>Pre-baked masks: <code>top</code>, <code>bottom</code>, <code>left</code>, <code>right</code>, <code>loop_quarter[0..3]</code>.</p></div>
+  <div class="card"><h5><code>tile</code></h5><p>Repeat a field N times along an axis. 1-cycle wave → tiled.</p></div>
+  <div class="card"><h5><code>pixel_shift</code></h5><p>Integer-pixel chase along an axis. Crisp on dense LEDs; differs from continuous <code>wave</code>.</p></div>
+</div>
+
+<h3><span class="pill palette">palette</span> — new helpers</h3>
+<div class="card-grid">
+  <div class="card"><h5><code>palette_dynamic_hue</code></h5><p>Palette whose hue stops are themselves <code>scalar_t</code> nodes — beat-driven colour cycle in one node.</p></div>
+  <div class="card"><h5><code>palette_window</code></h5><p>Shrinks/centres the LUT range used. Scroll a <em>segment</em> of rainbow with audio-driven width.</p></div>
+</div>
+
+<!-- ===================================================================== -->
+<h2 id="recipes"><span class="num">5</span>Recipes — compound effects, one node</h2>
+
+<p>
+  This is the token-economy lever. A <em>recipe</em> is a primitive whose
+  <code>compile()</code> returns a sub-tree of leaves the agent never sees.
+  From the LLM's view: one node with 4–6 params. From the renderer's view:
+  a normal compiled subtree.
+</p>
+
+<div class="recipe-expand">
+  <div>
+    <h4 style="margin-top:0">What the LLM writes</h4>
+    <div class="recipe-node">
+{
+  "kind": "<span style="color:var(--accent)">loop_orbit</span>",
+  "params": {
+    "count": 3,
+    "speed": 0.5,
+    "palette": "rainbow",
+    "flip_every_beats": 8,
+    "band": "low",
+    "floor": 0.4
+  }
+}
+    </div>
+    <p style="font-size:12.5px;color:var(--ink-3);margin-top:8px">
+      One node · ~30 output tokens · "clockwise rainbow chase that flips every
+      8 beats and pulses on kick".
+    </p>
+  </div>
+  <div class="arrow">→</div>
+  <div>
+    <h4 style="margin-top:0">What the recipe compiles to</h4>
+<pre class="expanded-tree"><span class="k">palette_lookup</span>(
+  <span class="p">palette</span>: <span class="s">"rainbow"</span>,
+  <span class="p">scalar</span>: <span class="k">wave</span>(
+    <span class="p">axis</span>: <span class="s">"u_loop"</span>,
+    <span class="p">wavelength</span>: <span class="n">0.333</span>,
+    <span class="p">shape</span>: <span class="s">"sawtooth"</span>,
+    <span class="p">speed</span>: <span class="k">mul</span>(
+      <span class="p">a</span>: <span class="n">0.5</span>,
+      <span class="p">b</span>: <span class="k">step_select</span>(
+        <span class="p">index</span>: <span class="k">beat_count</span>(<span class="p">divisor</span>: <span class="n">8</span>, <span class="p">mod_n</span>: <span class="n">2</span>),
+        <span class="p">values</span>: [<span class="n">+1.0</span>, <span class="n">-1.0</span>]
+      )
+    )
+  ),
+  <span class="p">brightness</span>: <span class="k">pulse</span>(
+    <span class="p">by</span>: <span class="k">audio_band</span>(<span class="p">band</span>: <span class="s">"low"</span>),
+    <span class="p">floor</span>: <span class="n">0.4</span>
+  )
+)</pre>
+  </div>
+</div>
+
+<h3>Why recipes (and not just more leaves)</h3>
+<div class="card-grid">
+  <div class="card">
+    <h5>Token economy</h5>
+    <p>Recipe ≈ 80 prompt tokens. Equivalent low-level subtree the LLM has to
+    write every turn ≈ 250-400 output tokens, 6-8 nodes for the type-checker —
+    and the LLM still gets the topology wrong half the time.</p>
+  </div>
+  <div class="card">
+    <h5>Self-correction is cheaper</h5>
+    <p>Recipes have validated invariants (palette is always palette, axis is
+    always a frame name). Most "layer_validation_failed" loops we see today
+    are LLMs over-nesting; recipes flatten the path.</p>
+  </div>
+  <div class="card">
+    <h5>Operator presets get small</h5>
+    <p><code>config/presets/peak.yaml</code> becomes ~5 lines instead of 40.</p>
+  </div>
+  <div class="card">
+    <h5>Inspectable, not opaque</h5>
+    <p><code>GET /surface/expand/{kind}?params=…</code> returns the expanded
+    NodeSpec. Operator UI gets a "show as tree" button — drill in, tweak one
+    wave inside.</p>
+  </div>
+</div>
+
+<h3>v1 recipe set</h3>
+<table>
+  <thead><tr><th>Recipe</th><th>What it expands to</th><th>LLM-visible params</th></tr></thead>
+  <tbody>
+    <tr><td><code>chase</code></td><td>palette_lookup(wave, palette, brightness=pulse(band))</td><td>axis · count · speed · palette · band · floor</td></tr>
+    <tr><td><code>breathing</code></td><td>palette_lookup(constant centre, palette, brightness=pulse)</td><td>palette · period_s · band · floor</td></tr>
+    <tr><td><code>loop_orbit</code></td><td><code>chase</code> with axis=<code>u_loop</code> + step_select direction</td><td>count · speed · palette · flip_every_beats · band</td></tr>
+    <tr><td><code>axial_explode</code></td><td>particles emitted at <code>axial_dist=0</code> on <code>trigger</code></td><td>palette · trigger · lifetime_s · count_per_burst</td></tr>
+    <tr><td><code>axial_collapse</code></td><td>same, inward</td><td>(mirror of above)</td></tr>
+    <tr><td><code>ripple_on_peak</code></td><td>ripple(trigger=audio_peak(band, threshold), axis=<code>u_loop</code>)</td><td>band · threshold · palette · decay_s</td></tr>
+    <tr><td><code>geq</code></td><td>geq_bars(axis=<code>u_loop</code>, mirror, palette)</td><td>bins · axis · mirror · palette</td></tr>
+    <tr><td><code>pacifica_lite</code></td><td>3 stacked waves + animated palette</td><td>palette_a · palette_b · speed</td></tr>
+    <tr><td><code>comet_train</code></td><td>comets(axis, count, speed, length, palette)</td><td>(light wrapper for symmetry)</td></tr>
+    <tr><td><code>strobe</code></td><td>solid · threshold(bpm_clock, 0.95)</td><td>bpm · divisor · palette</td></tr>
+    <tr><td><code>lightning_burst</code></td><td>lightning(trigger=audio_peak(low, threshold))</td><td>palette · threshold</td></tr>
+    <tr><td><code>fire_axis</code></td><td>fire(axis, cooling, sparking, palette=<code>fire</code>)</td><td>axis · intensity · palette</td></tr>
+    <tr><td><code>vortex</code></td><td>lighthouse(angle) × wave(radius)</td><td>arms · speed · palette</td></tr>
+    <tr><td><code>kaleido_noise</code></td><td>kaleido(noise, n) → palette_lookup</td><td>palette · n · speed</td></tr>
+  </tbody>
+</table>
+
+<!-- ===================================================================== -->
+<h2 id="audio"><span class="num">6</span>Audio + beat layer</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <span class="pill scalar-t">scalar_t</span>
+    <h5>audio_peak (band, threshold, hold_s, cooldown_s)</h5>
+    <p>Schmitt trigger on band crossing threshold. Returns 1.0 for <code>hold_s</code>
+    after rising edge, then 0. <code>cooldown_s</code> blanks re-triggers. The
+    LLM-visible kick detector.</p>
+  </div>
+  <div class="card">
+    <span class="pill scalar-t">scalar_t</span>
+    <h5>audio_envelope (band, attack_s, release_s)</h5>
+    <p>Override the audio server's smoothing for the rare "hard-attack envelope
+    on the snare" prompt.</p>
+  </div>
+  <div class="card">
+    <span class="pill scalar-t">scalar_t</span>
+    <h5>audio_band_n (bin: 0..15)</h5>
+    <p>Direct read of the 16-bin GEQ from the audio server. Soft-fail to 0 if
+    bands aren't in the OSC packet.</p>
+  </div>
+  <div class="card">
+    <span class="pill scalar-t">scalar_t</span>
+    <h5>bpm_clock + beat_count</h5>
+    <p>BPM-synced. New <code>MasterControls.bpm</code> master + tap-tempo button.
+    Phase 2: auto-detect from the audio server.</p>
+  </div>
+</div>
+
+<h3>Direction control idiom — now expressible without a custom primitive</h3>
+
+<div class="compare">
+  <div class="before">
+    <h5>"Flip every 4 beats" — today</h5>
+    <p style="font-size:13.5px;color:var(--ink-2)">
+      Unreachable. <code>lfo</code> is wall-clock, not beat-synced. The LLM
+      asks the operator to manually tap a button.
+    </p>
+  </div>
+  <div class="after">
+    <h5>"Flip every 4 beats" — after</h5>
+<pre style="margin:0">"direction": {
+  "kind": "step_select",
+  "params": {
+    "index": {"kind": "beat_count",
+              "params": {"divisor": 4, "mod_n": 2}},
+    "values": [1.0, -1.0]
+  }
+}</pre>
+  </div>
+</div>
+
+<div class="compare">
+  <div class="before">
+    <h5>"Reverse on every kick" — today</h5>
+    <p style="font-size:13.5px;color:var(--ink-2)">
+      Unreachable. No peak detector. Even with <code>audio_band</code> the
+      crossing-threshold logic isn't expressible.
+    </p>
+  </div>
+  <div class="after">
+    <h5>"Reverse on every kick" — after</h5>
+<pre style="margin:0">"direction": {
+  "kind": "step_select",
+  "params": {
+    "index": {"kind": "counter", "params": {
+      "trigger": {"kind": "audio_peak",
+                  "params": {"band": "low"}},
+      "mod_n": 2
+    }},
+    "values": [1.0, -1.0]
+  }
+}</pre>
+  </div>
+</div>
+
+<!-- ===================================================================== -->
+<h2 id="tokens"><span class="num">7</span>Token-budget strategy</h2>
+
+<p>
+  System-prompt cost is the load-bearing constraint. The expanded surface fits
+  roughly:
+</p>
+
+<div class="diagram" style="padding: 24px 28px">
+  <div class="budget-key">
+    <span><span class="swatch now"></span>now (~2.5k)</span>
+    <span><span class="swatch after"></span>after (~6.2k)</span>
+  </div>
+  <div class="budget">
+    <div class="budget-row">
+      <span class="label">Frames</span>
+      <div class="budget-bar">
+        <div class="budget-fill-now" style="width: 0%"></div>
+        <div class="budget-fill-after" style="width: 4%"></div>
+      </div>
+      <span class="val">0 → 250</span>
+    </div>
+    <div class="budget-row">
+      <span class="label">scalar_t</span>
+      <div class="budget-bar">
+        <div class="budget-fill-now" style="width: 5.6%"></div>
+        <div class="budget-fill-after" style="width: 11.3%"></div>
+      </div>
+      <span class="val">350 → 700</span>
+    </div>
+    <div class="budget-row">
+      <span class="label">scalar_field</span>
+      <div class="budget-bar">
+        <div class="budget-fill-now" style="width: 9.7%"></div>
+        <div class="budget-fill-after" style="width: 16.1%"></div>
+      </div>
+      <span class="val">600 → 1000</span>
+    </div>
+    <div class="budget-row">
+      <span class="label">palette</span>
+      <div class="budget-bar">
+        <div class="budget-fill-now" style="width: 4%"></div>
+        <div class="budget-fill-after" style="width: 4.8%"></div>
+      </div>
+      <span class="val">250 → 300</span>
+    </div>
+    <div class="budget-row">
+      <span class="label">rgb_field</span>
+      <div class="budget-bar">
+        <div class="budget-fill-now" style="width: 4%"></div>
+        <div class="budget-fill-after" style="width: 14.5%"></div>
+      </div>
+      <span class="val">250 → 900</span>
+    </div>
+    <div class="budget-row">
+      <span class="label">Combinators</span>
+      <div class="budget-bar">
+        <div class="budget-fill-now" style="width: 5.6%"></div>
+        <div class="budget-fill-after" style="width: 9.7%"></div>
+      </div>
+      <span class="val">350 → 600</span>
+    </div>
+    <div class="budget-row">
+      <span class="label">Recipes</span>
+      <div class="budget-bar">
+        <div class="budget-fill-now" style="width: 0%"></div>
+        <div class="budget-fill-after" style="width: 24.2%"></div>
+      </div>
+      <span class="val">0 → 1500</span>
+    </div>
+    <div class="budget-row">
+      <span class="label">Examples + AP</span>
+      <div class="budget-bar">
+        <div class="budget-fill-now" style="width: 11.3%"></div>
+        <div class="budget-fill-after" style="width: 14.5%"></div>
+      </div>
+      <span class="val">700 → 900</span>
+    </div>
+  </div>
+</div>
+
+<p>Budget knobs we keep available:</p>
+<ol>
+  <li><strong>Tag building-block primitives <code>audience: "operator"</code>.</strong>
+  Visible in <code>/surface/primitives</code> for the UI; hidden from
+  <code>generate_docs()</code>. Saves ~1k tokens.</li>
+  <li><strong>One-line descriptions.</strong> <code>Pulse</code> + <code>Sparkles</code>
+  summaries are 5 / 7 lines today; one-line is the rule.</li>
+  <li><strong>Trim anchor examples</strong> from 7 → 4: one recipe, one custom tree,
+  one peak-driven, one beat-direction-flip.</li>
+  <li><strong>Compact param tables.</strong> Drop full descriptions in the prompt
+  (operator UI gets the full schema via <code>primitives_json</code> anyway).</li>
+</ol>
+
+<div class="callout warn">
+  <strong>CI guard.</strong> <code>assert len(tokenize(generate_docs())) &lt; 8000</code>
+  in CI so prompt bloat is caught early. Snapshot test on
+  <code>system_prompt.build(...)</code> against a representative install for
+  agent regressions.
+</div>
+
+<!-- ===================================================================== -->
+<h2 id="package"><span class="num">8</span>File / package structure</h2>
+
+<p>
+  <code>surface.py</code> is at 2300 lines today. ~30 new primitives + recipes
+  push it past 5k LoC. Split into a package now while preserving the public
+  API — <code>from ledctl.surface import compile_layers, generate_docs, …</code>
+  still works.
+</p>
+
+<pre>src/ledctl/surface/
+├── __init__.py              # re-exports the public API
+├── spec.py                  # NodeSpec, LayerSpec, UpdateLedsSpec, _recover_flattened_params
+├── registry.py              # REGISTRY, @primitive, Primitive, CompiledNode
+├── compiler.py              # Compiler, CompileError, compile_child
+├── shapes.py                # _apply_shape, hex_to_rgb01, _hsv_to_rgb01
+├── palettes.py              # NAMED_PALETTES, _bake_lut, _lut_from_*
+├── frames.py                # build_topology_frames(topology) + per-frame docs
+├── primitives/
+│   ├── scalar_t.py          # Constant, Lfo, AudioBand, BpmClock, AudioPeak, GravityMeter, …
+│   ├── scalar_field.py      # Frame, Wave, Radial, Noise, MultiWave, PulseTrain, Lighthouse, …
+│   ├── palette.py           # PaletteNamed, PaletteStops, PaletteHsv, PaletteWindow
+│   ├── rgb_field.py         # PaletteLookup, Solid, Sparkles, Comet, Ripple, Bouncing, GeqBars, Fire, …
+│   └── combinators.py       # Mix, Remap, Threshold, BlurAxis, Mirror, Kaleido, Where, Mask, Tile, …
+├── recipes/
+│   ├── __init__.py          # registers every recipe via @recipe
+│   ├── chase.py
+│   ├── loop_orbit.py
+│   ├── axial.py             # axial_explode, axial_collapse
+│   ├── ripple_on_peak.py
+│   ├── geq.py
+│   ├── pacifica.py
+│   ├── strobe.py
+│   ├── lightning_burst.py
+│   ├── fire_axis.py
+│   ├── vortex.py
+│   └── kaleido_noise.py
+├── docs.py                  # generate_docs, audience filtering
+└── examples.py              # EXAMPLE_TREES, ANTI_PATTERNS</pre>
+
+<p>Recipes share machinery via a <code>Recipe</code> base class:</p>
+
+<pre><code>class Recipe(Primitive):
+    """A primitive that compiles to a sub-tree of leaf primitives."""
+
+    @classmethod
+    def expand(cls, params: BaseModel, topology: Topology) -> NodeSpec:
+        raise NotImplementedError
+
+    @classmethod
+    def compile(cls, params, topology, compiler):
+        sub = cls.expand(params, topology)
+        return compiler.compile_child(sub, expect=cls.output_kind, path="(recipe)")
+</code></pre>
+
+<!-- ===================================================================== -->
+<h2 id="phasing"><span class="num">9</span>Phased delivery</h2>
+
+<p>
+  System works after every phase. Tests pass. Presets render. Agent stays
+  functional. ~14–16 days of focused work, roughly two sprints.
+</p>
+
+<div class="gantt">
+  <div class="gantt-row">
+    <span class="gantt-label"><span class="ph">A</span>Package split</span>
+    <div class="gantt-track"><div class="gantt-bar a" style="left:0%; width:6.25%">1d</div></div>
+  </div>
+  <div class="gantt-row">
+    <span class="gantt-label"><span class="ph">B</span>Frames + Frame primitive</span>
+    <div class="gantt-track"><div class="gantt-bar b" style="left:6.25%; width:6.25%">1d</div></div>
+  </div>
+  <div class="gantt-row">
+    <span class="gantt-label"><span class="ph">C</span>Leaf expansion (no recipes)</span>
+    <div class="gantt-track"><div class="gantt-bar c" style="left:12.5%; width:18.75%">3d</div></div>
+  </div>
+  <div class="gantt-row">
+    <span class="gantt-label"><span class="ph">D</span>Particle / transient leaves</span>
+    <div class="gantt-track"><div class="gantt-bar d" style="left:31.25%; width:31.25%">5d · the festival win</div></div>
+  </div>
+  <div class="gantt-row">
+    <span class="gantt-label"><span class="ph">E</span>Recipes</span>
+    <div class="gantt-track"><div class="gantt-bar e" style="left:62.5%; width:18.75%">3d</div></div>
+  </div>
+  <div class="gantt-row">
+    <span class="gantt-label"><span class="ph">F</span>Audio bridge bands</span>
+    <div class="gantt-track"><div class="gantt-bar f" style="left:81.25%; width:9.375%">1.5d</div></div>
+  </div>
+  <div class="gantt-row">
+    <span class="gantt-label"><span class="ph">G</span>Operator UI affordances</span>
+    <div class="gantt-track"><div class="gantt-bar g" style="left:90.625%; width:9.375%">1.5d</div></div>
+  </div>
+  <div class="gantt-axis">
+    <span></span>
+    <div class="gantt-ticks">
+      <span>day 0</span><span>4</span><span>8</span><span>12</span><span>16</span>
+    </div>
+  </div>
+</div>
+
+<div class="callout info">
+  <strong>Backwards-compat throughout.</strong> All existing primitive kinds
+  stay registered with identical params. All existing presets in
+  <code>config/presets/*.yaml</code> render identically.
+  <code>position(axis=x|y|z|distance)</code> aliases to <code>frame(axis=...)</code>
+  in the spec coercion layer. Tool contract unchanged.
+</div>
+
+<!-- ===================================================================== -->
+<h2 id="examples"><span class="num">10</span>What the agent can now say</h2>
+
+<h3>10.1 — "Clockwise rainbow chase, flip direction every 8 beats, pulse on kicks"</h3>
+<div class="compare">
+  <div class="before">
+    <h5>Today — unreachable</h5>
+    <p style="font-size:13.5px;color:var(--ink-2)">
+      No <code>u_loop</code>, no <code>step_select</code>, no <code>audio_peak</code>,
+      no recipe. The LLM produces a Cartesian wave, gets it visually wrong (top
+      half drifts left, bottom drifts right), the operator says "no, <em>around</em>
+      the loop" — and the LLM has no surface words to fix it.
+    </p>
+  </div>
+  <div class="after">
+    <h5>After — one node</h5>
+<pre style="margin:0">{
+  "kind": "loop_orbit",
+  "params": {
+    "count": 3,
+    "speed": 0.5,
+    "palette": "rainbow",
+    "flip_every_beats": 8,
+    "band": "low",
+    "floor": 0.4
+  }
+}</pre>
+  </div>
+</div>
+
+<h3>10.2 — "Ripple from the centre on every snare, ice palette, slow fade"</h3>
+<pre>{
+  "kind": "ripple_on_peak",
+  "params": {
+    "axis": "axial_dist",
+    "band": "mid",
+    "threshold": 0.6,
+    "palette": "ice",
+    "decay_s": 1.2
+  }
+}</pre>
+
+<h3>10.3 — "GEQ around the perimeter, mirrored from top centre, colour follows the bin"</h3>
+<pre>{
+  "kind": "geq",
+  "params": {"axis": "u_loop", "mirror": true, "palette": "rainbow", "peak_decay_s": 0.4}
+}</pre>
+
+<h3>10.4 — "Slow purple breath underneath, plus comets exploding from centre on every kick"</h3>
+<pre>{"layers": [
+  {
+    "node": {"kind": "breathing", "params": {
+      "palette": "mono_4030c0", "period_s": 4.0, "floor": 0.3
+    }},
+    "blend": "normal", "opacity": 1.0
+  },
+  {
+    "node": {"kind": "axial_explode", "params": {
+      "palette": "fire",
+      "trigger": {"kind": "audio_peak", "params": {"band": "low", "threshold": 0.55}},
+      "lifetime_s": 0.8,
+      "count_per_burst": 6
+    }},
+    "blend": "screen", "opacity": 1.0
+  }
+]}</pre>
+
+<p style="color:var(--ink-2);font-size:14px;font-style:italic;">
+  These are the kind of prompts a VJ types between songs. They're 10–30 tokens
+  of model output, render at 60 fps on the Pi, and they read like the effect
+  they describe.
+</p>
+
+<!-- ===================================================================== -->
+<h2 id="testing"><span class="num">11</span>Testing &amp; observability</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h5>Per-primitive unit tests</h5>
+    <p>Compile valid params; reject invalid ones; render at <code>t=0.5</code>
+    returns numerically expected slice for a 16-LED toy topology.</p>
+  </div>
+  <div class="card">
+    <h5>Recipe expansion snapshots</h5>
+    <p>The tree a recipe expands to is stable. Hashing test catches accidental
+    re-architecture.</p>
+  </div>
+  <div class="card">
+    <h5>Determinism</h5>
+    <p>Every stateful primitive given a <code>seed</code> renders identically
+    across runs and across <code>t=0 → t=10</code> sampled at 60 fps.</p>
+  </div>
+  <div class="card">
+    <h5>Token-budget regression</h5>
+    <p><code>assert tokenize(generate_docs()) &lt; 8000</code> in CI.</p>
+  </div>
+  <div class="card">
+    <h5>Prompt snapshot</h5>
+    <p>End-to-end "what the LLM sees" — fixture against a representative
+    install, snapshot updates on explicit re-record.</p>
+  </div>
+  <div class="card">
+    <h5>Browser sim parity</h5>
+    <p>Every recipe gets a 1-screenshot baseline in <code>/editor</code>. Visual
+    regressions surface immediately.</p>
+  </div>
+  <div class="card">
+    <h5>Performance budget</h5>
+    <p>Particle leaves ≤ 0.5 ms / frame each on M2. <code>geq_bars</code> ≤ 0.3 ms.
+    Whole stack budget 8 ms (1800 LEDs @ 60 fps with headroom).</p>
+  </div>
+  <div class="card">
+    <h5><code>ledctl bench</code></h5>
+    <p>Per-primitive cost printout so the cheapest ones get reached for first.</p>
+  </div>
+</div>
+
+<!-- ===================================================================== -->
+<h2 id="nondoing"><span class="num">12</span>What we deliberately are <em>not</em> doing</h2>
+
+<ul>
+  <li><strong>No multi-tool agent loop.</strong> One <code>update_leds</code> per turn stays.</li>
+  <li><strong>No client-side rendering / GPU.</strong> All numpy on the Pi. Particle pools bounded so worst-case per-frame cost is provable.</li>
+  <li><strong>No 2D matrix mode.</strong> WLED's <code>mode_2D*</code> stays out — we have no matrix; <code>u_loop</code> already gives the visually-2D moves.</li>
+  <li><strong>No sequencer.</strong> Mixer crossfade + presets cover scene transitions; preset save/recall is the sequencer.</li>
+  <li><strong>No surface-side LFO sync.</strong> Two <code>lfo</code> nodes run independent clocks; <code>bpm_clock</code> phase-locks globally to the master BPM — the only sync the agent should think about.</li>
+  <li><strong>No JS-style scripting in params.</strong> Every parameter is a node or a literal. The graph stays inspectable, type-checked, snapshotable, 100% deterministic given (seed, t).</li>
+</ul>
+
+<hr>
+
+<p style="font-size:18px;color:var(--ink);max-width:740px">
+  <code>surface.py</code> already nailed the hard part: a typed, composable
+  graph the LLM can write into. What's left is <em>vocabulary</em> — the
+  rectangle, the loop, the beat, the comet. Add path-aware frames, a
+  particle-leaf family, beat-aware time, and 13 recipes; split the file before
+  it gets unmanageable; keep the prompt under 8 k tokens; and the same agent
+  that today produces "warm drift" can produce
+  <em>"fire fountains exploding from centre on every kick, with a slow ice ripple
+  drifting clockwise around the loop"</em>. That's the festival.
+</p>
+
+<footer>
+  <p>
+    Plan written 2026-05-09 · for the festival_scaffold install · companion to
+    <code>effect_refactor_plan.md</code>.
+  </p>
+</footer>
+
+</main>
+</div>
+
+</body>
+</html>

@@ -735,3 +735,592 @@ def test_hex_to_rgb01_rejects_bad_hex():
         hex_to_rgb01("not-hex")
     with pytest.raises(ValueError):
         hex_to_rgb01("#1234")
+
+
+# ---- frames (Phase B) ------------------------------------------------------
+
+
+def test_topology_exposes_named_frames(topo: Topology):
+    """The frame builder fills `topology.derived` at config-load time."""
+    expected = {
+        "x", "y", "z", "signed_x", "signed_y", "signed_z",
+        "radius", "angle", "u_loop", "u_loop_signed",
+        "side_top", "side_bottom", "side_signed",
+        "axial_dist", "axial_signed", "corner_dist",
+        "strip_id", "chain_index", "distance",
+    }
+    assert expected.issubset(set(topo.derived))
+
+
+def test_u_loop_walks_clockwise_from_top_centre(topo: Topology):
+    """`u_loop` should be 0 at the top-centre chain head, ~0.25 at the
+    outer right edge, ~0.5 at the bottom centre, ~0.75 at the outer left
+    edge, ~1 wrapping back to top centre."""
+    u = topo.derived["u_loop"]
+    pos = topo.normalised_positions
+
+    # Top-right strip: pixel 450 (offset start) is at (0, 1) — top centre.
+    assert u[450] == 0.0
+    # Top-right strip ends at the outer right edge — should be ~0.25.
+    assert 0.24 < u[899] < 0.26
+
+    # Bottom-right strip is walked reversed, so its outer end (pixel 1799,
+    # at x=1, y=-1) is right after top-right ends — ~0.25.
+    assert 0.24 < u[1799] < 0.26
+    # And its centre end (pixel 1350) sits at the half-way point.
+    assert 0.49 < u[1350] < 0.51
+
+    # Bottom-left walked forward: centre end (pixel 900) at ~0.5, outer at ~0.75.
+    assert 0.49 < u[900] < 0.51
+    assert 0.74 < u[1349] < 0.76
+
+    # Top-left walked reversed: outer (pixel 449, at x=-1, y=1) ~0.75, centre back to 1.
+    assert 0.74 < u[449] < 0.76
+    assert u[0] == 1.0
+
+    # And the two co-located top-centre LEDs (pixels 0 and 450) sit at u=0 and u=1.
+    assert pos[0, 0] == pos[450, 0] == 0.0
+    assert pos[0, 1] == pos[450, 1]
+
+
+def test_axial_signed_matches_x_under_centre_normalisation(topo: Topology):
+    # axial_signed and signed_x are both x in [-1, 1]; the rig has no z so
+    # they should agree exactly modulo float casting.
+    np.testing.assert_allclose(
+        topo.derived["axial_signed"],
+        topo.derived["signed_x"],
+    )
+
+
+def test_side_top_and_side_bottom_partition_the_install(topo: Topology):
+    s_top = topo.derived["side_top"]
+    s_bot = topo.derived["side_bottom"]
+    # No LED is on both sides; together they cover everyone except y=0.
+    assert ((s_top + s_bot) <= 1.0).all()
+    # On the dev rig, exactly half the LEDs are on each row.
+    assert int(s_top.sum()) == 900
+    assert int(s_bot.sum()) == 900
+
+
+def test_frame_primitive_renders_named_axis(topo: Topology):
+    """The new `frame` primitive picks any named axis from the topology."""
+    layer = LayerSpec.model_validate({
+        "node": {
+            "kind": "palette_lookup",
+            "params": {
+                "scalar": {"kind": "frame", "params": {"axis": "u_loop"}},
+                "palette": "rainbow",
+            },
+        },
+    })
+    compiled = compile_layers([layer], topo)
+    out = compiled[0].node.render(
+        RenderContext(t=0.0, wall_t=0.0, masters=MasterControls())
+    )
+    assert out.shape == (topo.pixel_count, 3)
+
+
+def test_wave_axis_accepts_u_loop(topo: Topology):
+    """A wave along `u_loop` runs around the perimeter without complaint."""
+    layer = LayerSpec.model_validate({
+        "node": {
+            "kind": "palette_lookup",
+            "params": {
+                "scalar": {
+                    "kind": "wave",
+                    "params": {
+                        "axis": "u_loop",
+                        "speed": 0.3,
+                        "wavelength": 1.0,
+                    },
+                },
+                "palette": "rainbow",
+            },
+        },
+    })
+    compiled = compile_layers([layer], topo)
+    out = compiled[0].node.render(
+        RenderContext(t=0.0, wall_t=0.0, masters=MasterControls())
+    )
+    # Two LEDs co-located at top centre (offsets 0 and 450) should match.
+    np.testing.assert_allclose(out[0], out[450], atol=1e-5)
+
+
+def test_unknown_axis_raises_compile_error(topo: Topology):
+    from ledctl.surface import CompileError, Compiler, LayerSpec, NodeSpec
+
+    layer = LayerSpec(node=NodeSpec(
+        kind="palette_lookup",
+        params={
+            "scalar": {"kind": "frame", "params": {"axis": "not_a_frame"}},
+            "palette": "rainbow",
+        },
+    ))
+    with pytest.raises(CompileError) as exc:
+        Compiler(topo).compile_layers([layer])
+    assert "not_a_frame" in str(exc.value)
+
+
+def test_generate_docs_includes_frames_block():
+    from ledctl.surface import generate_docs
+
+    docs = generate_docs()
+    assert "FRAMES" in docs
+    assert "u_loop" in docs
+    assert "axial_dist" in docs
+
+
+# ---- beat-aware time primitives (Phase C) ---------------------------------
+
+
+def test_no_hardcoded_bpm_primitives_exposed():
+    """The LLM must never see bpm/clock/tempo primitives — they hardcode
+    a tempo and produce drift. Beat-sync goes through `audio_beat()`."""
+    from ledctl.surface import REGISTRY
+
+    for kind in ("bpm_clock", "beat_count", "audio_bpm"):
+        assert kind not in REGISTRY, (
+            f"{kind!r} must not be in the primitive registry; the LLM "
+            "would otherwise hardcode a BPM. Use audio_beat / "
+            "beat_envelope / beat_index instead."
+        )
+
+
+def test_beat_index_increments_on_each_audio_beat_and_wraps_mod_n():
+    """beat_index counts real `/audio/beat` rising edges, not a hardcoded
+    BPM clock. mod_n=4 wraps 0→1→2→3→0."""
+    from ledctl.surface import REGISTRY
+
+    cls = REGISTRY["beat_index"]
+    compiled = cls.compile(cls.Params(mod_n=4), topology=None, compiler=None)
+    masters = MasterControls()
+    state = AudioState()
+    ctx = RenderContext(t=0.0, wall_t=0.0, audio=state, masters=masters)
+    # First read establishes baseline at the current count.
+    assert compiled.render(ctx) == 0.0
+    for expected in (1, 2, 3, 0, 1, 2, 3, 0):
+        state.beat_count += 1
+        assert int(compiled.render(ctx)) == expected
+
+
+def test_step_select_picks_value_by_beat_index(topo: Topology):
+    """The classic direction-flip pattern: alternate +1/-1 each beat.
+
+    Index source is `beat_index`, driven by the live audio_beat counter
+    (no hardcoded BPM)."""
+    layer = LayerSpec.model_validate({
+        "node": {
+            "kind": "palette_lookup",
+            "params": {
+                "scalar": {
+                    "kind": "wave",
+                    "params": {
+                        "axis": "u_loop",
+                        "speed": {
+                            "kind": "step_select",
+                            "params": {
+                                "index": {
+                                    "kind": "beat_index",
+                                    "params": {"mod_n": 2},
+                                },
+                                "values": [0.5, -0.5],
+                            },
+                        },
+                        "wavelength": 1.0,
+                    },
+                },
+                "palette": "rainbow",
+            },
+        },
+    })
+    compiled = compile_layers([layer], topo)
+    out = compiled[0].node.render(
+        RenderContext(t=0.0, wall_t=0.0, audio=AudioState(), masters=MasterControls())
+    )
+    assert out.shape == (topo.pixel_count, 3)
+
+
+# ---- particle primitives (Phase D) ----------------------------------------
+
+
+def test_comet_head_brighter_than_tail(topo: Topology):
+    """The pixel under the comet head should outshine pixels far behind it."""
+    layer = LayerSpec.model_validate({
+        "node": {
+            "kind": "comet",
+            "params": {
+                "axis": "u_loop",
+                "speed": 0.0,  # static so we know exactly where the head is
+                "head_size": 0.05,
+                "trail_length": 0.3,
+                "palette": "white",
+            },
+        },
+    })
+    compiled = compile_layers([layer], topo)
+    out = compiled[0].node.render(
+        RenderContext(t=0.0, wall_t=0.0, masters=MasterControls())
+    )
+    # u_loop=0 lives at pixel 450 (top centre, top_right strip start).
+    head_brightness = out[450].max()
+    # u_loop=0.5 (bottom centre) is half-way around — should be ~dark.
+    far_brightness = out[1350].max()
+    assert head_brightness > 0.5
+    assert head_brightness > far_brightness * 5
+
+
+def test_comet_trigger_resets_head_to_spawn_position(topo: Topology):
+    """Beat-triggered comet: head walks outward from spawn_position on each
+    `audio_beat()` rising edge. With axis=axial_dist + spawn_position=0,
+    the head sits at the rig centre on each beat then sweeps outward."""
+    layer = LayerSpec.model_validate({
+        "node": {
+            "kind": "comet",
+            "params": {
+                "axis": "axial_dist",
+                "spawn_position": 0.0,
+                "speed": 1.0,  # 1 axial-unit / sec
+                "head_size": 0.04,
+                "trail_length": 0.0,  # head only — easier to assert on
+                "trigger": {"kind": "audio_beat", "params": {}},
+                "palette": "white",
+            },
+        },
+    })
+    compiled = compile_layers([layer], topo)
+    masters = MasterControls()
+    state = AudioState()
+
+    # No beats yet → legacy continuous mode (head walks from t=0).
+    pre = compiled[0].node.render(
+        RenderContext(t=10.0, wall_t=10.0, audio=state, masters=masters)
+    ).copy()
+    pre_max = pre.max()
+
+    # First beat → reset. Sample one frame later → head sits ~at axial=0
+    # (centre column LEDs). Pixels at axial=0 should now dominate.
+    state.beat_count += 1
+    on = compiled[0].node.render(
+        RenderContext(t=10.001, wall_t=10.001, audio=state, masters=masters)
+    ).copy()
+    # Quarter-beat later, no new beat: head has walked outward by ~0.25.
+    later = compiled[0].node.render(
+        RenderContext(t=10.25, wall_t=10.25, audio=state, masters=masters)
+    ).copy()
+
+    # Centre-column LEDs (low axial_dist) and outer LEDs (high axial_dist):
+    from ledctl.surface.frames import build_frames
+
+    frames = build_frames(
+        normalised_positions=topo.normalised_positions,
+        leds=[],
+        strips=topo.strips,
+        pixel_count=topo.pixel_count,
+    )
+    ax = frames["axial_dist"]
+    centre_mask = ax < 0.05
+    outer_mask = ax > 0.5
+    # Right after the beat, centre LEDs should be brightest.
+    assert on[centre_mask].max() > 0.5
+    assert on[centre_mask].max() > on[outer_mask].max() * 3
+    # A quarter-second later the head has moved away from centre — the
+    # mid-axis pixels should now be the bright ones.
+    mid_mask = (ax > 0.2) & (ax < 0.35)
+    assert later[mid_mask].max() > 0.5
+    # Sanity: pre-beat continuous mode produced *some* output too (it's not
+    # a no-op without triggers).
+    assert pre_max > 0.0
+
+
+def test_chase_dots_count_controls_distinct_peaks(topo: Topology):
+    """A 4-dot chase should give 4 distinct peaks at t=0."""
+    layer = LayerSpec.model_validate({
+        "node": {
+            "kind": "chase_dots",
+            "params": {
+                "axis": "u_loop",
+                "count": 4,
+                "width": 0.02,
+                "speed": 0.0,  # static
+                "palette": "white",
+            },
+        },
+    })
+    compiled = compile_layers([layer], topo)
+    out = compiled[0].node.render(
+        RenderContext(t=0.0, wall_t=0.0, masters=MasterControls())
+    )
+    # 4 dots × gaussian width 0.02 over 1800 LEDs lights up tens of pixels
+    # near each peak. Verify there are at least 4 separate bright clusters
+    # by counting distinct rising edges through the >0.5 threshold.
+    bright = out[:, 0]  # white palette → R=G=B
+    above = bright > 0.5
+    rising_edges = int(np.sum(above[1:] & ~above[:-1]))
+    assert rising_edges == 4, (
+        f"expected exactly 4 dot peaks, got {rising_edges} rising edges "
+        f"(total bright LEDs = {int(above.sum())})"
+    )
+
+
+def test_ripple_emits_at_rate_and_uses_pool(topo: Topology):
+    """Ripple's Poisson emission produces concurrent rings under high rate."""
+    from ledctl.surface import compile_layers
+
+    layer = LayerSpec.model_validate({
+        "node": {
+            "kind": "ripple",
+            "params": {
+                # axial_dist spans [0, 1] across the rig (centre column → outer
+                # edge), so a ripple emitted at age=0 reaches LEDs immediately.
+                "axis": "axial_dist",
+                "rate": 50.0,
+                "speed": 0.5,
+                "decay_s": 1.0,
+                "palette": "ice",
+                "seed": 7,
+            },
+        },
+    })
+    compiled = compile_layers([layer], topo)
+    masters = MasterControls()
+    # Step a few frames so the Poisson process emits multiple rings.
+    last = None
+    for i in range(60):
+        t = i / 60.0
+        last = compiled[0].node.render(
+            RenderContext(t=t, wall_t=t, masters=masters)
+        ).copy()
+    assert last is not None
+    assert (last.sum(axis=1) > 0.05).any(), (
+        f"ripple produced no visible output across 60 frames (max={last.max()})"
+    )
+
+
+def test_ripple_seed_reproducible(topo: Topology):
+    from ledctl.surface import compile_layers
+
+    def render_seq(seed):
+        layer = LayerSpec.model_validate({
+            "node": {
+                "kind": "ripple",
+                "params": {
+                    "axis": "axial_dist",
+                    "rate": 10.0,
+                    "speed": 0.4,
+                    "decay_s": 1.0,
+                    "palette": "ice",
+                    "seed": seed,
+                },
+            },
+        })
+        compiled = compile_layers([layer], topo)
+        masters = MasterControls()
+        out = None
+        for i in range(20):
+            t = i / 60.0
+            out = compiled[0].node.render(
+                RenderContext(t=t, wall_t=t, masters=masters)
+            ).copy()
+        return out
+
+    a = render_seq(42)
+    b = render_seq(42)
+    np.testing.assert_array_equal(a, b)
+
+
+# ---- recipes (Phase E) ----------------------------------------------------
+
+
+def test_breathing_recipe_compiles_and_renders(topo: Topology):
+    layer = LayerSpec.model_validate({
+        "node": {
+            "kind": "breathing",
+            "params": {
+                "palette": "warm",
+                "period_s": 4.0,
+                "floor": 0.3,
+            },
+        },
+    })
+    compiled = compile_layers([layer], topo)
+    out = compiled[0].node.render(
+        RenderContext(t=0.0, wall_t=0.0, masters=MasterControls())
+    )
+    assert out.shape == (topo.pixel_count, 3)
+    # Floor ≥ 0.3 means the install should never go fully dark.
+    assert out.max() > 0.0
+
+
+def test_strobe_recipe_flashes_on_audio_beat(topo: Topology):
+    """The strobe recipe is beat-driven: dark before any beat lands, bright
+    on each beat trigger, decayed shortly after."""
+    layer = LayerSpec.model_validate({
+        "node": {
+            "kind": "strobe",
+            "params": {
+                "decay_s": 0.1,
+                "shape": "exp",
+                "palette": "white",
+            },
+        },
+    })
+    compiled = compile_layers([layer], topo)
+    masters = MasterControls()
+    state = AudioState()
+
+    # Before any beat: stays dark (envelope sits at ~0).
+    pre = compiled[0].node.render(
+        RenderContext(t=0.0, wall_t=0.0, audio=state, masters=masters)
+    ).copy()
+    assert pre.max() < 0.05
+
+    # Beat fires → next frame is bright.
+    state.beat_count += 1
+    on = compiled[0].node.render(
+        RenderContext(t=0.005, wall_t=0.005, audio=state, masters=masters)
+    ).copy()
+    assert on.max() > 0.5
+
+    # ~0.5 s later (>> decay_s) without further beats: faded back to dark.
+    off = compiled[0].node.render(
+        RenderContext(t=0.5, wall_t=0.5, audio=state, masters=masters)
+    ).copy()
+    assert off.max() < 0.05
+
+
+# ---- audio_beat / beat_envelope + ripple trigger --------------------------
+
+
+def test_audio_beat_returns_zero_until_packets_arrive():
+    """No audio bridge → silent. First read establishes baseline."""
+    from ledctl.surface import REGISTRY
+
+    cls = REGISTRY["audio_beat"]
+    compiled = cls.compile(cls.Params(), topology=None, compiler=None)
+    masters = MasterControls()
+    # Without any audio_state, primitive returns 0 for every render.
+    assert compiled.render(RenderContext(t=0.0, wall_t=0.0, masters=masters)) == 0.0
+    assert compiled.render(RenderContext(t=0.1, wall_t=0.1, masters=masters)) == 0.0
+
+
+def test_audio_beat_detects_rising_edges_in_beat_count():
+    from ledctl.surface import REGISTRY
+
+    cls = REGISTRY["audio_beat"]
+    compiled = cls.compile(cls.Params(), topology=None, compiler=None)
+    state = AudioState()
+    masters = MasterControls()
+
+    # First read: baseline established at beat_count=0; returns 0.
+    ctx = RenderContext(t=0.0, wall_t=0.0, audio=state, masters=masters)
+    assert compiled.render(ctx) == 0.0
+
+    # One beat lands between frames → render returns 1.
+    state.beat_count += 1
+    assert compiled.render(ctx) == 1.0
+
+    # Same count next frame → 0 (no new beat).
+    assert compiled.render(ctx) == 0.0
+
+    # Two beats land before the next render → returns 2 (no drops).
+    state.beat_count += 2
+    assert compiled.render(ctx) == 2.0
+
+
+def test_beat_envelope_retriggers_and_decays():
+    """beat_envelope: 1.0 right after a beat, decays toward 0 by decay_s."""
+    from ledctl.surface import REGISTRY
+
+    cls = REGISTRY["beat_envelope"]
+    compiled = cls.compile(
+        cls.Params(decay_s=0.2, hold_s=0.0, shape="exp"), None, None
+    )
+    masters = MasterControls()
+    state = AudioState()
+
+    # First read with no beats yet → 0 (envelope idle).
+    ctx0 = RenderContext(t=0.0, wall_t=0.0, audio=state, masters=masters)
+    assert compiled.render(ctx0) == 0.0
+
+    # A beat fires, sample immediately → near 1.
+    state.beat_count += 1
+    ctx1 = RenderContext(t=0.001, wall_t=0.001, audio=state, masters=masters)
+    assert compiled.render(ctx1) > 0.95
+
+    # Half the decay later (no new beat) → between ~0.05 and 0.5 (exp curve).
+    ctx2 = RenderContext(t=0.1, wall_t=0.1, audio=state, masters=masters)
+    mid = compiled.render(ctx2)
+    assert 0.05 < mid < 0.5
+
+    # Well past decay_s → effectively zero.
+    ctx3 = RenderContext(t=0.6, wall_t=0.6, audio=state, masters=masters)
+    assert compiled.render(ctx3) < 0.02
+
+    # New beat retriggers to ~1 again.
+    state.beat_count += 1
+    ctx4 = RenderContext(t=0.601, wall_t=0.601, audio=state, masters=masters)
+    assert compiled.render(ctx4) > 0.95
+
+
+def test_beat_envelope_square_shape_holds_then_drops():
+    from ledctl.surface import REGISTRY
+
+    cls = REGISTRY["beat_envelope"]
+    compiled = cls.compile(
+        cls.Params(decay_s=0.2, hold_s=0.05, shape="square"), None, None
+    )
+    masters = MasterControls()
+    state = AudioState()
+    # First read establishes baseline.
+    compiled.render(
+        RenderContext(t=0.0, wall_t=0.0, audio=state, masters=masters)
+    )
+    state.beat_count += 1
+    # Within hold_s → full on.
+    on = compiled.render(
+        RenderContext(t=0.001, wall_t=0.001, audio=state, masters=masters)
+    )
+    assert on == 1.0
+    # Past hold_s → square shape goes straight to 0.
+    off = compiled.render(
+        RenderContext(t=0.1, wall_t=0.1, audio=state, masters=masters)
+    )
+    assert off == 0.0
+
+
+def test_ripple_trigger_emits_one_per_rising_edge(topo: Topology):
+    """Wire `audio_beat()` into ripple.trigger and confirm an upstream beat
+    produces a fresh ripple even with `rate=0` (no Poisson process running)."""
+    layer = LayerSpec.model_validate({
+        "node": {
+            "kind": "ripple",
+            "params": {
+                "axis": "axial_dist",
+                "rate": 0.0,
+                "trigger": {"kind": "audio_beat", "params": {}},
+                "speed": 0.5,
+                "decay_s": 1.5,
+                "palette": "ice",
+                "seed": 1,
+            },
+        },
+    })
+    compiled = compile_layers([layer], topo)
+    state = AudioState()
+    masters = MasterControls()
+
+    # No beats yet → no rings, nothing draws.
+    out0 = compiled[0].node.render(
+        RenderContext(t=0.0, wall_t=0.0, audio=state, masters=masters)
+    ).copy()
+    assert out0.max() < 1e-6
+
+    # Upstream onset arrives.
+    state.beat_count += 1
+    # One frame later, the ripple should be near radius=0 (just born).
+    out1 = compiled[0].node.render(
+        RenderContext(t=0.05, wall_t=0.05, audio=state, masters=masters)
+    ).copy()
+    assert out1.max() > 0.05, (
+        f"audio_beat → ripple chain produced no light (max={out1.max()})"
+    )

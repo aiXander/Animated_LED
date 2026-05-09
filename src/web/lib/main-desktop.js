@@ -174,6 +174,7 @@ async function boot() {
     simClients: $("sim-clients"),
     gamma:      $("gamma"),
     audioStatus:$("audio-status"),
+    audioBpm:   $("audio-bpm"),
     statusEngine: $("status-engine"),
   };
 
@@ -199,6 +200,7 @@ async function boot() {
     else if (a.error) statusText = "disconnected · " + a.error;
     else statusText = "disconnected";
     setText(els.audioStatus, statusText);
+    setText(els.audioBpm, a.bpm != null ? `${Number(a.bpm).toFixed(1)} bpm` : "— bpm");
     audioLink.applyAudio(a);
     audioMeter.update(a);
 

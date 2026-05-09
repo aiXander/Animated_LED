@@ -9,6 +9,29 @@ if TYPE_CHECKING:
     from .audio.state import AudioState
 
 
+def _build_derived(
+    *,
+    normalised_positions: np.ndarray,
+    leds: list,
+    strips: list,
+    pixel_count: int,
+) -> dict[str, np.ndarray]:
+    """Compute named coordinate frames on top of `normalised_positions`.
+
+    Imported lazily inside `from_config` to avoid pulling the surface
+    package into `topology.py`'s module load (the surface in turn imports
+    from `topology` for type hints).
+    """
+    from .surface.frames import build_frames
+
+    return build_frames(
+        normalised_positions=normalised_positions,
+        leds=leds,
+        strips=strips,
+        pixel_count=pixel_count,
+    )
+
+
 @dataclass(frozen=True)
 class LEDInfo:
     global_index: int
@@ -35,6 +58,10 @@ class Topology:
     bbox_max: np.ndarray  # (3,) float32
     pixel_count: int
     strips: list[StripConfig]
+    # Named coordinate frames precomputed at build time (see
+    # `surface.frames.build_frames`). Indexed by frame name; primitives that
+    # take an `axis` look up the array here. Immutable after build.
+    derived: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
     # Optional audio analysis snapshot, set by Engine.attach_audio. Effects
     # that want audio reactivity read it via `self.topology.audio_state`.
     audio_state: "AudioState | None" = field(default=None, repr=False)
@@ -90,12 +117,20 @@ class Topology:
         safe_extent = np.where(extent == 0, 1.0, extent).astype(np.float32)
         normalised = ((positions - center) / safe_extent).astype(np.float32)
 
+        leds_clean = [led for led in leds if led is not None]
+        derived = _build_derived(
+            normalised_positions=normalised,
+            leds=leds_clean,
+            strips=list(cfg.strips),
+            pixel_count=total,
+        )
         return cls(
-            leds=[led for led in leds if led is not None],
+            leds=leds_clean,
             positions=positions,
             normalised_positions=normalised,
             bbox_min=bbox_min.astype(np.float32),
             bbox_max=bbox_max.astype(np.float32),
             pixel_count=total,
             strips=list(cfg.strips),
+            derived=derived,
         )

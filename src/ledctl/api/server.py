@@ -390,6 +390,8 @@ def create_app(
                 "low": 0.0,
                 "mid": 0.0,
                 "high": 0.0,
+                "beat_count": 0,
+                "bpm": None,
             }
         s = bridge.state
         supervisor_error = (
@@ -413,6 +415,8 @@ def create_app(
             "low": round(s.low, 5),
             "mid": round(s.mid, 5),
             "high": round(s.high, 5),
+            "beat_count": s.beat_count,
+            "bpm": round(s.bpm, 2) if s.bpm is not None else None,
         }
 
     def _masters_payload() -> dict[str, Any]:
