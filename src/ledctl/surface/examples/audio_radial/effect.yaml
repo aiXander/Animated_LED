@@ -1,0 +1,37 @@
+name: audio_radial
+summary: Palette-mapped rings emanating from centre, brightness on selected band.
+source: bundled
+created_at: 0
+updated_at: 0
+params:
+  - key: palette
+    label: Palette
+    control: palette
+    default: ocean
+  - key: speed
+    label: Ring speed
+    control: slider
+    min: 0.0
+    max: 2.0
+    step: 0.01
+    default: 0.4
+  - key: audio_band
+    label: Brightness driver
+    control: select
+    options:
+      - low
+      - mid
+      - high
+    default: low
+  - key: brightness_floor
+    label: Brightness floor
+    control: slider
+    min: 0.0
+    max: 1.0
+    step: 0.01
+    default: 0.3
+param_values:
+  palette: ocean
+  speed: 0.4
+  audio_band: low
+  brightness_floor: 0.3

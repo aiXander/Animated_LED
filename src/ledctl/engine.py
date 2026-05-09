@@ -232,6 +232,13 @@ class Engine:
                 now = time.perf_counter()
                 wall_t = now - t0
                 dt_wall = wall_t - last_wall
+                # Clamp dt at 2× target frame interval so a hiccup (DDP retransmit,
+                # GC pause) doesn't tele-port stateful effects (comet heads,
+                # ripple ages). Stateful effects integrate dt; spikes look like
+                # jumps to the dance floor.
+                dt_clamp = 2.0 * period
+                if dt_wall > dt_clamp:
+                    dt_wall = dt_clamp
                 last_wall = wall_t
                 self.elapsed = wall_t
 

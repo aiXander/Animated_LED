@@ -92,6 +92,16 @@ def compile_effect(
                 "pulse, tri, wrap_dist, palette_lerp, named_palette, rng, log, "
                 "PI, TAU, LUT_SIZE)"
             )
+        # Dunder access (`x.__class__`, `obj.__globals__`, …) is reserved.
+        # Effects don't need it; LLMs sometimes wander into it from training
+        # data and it's a clean tertiary attack surface to close. Allow the
+        # one we DO need (`__name__`) since some helpers read it.
+        if isinstance(node, ast.Attribute):
+            attr = node.attr
+            if attr.startswith("__") and attr.endswith("__") and attr != "__name__":
+                raise EffectCompileError(
+                    f"dunder attribute access disallowed: .{attr}"
+                )
 
     try:
         code = compile(tree, f"<llm:{name}>", "exec")

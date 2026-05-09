@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -101,6 +102,42 @@ def build_runtime_namespace(name: str) -> dict[str, Any]:
 # ---------- composition entities ---------- #
 
 
+_PERF_WINDOW_FRAMES = 60   # 1 s of render times at 60 fps
+_BUDGET_TRIP_FRAMES = 30   # 0.5 s @ 60 fps of consecutive over-budget p95
+
+
+class RenderStats:
+    """Rolling per-layer render timing with mean / p95 / over-budget counter."""
+
+    __slots__ = ("samples", "mean_ms", "p95_ms", "over_budget", "tripped")
+
+    def __init__(self):
+        # Fixed-size ring buffer of render times in milliseconds.
+        self.samples: list[float] = []
+        self.mean_ms: float = 0.0
+        self.p95_ms: float = 0.0
+        self.over_budget: int = 0
+        self.tripped: bool = False
+
+    def add(self, ms: float, budget_ms: float) -> None:
+        self.samples.append(ms)
+        if len(self.samples) > _PERF_WINDOW_FRAMES:
+            self.samples.pop(0)
+        if not self.samples:
+            return
+        self.mean_ms = sum(self.samples) / len(self.samples)
+        # Cheap p95 — sort copy of the small window.
+        s = sorted(self.samples)
+        idx = max(0, int(0.95 * (len(s) - 1)))
+        self.p95_ms = s[idx]
+        if self.p95_ms > budget_ms:
+            self.over_budget += 1
+        else:
+            self.over_budget = 0
+        if self.over_budget >= _BUDGET_TRIP_FRAMES:
+            self.tripped = True
+
+
 @dataclass
 class Layer:
     """One entry in a composition.
@@ -119,6 +156,7 @@ class Layer:
     opacity: float = 1.0
     enabled: bool = True
     consecutive_failures: int = 0
+    perf: RenderStats = field(default_factory=RenderStats)
 
 
 @dataclass
@@ -156,7 +194,7 @@ class CrossfadeState:
 
 
 class Runtime:
-    def __init__(self, topology, masters):
+    def __init__(self, topology, masters, *, strict_params: bool = False):
         self.topology = topology
         self.masters = masters
         self.n = topology.pixel_count
@@ -165,6 +203,15 @@ class Runtime:
         self.mode: str = "live"
         self.blackout: bool = False
         self.crossfade_seconds: float = 1.0
+        self.strict_params: bool = bool(strict_params)
+        # Render the design-mode preview every other frame. The simulator
+        # is a UI preview — 30 fps is plenty for visual judgment, and this
+        # halves design-mode CPU during the trickiest scenario (crossfade +
+        # preview running concurrently). Start the counter at -1 so the
+        # first design-mode tick *does* render (we want immediate feedback
+        # when the operator switches modes or after a write_effect swap).
+        self.preview_half_rate: bool = True
+        self._preview_tick: int = -1
         self._cf: CrossfadeState | None = None
         # Render scratch buffers — one accumulator per leg + one for crossfade.
         self._live_buf = np.zeros((self.n, 3), dtype=np.float32)
@@ -188,6 +235,8 @@ class Runtime:
 
     # ---- effect compilation / install ---- #
 
+    INIT_BUDGET_MS = 200.0
+
     def _compile_layer(
         self,
         *,
@@ -209,12 +258,23 @@ class Runtime:
         if param_values:
             store.set_initial_values(param_values)
         init_ctx = self._build_init_ctx()
+        # Init budget — common cause of overrun is an O(N²) precompute the LLM
+        # didn't realise was quadratic; we'd rather catch it here than have the
+        # operator see a hitch on promote.
+        t0 = time.perf_counter()
         try:
             instance.init(init_ctx)
         except Exception as e:
             raise EffectCompileError(
                 f"init() failed: {type(e).__name__}: {e}"
             ) from e
+        init_ms = (time.perf_counter() - t0) * 1000.0
+        if init_ms > self.INIT_BUDGET_MS:
+            raise EffectCompileError(
+                f"init() took {init_ms:.0f} ms (budget: {self.INIT_BUDGET_MS:.0f} ms). "
+                f"Common cause: a per-pair O(N²) precompute over {self.n} LEDs. "
+                f"Vectorise it or move the work into render()."
+            )
         if instance.out is None:
             raise EffectCompileError(
                 "Effect.out is None after init — base.__init__ + _setup not "
@@ -406,14 +466,16 @@ class Runtime:
             wall_t=float(wall_t),
             dt=float(dt),
             audio=audio,
-            params=ParamView(layer.params),
+            params=ParamView(layer.params, strict=self.strict_params),
             masters=masters_view,
             n=self.n,
         )
 
     # ---- fence test ---- #
 
-    def _fence_test(self, layer: Layer, frames: int = 10) -> None:
+    # 30 synthetic frames — catches NaN drift, off-by-one in deposit logic,
+    # sparkle-pool overflow, scratch-buffer aliasing that 10 frames misses.
+    def _fence_test(self, layer: Layer, frames: int = 30) -> None:
         wall_t = 0.0
         dt = 1.0 / 60.0
         for i in range(frames):
@@ -453,6 +515,9 @@ class Runtime:
 
     # ---- composition rendering ---- #
 
+    PER_LAYER_BUDGET_MS = 5.0
+    CONSECUTIVE_FAIL_LIMIT = 3
+
     def _render_composition(
         self,
         comp: Composition,
@@ -469,14 +534,27 @@ class Runtime:
             if not layer.enabled or layer.opacity <= 0.0:
                 continue
             ctx = self._build_frame_ctx(layer, wall_t, dt, t_eff, audio)
+            t0 = time.perf_counter()
             try:
                 rgb = layer.instance.render(ctx)
             except Exception:
                 _log.exception("layer %r raised in render()", layer.name)
                 layer.consecutive_failures += 1
+                self._maybe_disable_failing_layer(layer)
+                continue
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            layer.perf.add(elapsed_ms, self.PER_LAYER_BUDGET_MS)
+            if layer.perf.tripped and layer.perf.over_budget != 0:
+                _log.warning(
+                    "layer %r tripped render budget (p95=%.1f ms); disabling",
+                    layer.name, layer.perf.p95_ms,
+                )
+                layer.enabled = False
+                layer.perf.tripped = False  # one-shot — operator can re-enable
                 continue
             if not isinstance(rgb, np.ndarray) or rgb.shape != (self.n, 3):
                 layer.consecutive_failures += 1
+                self._maybe_disable_failing_layer(layer)
                 continue
             if rgb.dtype != np.float32:
                 rgb = rgb.astype(np.float32, copy=False)
@@ -486,6 +564,17 @@ class Runtime:
             layer.consecutive_failures = 0
         np.clip(out, 0.0, 1.0, out=out)
         return out
+
+    def _maybe_disable_failing_layer(self, layer: Layer) -> None:
+        """3-strikes rule: a layer that crashes on consecutive frames is
+        disabled rather than re-tried indefinitely. Operator can re-enable
+        from the layer meta toggle."""
+        if layer.consecutive_failures >= self.CONSECUTIVE_FAIL_LIMIT:
+            _log.warning(
+                "layer %r failed %d frames in a row; disabling",
+                layer.name, layer.consecutive_failures,
+            )
+            layer.enabled = False
 
     # ---- per-frame entry point ---- #
 
@@ -529,13 +618,23 @@ class Runtime:
 
         # ---- SIM leg ---- #
         if self.mode == "design":
-            self._render_composition(self.preview, wall_t, dt, t_eff, audio,
-                                     out=self._preview_buf)
-            if self.blackout:
-                self._preview_buf.fill(0.0)
-            self._apply_master_output(self._preview_buf, wall_t, update_envelope=False)
-            if self.calibration is not None:
-                self._apply_calibration(self._preview_buf, wall_t)
+            self._preview_tick += 1
+            do_preview = (
+                not self.preview_half_rate
+                or (self._preview_tick & 1) == 0
+            )
+            if do_preview:
+                self._render_composition(self.preview, wall_t, dt, t_eff, audio,
+                                         out=self._preview_buf)
+                if self.blackout:
+                    self._preview_buf.fill(0.0)
+                self._apply_master_output(self._preview_buf, wall_t,
+                                          update_envelope=False)
+                if self.calibration is not None:
+                    self._apply_calibration(self._preview_buf, wall_t)
+            # When skipping, return the previously-rendered buffer — the
+            # WS frame stream emits the same bytes and the browser draws
+            # an unchanged canvas for one frame. Visually indistinguishable.
             return self._live_buf, self._preview_buf
         return self._live_buf, self._live_buf
 
@@ -683,6 +782,11 @@ def _layer_summary(layer: Layer) -> dict[str, Any]:
         "enabled": layer.enabled,
         "param_schema": layer.params.schema,
         "param_values": layer.params.values(),
+        "perf": {
+            "mean_ms": round(layer.perf.mean_ms, 3),
+            "p95_ms": round(layer.perf.p95_ms, 3),
+            "consecutive_failures": layer.consecutive_failures,
+        },
     }
 
 

@@ -242,7 +242,10 @@ def create_app(
     sim = SimulatorTransport()
     transport = _build_split_transport(cfg, sim)
     masters = _masters_from_config(cfg)
-    runtime = Runtime(topology, masters)
+    runtime = Runtime(
+        topology, masters,
+        strict_params=bool(getattr(cfg.agent, "strict_params", False)),
+    )
     runtime.crossfade_seconds = float(cfg.agent.default_crossfade_seconds)
 
     eff_dir = (effects_dir or DEFAULT_EFFECTS_DIR).resolve()
@@ -512,6 +515,23 @@ def create_app(
         if not ok:
             raise HTTPException(status_code=404, detail=f"no effect {name!r}")
         return {"deleted": name}
+
+    class StarRequest(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        starred: bool
+
+    @app.post("/effects/{name}/star")
+    async def star_effect(name: str, body: StarRequest) -> dict:
+        if not store.exists(name):
+            raise HTTPException(status_code=404, detail=f"no effect {name!r}")
+        # Round-trip the yaml — `save_values` only handles param_values, so
+        # do a tiny manual write here.
+        from yaml import safe_dump, safe_load
+        yml = (store.root / name / "effect.yaml")
+        meta = safe_load(yml.read_text()) or {}
+        meta["starred"] = bool(body.starred)
+        yml.write_text(safe_dump(meta, sort_keys=False, default_flow_style=False))
+        return {"name": name, "starred": bool(body.starred)}
 
     @app.post("/effects/{name}/load_preview")
     async def load_preview(name: str, body: LoadEffectRequest | None = None) -> dict:
