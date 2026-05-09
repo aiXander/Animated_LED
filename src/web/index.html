@@ -3,576 +3,318 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>aaiLED</title>
+  <title>aaiLED — surface v2</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <!-- PWA: same install hooks as /m, in case someone visits the desktop URL
-       on a tablet/phone with ?desktop=1. -->
   <meta name="theme-color" content="#050505" />
   <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-title" content="aaiLED" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <script>
-    if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("/sw.js").catch(() => { /* ignore */ });
-      });
-    }
-  </script>
-  <!-- Mobile redirect. Goes to /m when:
-         a) the device looks like a phone — touch-primary on a small
-            viewport, or the UA hint / string says mobile; or
-         b) the viewport is portrait (height ≥ width) — including a desktop
-            browser window the operator resized to preview the phone UI.
-       We also install a `change` listener on the portrait media query so
-       resizing flips to /m without an F5. Override with ?desktop=1, which
-       suppresses both the initial redirect and the resize listener for
-       that page load (the link in /m's header carries this flag). -->
-  <script>
-    (() => {
-      try {
-        const params = new URLSearchParams(location.search);
-        if (params.get("desktop") === "1") return;
-        if (location.pathname !== "/") return;
-        const ua = navigator.userAgent || "";
-        const uaMobile = (navigator.userAgentData && navigator.userAgentData.mobile)
-                      || /Mobi|Android|iPhone|iPod|IEMobile|Opera Mini/i.test(ua);
-        const touchSmall = matchMedia("(pointer: coarse) and (max-width: 932px)").matches;
-        const portraitMq = matchMedia("(orientation: portrait)");
-        if (uaMobile || touchSmall || portraitMq.matches) {
-          location.replace("/m");
-          return;
-        }
-        const onChange = (e) => { if (e.matches) location.replace("/m"); };
-        if (portraitMq.addEventListener) portraitMq.addEventListener("change", onChange);
-        else if (portraitMq.addListener) portraitMq.addListener(onChange); // legacy Safari
-      } catch (_) { /* ignore */ }
-    })();
-  </script>
   <style>
-    /* Root font-size scales with viewport so every rem-based dimension
-       (paddings, gaps, font sizes, panel min-widths, …) tracks the screen.
-       1440×900 (13" MBP) → ~16.6px;  1680×1050 → ~18.7px;
-       1920×1080 → ~19.1px;  2560×1440 → clamped at 26px. */
     :root {
       color-scheme: dark;
-      font-size: clamp(14px, 1.4vmin + 4px, 26px);
-      --viz-h: clamp(8.75rem, 24vh, 20rem);
+      --bg: #050505;
+      --panel: #0c0c0c;
+      --line: #1a1a1a;
+      --line-bright: #2a2a2a;
+      --text: #ddd;
+      --dim: #888;
+      --accent: #93c5fd;
+      --accent-strong: #3b82f6;
+      --accent-bg: #1e3a8a;
+      --warn: #fbbf24;
+      --bad: #f87171;
+      --ok: #4ade80;
+      font-size: clamp(14px, 1.1vmin + 5px, 18px);
     }
-    /* Universal border-box: without this, paddings on flex children with an
-       explicit basis (e.g. #status-panel) get added on top of the basis and
-       push the panel past its share, clipping the rightmost content. */
     *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; background: #050505; color: #ddd;
-                  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                  overflow: hidden; }
-    body { padding: 0.625rem; }
-    /* Two rows only. With the older `auto auto 1fr`, #tooltip (display:none)
-       didn't take a grid cell, so #middle landed in row 2 (auto) and row 3
-       sat empty — the empty band at the bottom of the screen. */
-    #app { display: grid; grid-template-rows: auto 1fr; height: 100%;
-           border: 1px solid #1a1a1a; border-radius: 0.5rem; overflow: hidden; }
-    /* When the bootstrap detects a non-simulator transport it removes #viz
-       entirely; the grid then has just a single 1fr row for #middle. */
-    body.no-viz #app { grid-template-rows: 1fr; }
-    .ok  { color: #4ade80; }
-    .bad { color: #f87171; }
-    .warn { color: #fbbf24; }
-    .dim { color: #888; }
-    a { color: #93c5fd; }
-
-    /* ---- top: LED viz ---- */
-    #viz {
-      position: relative; width: 100%; height: var(--viz-h);
-      border-bottom: 1px solid #1a1a1a; background: #050505;
+    html, body {
+      margin: 0; height: 100%; background: var(--bg); color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow: hidden;
     }
-    #canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+    button {
+      background: #161616; color: var(--text); border: 1px solid var(--line-bright);
+      border-radius: 4px; padding: 0.3rem 0.7rem; cursor: pointer;
+      font-family: inherit; font-size: 0.82rem;
+      transition: background 0.1s, border-color 0.1s, color 0.1s;
+    }
+    button:hover:not(:disabled) { background: #1e1e1e; border-color: #3a3a3a; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { background: var(--accent-bg); border-color: var(--accent-strong); color: #dbeafe; }
+    button.primary:hover:not(:disabled) { background: #1d4ed8; }
+    button.danger { color: #fca5a5; border-color: #7a1a1a; }
+    button.danger:hover:not(:disabled) { background: #2a0a0a; }
+    button.ghost { background: transparent; border-color: transparent; color: var(--dim); }
+    button.ghost:hover:not(:disabled) { background: #161616; color: var(--text); }
+    input, select, textarea {
+      font-family: inherit; font-size: 0.82rem;
+      background: #0a0a0a; color: var(--text);
+      border: 1px solid var(--line-bright); border-radius: 3px;
+      padding: 0.25rem 0.45rem;
+    }
+    input[type="range"] { padding: 0; -webkit-appearance: none; height: 4px; background: #222; border: none; }
+    input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; background: var(--accent-strong); border-radius: 50%; cursor: pointer; }
+    input[type="color"] { padding: 0; height: 24px; width: 38px; cursor: pointer; }
+    a { color: var(--accent); text-decoration: none; }
+
+    #app { display: grid; grid-template-rows: auto 1fr; height: 100%; }
+
+    #topbar {
+      display: flex; gap: 0.6rem; align-items: center;
+      padding: 0.4rem 0.7rem; border-bottom: 1px solid var(--line);
+      background: var(--panel); flex-wrap: wrap; position: relative;
+    }
+    #topbar .group { display: flex; align-items: center; gap: 0.5rem; }
+    #mode-toggle {
+      display: flex; background: #161616; border: 1px solid var(--line-bright);
+      border-radius: 4px; overflow: hidden;
+    }
+    #mode-toggle button {
+      border: 0; border-radius: 0; padding: 0.3rem 0.9rem;
+      background: transparent; color: var(--dim);
+    }
+    #mode-toggle button.active { background: var(--accent-bg); color: #dbeafe; }
+    .pill { padding: 0.2rem 0.55rem; border-radius: 999px; background: #161616;
+            border: 1px solid var(--line-bright); font-size: 0.7rem; color: var(--dim); }
+    .pill.ok { color: var(--ok); border-color: #1e3a1e; }
+    .pill.bad { color: var(--bad); border-color: #5a1a1a; }
+    .pill.warn { color: var(--warn); border-color: #5a3a0a; }
+
+    .masters-row { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; }
+    .masters-row label {
+      display: flex; align-items: center; gap: 0.4rem; font-size: 0.72rem; color: var(--dim);
+    }
+    .masters-row input[type="range"] { width: 86px; }
+    .masters-row .value { color: var(--text); font-size: 0.72rem; min-width: 2.2rem; text-align: right; }
+
+    #main { display: grid;
+            grid-template-columns: 1.4fr 0.85fr 0.85fr;
+            grid-template-rows: 1fr;
+            height: 100%; min-height: 0; }
+
+    #col-viz { display: flex; flex-direction: column; min-width: 0; min-height: 0;
+               border-right: 1px solid var(--line); background: var(--bg); }
+    #col-comp { display: flex; flex-direction: column; min-width: 0; min-height: 0;
+                border-right: 1px solid var(--line); background: var(--panel); }
+    #col-side { display: flex; flex-direction: column; min-width: 0; min-height: 0;
+                background: var(--panel); }
+
+    .col-header {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--line);
+      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--dim); background: #0a0a0a;
+    }
+    .col-header .grow { flex: 1; }
+
+    #viz { position: relative; flex: 1 1 auto; min-height: 0; }
+    #canvas { display: block; width: 100%; height: 100%; }
     #cal-banner {
-      position: absolute; top: 3rem; right: 0.75rem; padding: 0.375rem 0.625rem;
-      background: rgba(127, 29, 29, 0.85); border: 1px solid #b91c1c;
-      border-radius: 0.375rem; color: #fee2e2; font-size: 0.6875rem; display: none;
+      position: absolute; top: 0.5rem; right: 0.5rem;
+      padding: 0.3rem 0.6rem; background: rgba(127, 29, 29, 0.85);
+      border: 1px solid #b91c1c; border-radius: 4px;
+      color: #fee2e2; font-size: 0.72rem; display: none;
     }
     #cal-banner button {
-      margin-left: 0.5rem; background: #b91c1c; color: #fee2e2; border: 0;
-      padding: 0.1875rem 0.375rem; border-radius: 0.1875rem; font-family: inherit; cursor: pointer;
+      margin-left: 0.4rem; background: #b91c1c; color: #fee2e2; border: 0;
+      padding: 0.15rem 0.4rem; border-radius: 3px; cursor: pointer;
     }
-    #viz-nav {
-      position: absolute; top: 0.625rem; right: 0.75rem; display: flex;
-      gap: 0.46875rem; z-index: 5;
-    }
-    #viz-nav a {
-      padding: 0.3125rem 0.78125rem; background: rgba(17, 17, 17, 0.85);
-      border: 1px solid #2a2a2a; border-radius: 0.375rem; color: #ddd;
-      text-decoration: none; font-size: 0.859rem;
-      transition: background 0.15s, border-color 0.15s, color 0.15s;
-    }
-    #viz-nav a:hover { background: #1a1a1a; border-color: #3a3a3a; color: #93c5fd; }
-    #viz-nav a.active,
-    #viz-nav a.active:hover {
-      background: #1e3a8a; border-color: #3b82f6; color: #dbeafe;
-    }
-    #tooltip {
-      position: fixed; pointer-events: none; padding: 0.375rem 0.5rem;
-      background: rgba(10, 10, 10, 0.92); border: 1px solid #333;
-      border-radius: 0.375rem; font-size: 0.6875rem; line-height: 1.4;
-      display: none; z-index: 20;
-    }
-    #tooltip .gid { color: #93c5fd; }
-    #viz-brand {
-      position: absolute; top: 0.5rem; left: 50%; transform: translateX(-50%);
-      z-index: 5; font-weight: 700; color: #fbbf24; letter-spacing: 0.04em;
-      font-size: 1.366rem; pointer-events: none;
-    }
-    #ws-pill {
-      position: absolute; top: 0.625rem; left: 0.75rem; font-size: 0.6875rem;
-      padding: 0.25rem 0.5rem; border-radius: 999px; border: 1px solid #333;
-      background: rgba(0, 0, 0, 0.5);
-    }
-    #reboot-btn {
-      position: absolute; top: 2.25rem; left: 0.75rem; z-index: 5;
-      font-size: 0.6875rem; font-family: inherit; cursor: pointer;
-      padding: 0.25rem 0.5rem; border-radius: 0.375rem; border: 1px solid #5a1f1f;
-      background: rgba(40, 10, 10, 0.6); color: #fca5a5;
-    }
-    #reboot-btn:hover { background: rgba(80, 15, 15, 0.8); color: #fecaca; border-color: #7f1d1d; }
-    #reboot-btn:disabled { opacity: 0.5; cursor: default; }
 
-    /* ---- middle: chat | splitter | status ---- */
-    #middle { display: flex; min-height: 0; overflow: hidden; }
-    #chat {
-      display: flex; flex-direction: column; min-width: 17.5rem;
-      border-right: 0; min-height: 0;
-    }
-    #chat header {
-      display: flex; gap: 0.625rem; align-items: center; padding: 0.5rem 0.875rem;
-      border-bottom: 1px solid #1a1a1a; font-size: 0.75rem;
-    }
-    #chat header .title { color: #93c5fd; font-weight: 600; }
-    #chat header .spacer { flex: 1; }
-    #chat header label { opacity: 0.6; }
-    #chat header input, #chat header button {
-      background: #111; color: #ddd; border: 1px solid #333; border-radius: 0.375rem;
-      padding: 0.25rem 0.5rem; font-family: inherit; font-size: 0.75rem;
-    }
-    #chat header button { cursor: pointer; }
-    /* When viz is removed, chat header has no top nav above it — surface a
-       set of links here so the operator can still reach editor/audio. */
-    #chat-nav { display: none; gap: 0.375rem; }
-    body.no-viz #chat-nav { display: flex; }
-    #chat-nav a {
-      padding: 0.25rem 0.5rem; border: 1px solid #2a2a2a; border-radius: 0.375rem;
-      color: #ddd; text-decoration: none; font-size: 0.6875rem;
-    }
-    #chat-nav a:hover { background: #1a1a1a; color: #93c5fd; }
-    #log { flex: 1; overflow-y: auto; padding: 0.875rem; min-height: 0; }
-    .turn { margin-bottom: 0.875rem; }
-    .bubble { padding: 0.5rem 0.75rem; border-radius: 0.625rem; max-width: 92%;
-              white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
-    .user .bubble { background: #1e3a8a; color: #dbeafe; margin-left: auto; }
-    .asst .bubble { background: #161616; border: 1px solid #2a2a2a; color: #ddd; }
-    .row { display: flex; }
-    .user.row { justify-content: flex-end; }
-    .asst.row { justify-content: flex-start; }
-    .meta { font-size: 0.625rem; opacity: 0.55; margin-top: 0.25rem; }
-    .toolblock { margin-top: 0.375rem; font-size: 0.6875rem; }
-    .toolblock summary { cursor: pointer; opacity: 0.75; }
-    .toolblock pre { background: #0c0c0c; border: 1px solid #222; border-radius: 0.375rem;
-                     padding: 0.5rem; overflow-x: auto; max-height: 30vh; }
-    #chat footer { border-top: 1px solid #1a1a1a; padding: 0.625rem 0.875rem; }
-    #chat footer .composer { display: flex; gap: 0.5rem; }
-    #input { flex: 1; background: #0a0a0a; color: #eee; border: 1px solid #333;
-             border-radius: 0.5rem; padding: 0.625rem 0.75rem; font-family: inherit;
-             font-size: 0.875rem; resize: none; }
-    #send { background: #1e40af; color: white; border: 0; border-radius: 0.5rem;
-            padding: 0.625rem 0.875rem; font-family: inherit; font-weight: 600; cursor: pointer; }
-    #send:disabled { opacity: 0.5; cursor: not-allowed; }
-    #chat-status { font-size: 0.6875rem; opacity: 0.7; }
-
-    /* ---- splitter ---- */
-    #splitter {
-      flex: 0 0 0.375rem; background: #1a1a1a; cursor: col-resize;
-      position: relative; transition: background 0.15s;
-    }
-    #splitter:hover, #splitter.dragging { background: #2a2a2a; }
-    #splitter::after {
-      content: ""; position: absolute; top: 50%; left: 50%;
-      width: 2px; height: 2rem; background: #444;
-      transform: translate(-50%, -50%); border-radius: 2px;
-    }
-    body.dragging { cursor: col-resize; user-select: none; }
-
-    /* ---- status panel ---- */
-    #status-panel {
-      min-width: 12.5rem; overflow-y: auto; overflow-x: hidden;
-      padding: 0.875rem 0.625rem 0.875rem 0.875rem;
-      font-size: 0.75rem; background: #080808;
-    }
-    #status-panel h3 {
-      font-size: 0.6875rem; margin: 1rem 0 0.375rem; color: #fbbf24;
-      text-transform: uppercase; letter-spacing: 0.06em;
-      border-bottom: 1px solid #1a1a1a; padding-bottom: 0.25rem;
-    }
-    #status-panel h3:first-child { margin-top: 0; }
-    .status-cols { display: flex; gap: 1rem; align-items: flex-start; }
-    .status-cols .status-col { flex: 1 1 0; min-width: 0; }
-    .status-cols .status-col h3 { margin-top: 0; }
-    .status-cols .stat .k { min-width: 4rem; }
-    .stat { display: flex; gap: 0.5rem; padding: 0.125rem 0; line-height: 1.4; }
-    .stat .k { opacity: 0.6; min-width: 5.25rem; }
-    .stat .v { font-variant-numeric: tabular-nums; word-break: break-word; flex: 1; }
-    #audio-meter { margin-top: 0.25rem; }
-    #status-panel h3.audio-header {
-      display: flex; align-items: baseline; justify-content: space-between;
-    }
-    #status-panel h3.audio-header .audio-bpm {
-      font-size: 0.6875rem; letter-spacing: 0; text-transform: none;
-      font-variant-numeric: tabular-nums;
-    }
+    .deck { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;
+            border-bottom: 1px solid var(--line); }
+    .deck:last-child { border-bottom: none; }
+    .deck-header { display: flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.7rem;
+                   border-bottom: 1px solid var(--line); }
+    .deck-header .name { font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; }
+    .deck-header .name.live { color: #fca5a5; }
+    .deck-header .name.preview { color: #93c5fd; }
+    .deck-header .grow { flex: 1; }
+    .layer-list { flex: 1; overflow-y: auto; padding: 0.3rem 0.4rem; min-height: 0; }
     .layer-row {
-      position: relative; padding: 0.3125rem 0.5rem; margin: 0.1875rem 0; border-radius: 0.25rem;
-      border: 1px solid #1a1a1a; font-size: 0.6875rem; line-height: 1.3;
-      cursor: ew-resize; user-select: none; overflow: hidden;
-      --op: 100%;
-      background:
-        linear-gradient(
-          to right,
-          rgba(59, 130, 246, 0.32) 0,
-          rgba(59, 130, 246, 0.32) var(--op),
-          rgba(20, 20, 20, 0.7) var(--op),
-          rgba(20, 20, 20, 0.7) 100%
-        );
+      display: flex; align-items: center; gap: 0.35rem;
+      padding: 0.3rem 0.4rem; margin-bottom: 0.2rem;
+      border: 1px solid var(--line-bright); border-radius: 3px;
+      background: #0a0a0a; cursor: pointer;
     }
-    .layer-row:hover { border-color: #2a2a2a; }
-    .layer-row.dragging { border-color: #3b82f6; }
-    .layer-row > * { position: relative; pointer-events: none; }
-    .layer-row .head {
-      position: relative;
-      display: flex; align-items: center; gap: 0.375rem;
-    }
-    .layer-row .name {
-      color: #dbeafe; font-weight: 600;
-      min-width: 0; flex: 1 1 auto;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .layer-row .op-num {
-      position: absolute; left: 50%; bottom: 0.1875rem;
-      transform: translateX(-50%);
-      font-variant-numeric: tabular-nums; opacity: 0.85;
-      background: rgba(20, 20, 20, 0.55); padding: 0 0.25rem; border-radius: 0.1875rem;
-    }
-    .layer-row .remove {
-      margin-left: auto; pointer-events: auto;
-      background: transparent; border: 1px solid #3a1a1a; color: #f87171;
-      border-radius: 0.25rem; padding: 0 0.4375rem; font-family: inherit;
-      font-size: 0.8125rem; line-height: 1.4; cursor: pointer;
-      transition: background 0.12s, border-color 0.12s, color 0.12s;
-    }
-    .layer-row .remove:hover {
-      background: #7f1d1d; border-color: #b91c1c; color: #fee2e2;
-    }
-    .layer-row .blend { opacity: 0.55; }
+    .layer-row:hover { background: #131313; }
+    .layer-row.selected { border-color: var(--accent-strong);
+                          background: rgba(59, 130, 246, 0.08); }
+    .layer-row.disabled { opacity: 0.4; }
+    .layer-row .idx { font-size: 0.65rem; color: var(--dim); min-width: 1rem; }
+    .layer-row .name { flex: 1; font-size: 0.78rem; min-width: 0;
+                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .layer-row .blend { font-size: 0.65rem; color: var(--dim); }
+    .layer-row .opacity { font-size: 0.65rem; color: var(--dim); min-width: 2.4rem; text-align: right; }
+    .deck-actions { display: flex; gap: 0.3rem; padding: 0.35rem 0.7rem;
+                    border-top: 1px solid var(--line); }
+    .deck-empty { padding: 1rem; color: var(--dim); font-size: 0.78rem; text-align: center; }
 
-    /* ---- masters ---- */
-    .master-row {
-      display: flex; align-items: center; gap: 0.5rem; padding: 0.28125rem 0.25rem 0.28125rem 0;
-      min-width: 0;
-    }
-    .master-row > label {
-      flex: 0 0 4.75rem; opacity: 0.6; font-size: 0.6875rem;
-    }
-    .master-row input[type=range] {
-      flex: 1 1 0; min-width: 0; accent-color: #93c5fd; height: 0.25rem;
-    }
-    .master-row .v {
-      flex: 0 0 2.75rem; text-align: right; font-size: 0.6875rem;
-      font-variant-numeric: tabular-nums; opacity: 0.85;
-    }
-    .master-row button {
-      background: #111; color: #ddd; border: 1px solid #2a2a2a;
-      border-radius: 0.375rem; padding: 0.25rem 0.625rem; font-family: inherit;
-      font-size: 0.6875rem; cursor: pointer; transition: background 0.15s, border-color 0.15s;
-    }
-    .master-row button:hover { background: #1a1a1a; border-color: #3a3a3a; }
-    .master-row button.on {
-      background: #b45309; border-color: #d97706; color: #fef3c7;
-    }
-    .master-row.toggles { gap: 0.375rem; padding-top: 0.375rem; }
-    .master-row.toggles button { flex: 1; }
+    .panel-section { border-bottom: 1px solid var(--line); }
+    .panel-section .body { padding: 0.5rem 0.7rem; }
+    .params-form { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.5rem 0.7rem; }
+    .param-row { display: grid; grid-template-columns: minmax(7rem, 1fr) auto auto;
+                 gap: 0.5rem; align-items: center; }
+    .param-row label { font-size: 0.74rem; color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+    .param-row .value { font-size: 0.72rem; color: var(--text); min-width: 2.5rem; text-align: right; }
+    .params-empty { color: var(--dim); font-size: 0.78rem; padding: 0.4rem 0.7rem; }
 
-    /* ---- preset buttons (in layers header) ---- */
-    /* 3-column grid: layers title left, preset buttons centered, empty right
-       column (::after) keeps them centred in the row regardless of title width. */
-    #status-panel h3.with-actions {
-      display: grid; grid-template-columns: 1fr auto 1fr;
-      align-items: center; gap: 0.5rem;
-    }
-    #status-panel h3.with-actions::after { content: ""; }
-    .h3-actions { display: flex; gap: 0.375rem; justify-content: center; }
-    .preset-btn {
-      background: #1c1c1c; color: #cbd5e1; border: 1px solid #3a3a3a;
-      border-radius: 0.25rem; padding: 0.125rem 0.5rem;
-      font-family: inherit; font-size: 0.625rem; font-weight: 600;
-      letter-spacing: 0.06em; text-transform: uppercase;
-      cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
-    }
-    .preset-btn:hover { background: #242424; border-color: #4a4a4a; color: #e5e7eb; }
-    .preset-btn:active { transform: translateY(1px); }
-    .preset-btn.load { color: #a7f3d0; border-color: #2c5550; }
-    .preset-btn.load:hover { border-color: #3d7068; color: #ccfbf1; }
-    .preset-btn.save { color: #ddd6fe; border-color: #3f3457; }
-    .preset-btn.save:hover { border-color: #564773; color: #ede9fe; }
+    .layer-meta-row { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;
+                      padding: 0.35rem 0.7rem; border-bottom: 1px solid var(--line);
+                      background: #0a0a0a; font-size: 0.72rem; color: var(--dim); }
+    .layer-meta-row select { font-size: 0.72rem; padding: 0.15rem 0.3rem; }
+    .layer-meta-row input[type="range"] { width: 70px; }
 
-    /* ---- modal popups ---- */
-    .modal-overlay {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-      display: none; align-items: center; justify-content: center;
-      z-index: 100;
-    }
-    .modal-overlay.open { display: flex; }
-    .modal {
-      width: min(80vw, 40rem); height: auto;
-      min-height: clamp(11rem, 28vh, 20rem); max-height: min(40vh, 24rem);
-      background: #0e0e10; border: 1px solid #2a2a2a; border-radius: 0.625rem;
-      box-shadow: 0 0.625rem 1.875rem rgba(0,0,0,0.6);
-      display: flex; flex-direction: column;
-      padding: 0.875rem 1.125rem;
-    }
-    /* The load dialog hosts a long scrollable list — give it more vertical
-       room so the list isn't cramped regardless of how many presets are saved. */
-    #load-modal .modal {
-      width: min(80vw, 40rem); height: 70vh; min-height: 0; max-height: 70vh;
-    }
-    .modal h2 {
-      margin: 0 0 0.625rem; font-size: 0.8125rem; color: #93c5fd;
-      text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
-    }
-    .modal .body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0.625rem; }
-    .modal .row { display: flex; gap: 0.625rem; align-items: center; }
-    .modal input[type=text] {
-      flex: 1; background: #0a0a0a; color: #eee; border: 1px solid #333;
-      border-radius: 0.375rem; padding: 0.5rem 0.625rem; font-family: inherit; font-size: 0.8125rem;
-    }
-    .modal input[type=text]:focus { outline: none; border-color: #7c3aed; }
-    .modal .footer {
-      display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.625rem;
-    }
-    .modal button {
-      background: #1a1a1a; color: #ddd; border: 1px solid #2a2a2a;
-      border-radius: 0.375rem; padding: 0.375rem 0.875rem; font-family: inherit;
-      font-size: 0.75rem; cursor: pointer;
-    }
-    .modal button:hover { background: #222; border-color: #3a3a3a; }
-    .modal button.primary {
-      background: #1e40af; border-color: #2563eb; color: #dbeafe;
-    }
-    .modal button.primary:hover { filter: brightness(1.15); }
-    .modal .err { color: #f87171; font-size: 0.6875rem; min-height: 0.875rem; }
-    .modal .hint { font-size: 0.6875rem; opacity: 0.6; }
+    #chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    #chat-log { flex: 1; overflow-y: auto; padding: 0.5rem 0.7rem;
+                display: flex; flex-direction: column; gap: 0.4rem; min-height: 0; }
+    .msg { padding: 0.4rem 0.55rem; border-radius: 4px; font-size: 0.78rem;
+           white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
+    .msg.user { background: rgba(59, 130, 246, 0.12); border: 1px solid #1e3a8a; }
+    .msg.assistant { background: #131313; border: 1px solid var(--line-bright); }
+    .msg.tool-error { background: rgba(127, 29, 29, 0.18); border: 1px solid #5a1a1a;
+                      color: #fda4af; font-size: 0.72rem; }
+    .msg.tool-ok { background: rgba(20, 83, 45, 0.18); border: 1px solid #1e3a1e;
+                   color: #86efac; font-size: 0.72rem; }
+    .msg .label { font-size: 0.6rem; color: var(--dim); margin-bottom: 0.2rem; text-transform: uppercase; letter-spacing: 0.1em; }
+    #chat-input-row { display: flex; gap: 0.3rem; padding: 0.5rem 0.7rem;
+                      border-top: 1px solid var(--line); }
+    #chat-input { flex: 1; resize: none; min-height: 2.4rem; max-height: 6rem; }
 
-    .preset-list {
-      flex: 1; overflow-y: auto; border: 1px solid #1a1a1a;
-      border-radius: 0.375rem; background: #050505; padding: 0.25rem;
-      min-height: 0;
-    }
-    .preset-list .preset-item {
-      padding: 0.375rem 0.625rem; border-radius: 0.25rem; cursor: pointer;
-      font-size: 0.75rem; line-height: 1.3;
-      transition: background 0.1s;
-    }
-    .preset-list .preset-item:hover { background: #161616; }
-    .preset-list .preset-item.selected {
-      background: #1e3a8a; color: #dbeafe;
-    }
-    .preset-list .empty { padding: 0.625rem; opacity: 0.5; font-size: 0.6875rem; }
+    #lib { position: absolute; right: 0.5rem; top: 2.6rem; width: 22rem; max-height: 60vh;
+           background: var(--panel); border: 1px solid var(--line-bright); border-radius: 5px;
+           padding: 0.5rem; overflow-y: auto; display: none; z-index: 30;
+           box-shadow: 0 6px 24px rgba(0,0,0,0.5); }
+    #lib.open { display: block; }
+    .lib-row { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line);
+               display: grid; grid-template-columns: 1fr auto; gap: 0.4rem;
+               align-items: center; cursor: pointer; }
+    .lib-row:hover { background: #131313; }
+    .lib-row .summary { font-size: 0.72rem; color: var(--dim);
+                        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lib-row .actions { display: flex; gap: 0.25rem; }
+    .lib-row .actions button { padding: 0.15rem 0.35rem; font-size: 0.7rem; }
 
-    .modal label.checkbox {
-      display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem;
-      cursor: pointer; user-select: none; opacity: 0.85;
-    }
-    .modal label.checkbox input { accent-color: #7c3aed; }
-
+    body.live-mode #col-side { display: none; }
+    body.live-mode #main { grid-template-columns: 1.6fr 1fr; }
   </style>
 </head>
-<body>
+<body class="live-mode">
   <div id="app">
-    <!-- ===== top: LED viz (removed entirely by main-desktop.js when the
-                 transport doesn't include the simulator) ===== -->
-    <div id="viz">
-      <span id="viz-brand">aaiLED</span>
-      <span id="ws-pill" class="dim">connecting…</span>
-      <button id="reboot-btn" type="button" title="reboot the Raspberry Pi (host)">reboot pi</button>
-      <canvas id="canvas"></canvas>
-      <nav id="viz-nav">
-        <a href="/" class="active">main</a>
-        <a href="#" id="audio-ui-link" title="opens the audio-feature server UI in a new tab">audio</a>
-        <a href="/editor">layout</a>
-      </nav>
-      <div id="cal-banner">
-        <span id="cal-text">calibration active</span>
-        <button id="cal-clear">clear</button>
+    <header id="topbar">
+      <div class="group">
+        <strong style="color:#fca5a5;letter-spacing:0.05em">aaiLED</strong>
+        <span class="pill" id="ws-pill">connecting…</span>
+        <span class="pill" id="fps-pill">--- fps</span>
+        <span class="pill" id="audio-pill">audio …</span>
       </div>
-    </div>
-    <div id="tooltip"></div>
+      <div class="group">
+        <div id="mode-toggle">
+          <button id="btn-design" data-mode="design">Design</button>
+          <button id="btn-live" data-mode="live" class="active">Live</button>
+        </div>
+      </div>
+      <div class="group masters-row" id="masters-row">
+        <label>bri <input id="m-bri" type="range" min="0" max="2" step="0.01"><span class="value" id="v-bri">1.00</span></label>
+        <label>sat <input id="m-sat" type="range" min="0" max="1" step="0.01"><span class="value" id="v-sat">1.00</span></label>
+        <label>spd <input id="m-spd" type="range" min="0" max="3" step="0.01"><span class="value" id="v-spd">1.00</span></label>
+        <label>aud <input id="m-aud" type="range" min="0" max="3" step="0.01"><span class="value" id="v-aud">1.00</span></label>
+        <label><input id="m-frz" type="checkbox"> freeze</label>
+      </div>
+      <div class="group" style="margin-left:auto;">
+        <button id="btn-blackout" class="ghost" title="Blackout the LIVE leg (sim still shows preview)">⚫ blackout</button>
+        <button id="btn-library" class="ghost">📚 library</button>
+        <a id="btn-audio" href="#" target="_blank" rel="noopener" class="ghost" style="display:inline-block; padding:0.3rem 0.7rem;">🎙 audio</a>
+      </div>
+      <div id="lib"></div>
+    </header>
 
-    <!-- ===== middle: chat | splitter | status ===== -->
-    <div id="middle">
-      <section id="chat">
-        <header>
-          <span class="title">chat</span>
-          <nav id="chat-nav">
-            <a href="#" id="audio-ui-link-fallback" title="opens the audio-feature server UI in a new tab">audio</a>
-            <a href="/editor">layout</a>
-          </nav>
-          <span class="spacer"></span>
-          <span class="dim" id="chat-status">ready</span>
-          <button id="new">new session</button>
-        </header>
-        <div id="log"></div>
-        <footer>
-          <form class="composer" id="form">
-            <textarea id="input" rows="2" placeholder="warm slow ambient drift, top row leading…" autofocus></textarea>
-            <button id="send" type="submit">send</button>
-          </form>
-        </footer>
+    <main id="main">
+      <section id="col-viz">
+        <div class="col-header">
+          <span>Simulator</span>
+          <span class="grow"></span>
+          <span id="viz-mode-pill" class="pill">live</span>
+        </div>
+        <div id="viz">
+          <canvas id="canvas"></canvas>
+          <div id="cal-banner">
+            <span id="cal-text">calibration</span>
+            <button id="cal-clear">✕</button>
+          </div>
+        </div>
       </section>
 
-      <div id="splitter" title="drag to resize"></div>
+      <section id="col-comp">
+        <div class="col-header">
+          <span>Compositions</span>
+          <span class="grow"></span>
+          <button id="btn-promote" class="primary">▶ Promote ⤴</button>
+          <button id="btn-pull" class="ghost" title="Copy LIVE → PREVIEW (hard cut)">⤓ pull live</button>
+        </div>
 
-      <aside id="status-panel">
-        <div class="status-cols">
-          <div class="status-col">
-            <h3>engine</h3>
-            <div class="stat"><span class="k">status</span><span class="v"><span id="status-engine" class="bad">connecting…</span></span></div>
-            <div class="stat"><span class="k">render fps</span><span class="v"><span id="fps">—</span> <span class="dim">(target: <span id="target-fps">—</span>)</span></span></div>
-            <div class="stat"><span class="k">frames</span><span class="v" id="frames">0</span></div>
-            <div class="stat"><span class="k">elapsed</span><span class="v" id="elapsed">0s</span></div>
+        <div class="deck" id="deck-preview">
+          <div class="deck-header">
+            <span class="name preview">PREVIEW</span>
+            <span class="grow"></span>
+            <span class="pill" id="preview-summary"></span>
           </div>
-          <div class="status-col">
-            <h3>output</h3>
-            <div class="stat"><span class="k">leds</span><span class="v" id="leds">0</span></div>
-            <div class="stat"><span class="k">transport</span><span class="v" id="transport">—</span></div>
-            <div class="stat"><span class="k">sim clients</span><span class="v" id="sim-clients">0</span></div>
-            <div class="stat"><span class="k">gamma</span><span class="v dim" id="gamma">—</span></div>
+          <div class="layer-list" id="preview-layers"></div>
+          <div class="deck-actions">
+            <button id="preview-add-layer" class="ghost">+ layer</button>
+            <button id="preview-remove-layer" class="ghost danger">– remove</button>
           </div>
         </div>
 
-        <h3>masters</h3>
-        <div class="master-row">
-          <label for="m-brightness">brightness</label>
-          <input type="range" id="m-brightness" min="0" max="2" step="0.01" value="1" />
-          <span class="v" id="m-brightness-v">1.00</span>
-        </div>
-        <div class="master-row">
-          <label for="m-speed">speed</label>
-          <input type="range" id="m-speed" min="0" max="3" step="0.01" value="1" />
-          <span class="v" id="m-speed-v">1.00</span>
-        </div>
-        <div class="master-row">
-          <label for="m-audio-reactivity">audio react</label>
-          <input type="range" id="m-audio-reactivity" min="0" max="3" step="0.01" value="1" />
-          <span class="v" id="m-audio-reactivity-v">1.00</span>
-        </div>
-        <div class="master-row">
-          <label for="m-saturation">saturation</label>
-          <input type="range" id="m-saturation" min="0" max="1" step="0.01" value="1" />
-          <span class="v" id="m-saturation-v">1.00</span>
-        </div>
-        <div class="master-row">
-          <label for="m-crossfade">crossfade</label>
-          <input type="range" id="m-crossfade" min="0" max="5" step="0.05" value="1" />
-          <span class="v" id="m-crossfade-v">1.00s</span>
-        </div>
-        <div class="master-row toggles">
-          <button id="m-freeze" type="button">freeze</button>
-          <button id="m-blackout" type="button">blackout</button>
-          <button id="m-ddp" type="button" title="When off, ledctl stops sending DDP frames; after ~2.5s WLED reverts to its own preset/effect (Gledopto control). Click again to take Pi control back.">Pi control</button>
-          <button id="m-sim" type="button" title="Pause the simulator stream to stop broadcasting frames to browser viz clients. Useful to offload the Pi when DDP is the only output that matters.">sim stream</button>
-        </div>
-
-        <h3 class="audio-header"><span>audio</span><span class="audio-bpm v dim" id="audio-bpm">—</span></h3>
-        <div class="stat"><span class="k">status</span><span class="v dim" id="audio-status">—</span></div>
-        <div id="audio-meter"></div>
-
-        <h3 class="with-actions">
-          <span>layers</span>
-          <span class="h3-actions">
-            <button class="preset-btn save" id="save-preset-btn" type="button">save preset</button>
-            <button class="preset-btn load" id="load-preset-btn" type="button">load preset</button>
-          </span>
-        </h3>
-        <div id="layers-list"><div class="dim">—</div></div>
-      </aside>
-    </div>
-
-    <!-- ===== save preset modal ===== -->
-    <div class="modal-overlay" id="save-modal">
-      <div class="modal" role="dialog" aria-labelledby="save-title">
-        <h2 id="save-title">save preset</h2>
-        <div class="body">
-          <div class="row">
-            <input type="text" id="save-name" maxlength="40"
-                   placeholder="preset name (max 40 chars)" autocomplete="off" />
+        <div class="deck" id="deck-live">
+          <div class="deck-header">
+            <span class="name live">LIVE</span>
+            <span class="grow"></span>
+            <span class="pill" id="live-summary"></span>
           </div>
-          <div class="hint">letters, digits, _ and - only · saves current layer stack and master settings</div>
-          <div class="err" id="save-err"></div>
-        </div>
-        <div class="footer">
-          <button type="button" id="save-cancel">cancel</button>
-          <button type="button" class="primary" id="save-confirm">save</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== load preset modal ===== -->
-    <div class="modal-overlay" id="load-modal">
-      <div class="modal" role="dialog" aria-labelledby="load-title">
-        <h2 id="load-title">load preset</h2>
-        <div class="body">
-          <div class="preset-list" id="preset-list">
-            <div class="empty">loading…</div>
+          <div class="layer-list" id="live-layers"></div>
+          <div class="deck-actions">
+            <button id="live-add-layer" class="ghost">+ layer</button>
+            <button id="live-remove-layer" class="ghost danger">– remove</button>
           </div>
-          <label class="checkbox">
-            <input type="checkbox" id="load-with-masters" />
-            <span>load master settings</span>
-          </label>
-          <div class="err" id="load-err"></div>
         </div>
-        <div class="footer">
-          <button type="button" id="load-cancel">cancel</button>
-          <button type="button" class="primary" id="load-confirm">load</button>
-        </div>
-      </div>
-    </div>
+      </section>
 
+      <section id="col-side">
+        <div class="col-header">
+          <span id="side-title">Selected layer</span>
+          <span class="grow"></span>
+          <span id="side-layer-name" class="pill"></span>
+        </div>
+
+        <div class="layer-meta-row" id="layer-meta-row">
+          <span>blend</span>
+          <select id="meta-blend">
+            <option value="normal">normal</option>
+            <option value="add">add</option>
+            <option value="screen">screen</option>
+            <option value="multiply">multiply</option>
+          </select>
+          <span>opacity</span>
+          <input type="range" id="meta-opacity" min="0" max="1" step="0.01">
+          <span class="value" id="meta-opacity-v">1.00</span>
+          <label><input type="checkbox" id="meta-enabled"> on</label>
+        </div>
+
+        <div class="panel-section">
+          <div class="params-form" id="params-form"></div>
+        </div>
+
+        <div id="chat" class="panel-section">
+          <div class="col-header"><span>Chat (design)</span></div>
+          <div id="chat-log"></div>
+          <div id="chat-input-row">
+            <textarea id="chat-input" placeholder="describe the effect you want…"></textarea>
+            <button id="chat-send" class="primary">send</button>
+          </div>
+        </div>
+      </section>
+    </main>
   </div>
 
-<script src="/audio-meter.js"></script>
-<script type="module" src="/lib/main-desktop.js"></script>
-<script>
-  (function () {
-    const btn = document.getElementById("reboot-btn");
-    if (!btn) return;
-    btn.addEventListener("click", async () => {
-      if (!confirm("Reboot the Raspberry Pi? The UI will go offline for ~30-60s.")) return;
-      btn.disabled = true;
-      const orig = btn.textContent;
-      btn.textContent = "rebooting…";
-      try {
-        const r = await fetch("/system/reboot", { method: "POST" });
-        if (!r.ok) {
-          const t = await r.text().catch(() => "");
-          alert("reboot failed (" + r.status + "): " + t);
-          btn.disabled = false;
-          btn.textContent = orig;
-        }
-      } catch (e) {
-        alert("reboot request errored: " + e);
-        btn.disabled = false;
-        btn.textContent = orig;
-      }
-    });
-  })();
-</script>
+  <script type="module" src="/lib/main-desktop.js"></script>
 </body>
 </html>

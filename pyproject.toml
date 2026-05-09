@@ -40,6 +40,15 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# Example effects are loaded into the LLM sandbox where np/Effect/hex_to_rgb/etc.
+# are injected as module globals — ruff can't see those, so silence the
+# inevitable F821s and let the docstring/comment hyphens overrun line length.
+"src/ledctl/surface/examples/**/effect.py" = ["F821", "E501"]
+# `surface/prompt.py` embeds example effect source strings for the LLM that
+# do the same thing.
+"src/ledctl/surface/prompt.py" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

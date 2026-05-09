@@ -1,228 +1,562 @@
-// Desktop bootstrap. Wires the DOM defined in index.html to the shared
-// modules. The HTML still owns layout + CSS; this file owns composition.
+// Surface v2 desktop UI bootstrap.
 //
-// Order of operations:
-//   1. Pre-fetch /state once. Use transport_mode to decide whether the
-//      LED viz section should exist at all (it gets removed entirely
-//      when we're driving real LEDs without the simulator transport).
-//   2. Bind every module against its DOM nodes.
-//   3. Compose a single applyState() that fans the snapshot out to each
-//      module + the engine-stats DOM in this file.
-//   4. Open /ws/state — that drives the steady-state UI.
+// Wires the dual-mode (Design / Live) operator UI:
+//   - Resolume-style layered compositions (LIVE + PREVIEW decks)
+//   - Per-layer param panel that applies tweaks live (no LLM round-trip)
+//   - Chat (design-mode only) → write_effect → preview slot
+//   - Promote / Pull-live-to-preview / blackout / library
+//   - Master row + audio pill + WS state stream
 
-import { $, fmtNum, setText } from "./util.js";
-import { connectStateWs, fetchStateOnceRaw } from "./state.js";
 import { bindViz } from "./viz.js";
-import { bindLayers } from "./layers.js";
-import { bindMasters } from "./masters.js";
-import { bindChat } from "./chat.js";
-import { bindPresets } from "./presets.js";
-import { bindAudioLink } from "./audio-link.js";
+import { $, setText } from "./util.js";
 
-// Splitter: drag the boundary between #chat and #status-panel.
-function bindSplitter() {
-  const middle = $("middle");
-  const chatPane = $("chat");
-  const statusPane = $("status-panel");
-  const splitter = $("splitter");
-  if (!middle || !splitter) return { reproject: () => {} };
+// --- state ---
+let state = null;          // last full /state payload
+let sessionId = null;
+let libraryEffects = [];
+const chatLog = $("chat-log");
 
-  function setSplit(leftPct, onResize) {
-    const clamped = Math.max(35, Math.min(85, leftPct));
-    chatPane.style.flex = `0 0 calc(${clamped}% - 0.1875rem)`;
-    statusPane.style.flex = `0 0 calc(${100 - clamped}% - 0.1875rem)`;
-    if (onResize) onResize();
-  }
-  setSplit(60);
-
-  let dragging = false;
-  let onReproject = null;
-  splitter.addEventListener("mousedown", (e) => {
-    dragging = true;
-    document.body.classList.add("dragging");
-    splitter.classList.add("dragging");
-    e.preventDefault();
+// --- WS state stream ---
+function connectStateStream() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const url = `${proto}://${location.host}/ws/state`;
+  const ws = new WebSocket(url);
+  ws.addEventListener("message", (e) => {
+    try {
+      state = JSON.parse(e.data);
+      applyState();
+    } catch (_) {}
   });
-  window.addEventListener("mousemove", (e) => {
-    if (!dragging) return;
-    const rect = middle.getBoundingClientRect();
-    const pct = ((e.clientX - rect.left) / rect.width) * 100;
-    setSplit(pct, onReproject);
+  ws.addEventListener("close", () => setTimeout(connectStateStream, 500));
+  ws.addEventListener("open", () => {
+    setText($("ws-pill"), "connected");
+    $("ws-pill").className = "pill ok";
   });
-  window.addEventListener("mouseup", () => {
-    if (!dragging) return;
-    dragging = false;
-    document.body.classList.remove("dragging");
-    splitter.classList.remove("dragging");
+  ws.addEventListener("error", () => {
+    setText($("ws-pill"), "ws error");
+    $("ws-pill").className = "pill bad";
   });
-
-  return {
-    setOnResize(fn) { onReproject = fn; },
-  };
 }
 
-async function boot() {
-  // Phase 1 — fetch /state synchronously so we can decide on the viz before
-  // first paint and avoid mounting/closing it unnecessarily.
-  let initialState = null;
-  try {
-    initialState = await fetchStateOnceRaw();
-  } catch (_) {
-    // Server unreachable; render the page anyway, /ws/state fallback poll
-    // will eventually pull a snapshot.
-  }
-  const transportMode = (initialState && initialState.transport_mode) || "simulator";
-  const wantsViz = transportMode === "simulator" || transportMode === "multi";
+// --- viz canvas ---
+bindViz({
+  root: $("viz"),
+  canvas: $("canvas"),
+  tooltip: null,
+  calBanner: $("cal-banner"),
+  calText: $("cal-text"),
+  calClear: $("cal-clear"),
+});
 
-  if (!wantsViz) {
-    // Driving real LEDs only — drop the entire viz section.
-    const viz = $("viz");
-    const tooltip = $("tooltip");
-    if (viz) viz.remove();
-    if (tooltip) tooltip.remove();
-    document.body.classList.add("no-viz");
-  }
+// --- mode toggle ---
+$("btn-design").addEventListener("click", () => setMode("design"));
+$("btn-live").addEventListener("click", () => setMode("live"));
 
-  // Phase 2 — bind modules.
-  const layers  = bindLayers({ host: $("layers-list") });
-  const masters = bindMasters({
-    sliders: {
-      brightness:       $("m-brightness"),
-      speed:            $("m-speed"),
-      audio_reactivity: $("m-audio-reactivity"),
-      saturation:       $("m-saturation"),
-    },
-    values: {
-      brightness:       $("m-brightness-v"),
-      speed:            $("m-speed-v"),
-      audio_reactivity: $("m-audio-reactivity-v"),
-      saturation:       $("m-saturation-v"),
-    },
-    freezeBtn:       $("m-freeze"),
-    blackoutBtn:     $("m-blackout"),
-    ddpBtn:          $("m-ddp"),
-    simBtn:          $("m-sim"),
-    crossfadeSlider: $("m-crossfade"),
-    crossfadeVal:    $("m-crossfade-v"),
+async function setMode(mode) {
+  await fetch("/mode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
   });
+}
 
-  const chat = bindChat({
-    log:       $("log"),
-    input:     $("input"),
-    sendBtn:   $("send"),
-    statusEl:  $("chat-status"),
-    newBtn:    $("new"),
-    form:      $("form"),
-  });
-  chat.loadAgentConfig({
-    onCrossfade: (s) => masters.setCrossfadeFromConfig(s),
-  });
-
-  bindPresets({
-    saveBtn:        $("save-preset-btn"),
-    loadBtn:        $("load-preset-btn"),
-    saveModal:      $("save-modal"),
-    loadModal:      $("load-modal"),
-    saveNameInput:  $("save-name"),
-    saveErr:        $("save-err"),
-    loadErr:        $("load-err"),
-    presetList:     $("preset-list"),
-    loadWithMasters:$("load-with-masters"),
-    saveCancel:     $("save-cancel"),
-    saveConfirm:    $("save-confirm"),
-    loadCancel:     $("load-cancel"),
-    loadConfirm:    $("load-confirm"),
-    getCrossfade:   () => masters.getCrossfade(),
-  });
-
-  const audioLink = bindAudioLink({
-    links: [$("audio-ui-link"), $("audio-ui-link-fallback")],
-  });
-  const audioMeter = window.AudioMeter.mount($("audio-meter"));
-
-  let viz = null;
-  if (wantsViz) {
-    viz = bindViz({
-      root:         $("viz"),
-      canvas:       $("canvas"),
-      tooltip:      $("tooltip"),
-      calBanner:    $("cal-banner"),
-      calText:      $("cal-text"),
-      calClear:     $("cal-clear"),
-      wsPill:       $("ws-pill"),
-      statusEngine: $("status-engine"),
-      pixelCountEl: $("leds"),
+// --- masters row ---
+function bindMasters() {
+  const map = [
+    ["m-bri", "v-bri", "brightness"],
+    ["m-sat", "v-sat", "saturation"],
+    ["m-spd", "v-spd", "speed"],
+    ["m-aud", "v-aud", "audio_reactivity"],
+  ];
+  for (const [sliderId, valId, key] of map) {
+    const slider = $(sliderId);
+    slider.addEventListener("input", (e) => {
+      const v = parseFloat(e.target.value);
+      $(valId).textContent = v.toFixed(2);
+      sendMaster({ [key]: v });
     });
-    viz.start();
-  } else {
-    // Engine status row is normally driven by the frames WS open/close;
-    // when there's no viz, drive it from the state WS instead.
-    const eng = $("status-engine");
-    if (eng) { eng.textContent = "—"; eng.className = "dim"; }
   }
+  $("m-frz").addEventListener("change", (e) => sendMaster({ freeze: e.target.checked }));
+}
+bindMasters();
 
-  const splitter = bindSplitter();
-  if (viz) splitter.setOnResize(viz.requestReproject);
+let pendingMaster = null;
+let masterTimer = null;
+function sendMaster(patch) {
+  pendingMaster = { ...(pendingMaster || {}), ...patch };
+  if (masterTimer) return;
+  masterTimer = setTimeout(async () => {
+    const body = pendingMaster;
+    pendingMaster = null;
+    masterTimer = null;
+    await fetch("/masters", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => {});
+  }, 60);
+}
 
-  // Phase 3 — central applyState. Touches only DOM that exists on this page.
-  const els = {
-    fps:        $("fps"),
-    targetFps:  $("target-fps"),
-    frames:     $("frames"),
-    elapsed:    $("elapsed"),
-    transport:  $("transport"),
-    simClients: $("sim-clients"),
-    gamma:      $("gamma"),
-    audioStatus:$("audio-status"),
-    audioBpm:   $("audio-bpm"),
-    statusEngine: $("status-engine"),
-  };
+// --- topbar buttons ---
+$("btn-blackout").addEventListener("click", async () => {
+  const on = state && state.blackout;
+  await fetch(on ? "/resume" : "/blackout", { method: "POST" });
+});
+$("btn-promote").addEventListener("click", async () => {
+  await fetch("/promote", { method: "POST" });
+});
+$("btn-pull").addEventListener("click", async () => {
+  await fetch("/pull_live_to_preview", { method: "POST" });
+});
 
-  function applyState(s) {
-    if (!s) return;
-    setText(els.fps,        fmtNum(s.fps, 1));
-    setText(els.targetFps,  s.target_fps != null ? String(s.target_fps) : "—");
-    setText(els.frames,     String(s.frame_count ?? 0));
-    setText(els.elapsed,    s.elapsed != null ? `${s.elapsed.toFixed(1)}s` : "—");
-    setText(els.transport,  s.transport_mode || "—");
-    setText(els.simClients, String(s.sim_clients ?? 0));
-    setText(els.gamma,      fmtNum(s.gamma, 2));
-
-    masters.applyBlackout(s.blackout);
-    masters.applyDdp(s.ddp);
-    masters.applySim(s.sim_paused);
-    layers.render(s.layers);
-    masters.applyMasters(s.masters);
-
-    const a = s.audio || {};
-    let statusText;
-    if (a.connected) statusText = "connected";
-    else if (a.error) statusText = "disconnected · " + a.error;
-    else statusText = "disconnected";
-    setText(els.audioStatus, statusText);
-    setText(els.audioBpm, a.bpm != null ? `${Number(a.bpm).toFixed(1)} bpm` : "— bpm");
-    audioLink.applyAudio(a);
-    audioMeter.update(a);
-
-    if (viz) viz.applyCalibration(s.calibration);
+// --- library popover ---
+$("btn-library").addEventListener("click", async () => {
+  const lib = $("lib");
+  if (lib.classList.contains("open")) {
+    lib.classList.remove("open");
+    return;
   }
+  const r = await fetch("/effects");
+  const data = await r.json();
+  libraryEffects = data.effects || [];
+  renderLibrary();
+  lib.classList.add("open");
+});
+document.addEventListener("click", (e) => {
+  const lib = $("lib");
+  if (!lib.contains(e.target) && !$("btn-library").contains(e.target)) {
+    lib.classList.remove("open");
+  }
+});
+function renderLibrary() {
+  const lib = $("lib");
+  if (!libraryEffects.length) {
+    lib.innerHTML = `<div class="lib-row"><div>no saved effects</div></div>`;
+    return;
+  }
+  lib.innerHTML = "";
+  for (const eff of libraryEffects) {
+    const row = document.createElement("div");
+    row.className = "lib-row";
+    row.innerHTML = `
+      <div>
+        <div>${escapeAttr(eff.name)}</div>
+        <div class="summary">${escapeAttr(eff.summary || "")}</div>
+      </div>
+      <div class="actions">
+        <button data-act="preview">preview</button>
+        <button data-act="add-pre">+pre</button>
+        <button data-act="add-live">+live</button>
+        <button data-act="del" class="danger">×</button>
+      </div>`;
+    row.addEventListener("click", async (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      const act = btn.dataset.act;
+      if (act === "preview") {
+        await fetch(`/effects/${eff.name}/load_preview`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+      } else if (act === "add-pre") {
+        await fetch(`/effects/${eff.name}/load_preview`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ add_layer: true }),
+        });
+      } else if (act === "add-live") {
+        await fetch(`/effects/${eff.name}/load_live`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ add_layer: true }),
+        });
+      } else if (act === "del") {
+        if (!confirm(`delete ${eff.name}?`)) return;
+        await fetch(`/effects/${eff.name}`, { method: "DELETE" });
+        libraryEffects = libraryEffects.filter((x) => x.name !== eff.name);
+        renderLibrary();
+      }
+    });
+    lib.appendChild(row);
+  }
+}
 
-  // Apply the initial snapshot we already fetched, then open the live feed.
-  if (initialState) applyState(initialState);
-  connectStateWs(applyState, {
-    onOpen: () => {
-      if (!viz && els.statusEngine) {
-        els.statusEngine.textContent = "connected";
-        els.statusEngine.className = "ok";
-      }
-    },
-    onClose: () => {
-      if (!viz && els.statusEngine) {
-        els.statusEngine.textContent = "disconnected";
-        els.statusEngine.className = "bad";
-      }
-    },
+// --- composition decks ---
+function renderDecks() {
+  if (!state) return;
+  renderDeck("preview", state.preview, $("preview-layers"), $("preview-summary"));
+  renderDeck("live", state.live, $("live-layers"), $("live-summary"));
+}
+
+function renderDeck(slot, comp, listEl, summaryEl) {
+  if (!comp || !comp.layers || comp.layers.length === 0) {
+    listEl.innerHTML = `<div class="deck-empty">no layers</div>`;
+    if (summaryEl) summaryEl.textContent = "";
+    return;
+  }
+  if (summaryEl) summaryEl.textContent = `${comp.layers.length} layer(s)`;
+  listEl.innerHTML = "";
+  comp.layers.forEach((layer, i) => {
+    const row = document.createElement("div");
+    row.className = "layer-row" + (i === comp.selected ? " selected" : "")
+                                + (layer.enabled ? "" : " disabled");
+    row.innerHTML = `
+      <span class="idx">#${i}</span>
+      <span class="name" title="${escapeAttr(layer.summary || "")}">${escapeAttr(layer.name)}</span>
+      <span class="blend">${layer.blend}</span>
+      <span class="opacity">${(layer.opacity * 100).toFixed(0)}%</span>`;
+    row.addEventListener("click", async () => {
+      await fetch(`/${slot}/select`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ index: i }),
+      });
+    });
+    listEl.appendChild(row);
   });
 }
 
-boot();
+function escapeAttr(s) {
+  return (s || "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
+$("preview-add-layer").addEventListener("click", async () => {
+  await fetch("/effects/pulse_mono/load_preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ add_layer: true }),
+  });
+});
+$("live-add-layer").addEventListener("click", async () => {
+  await fetch("/effects/pulse_mono/load_live", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ add_layer: true }),
+  });
+});
+$("preview-remove-layer").addEventListener("click", async () => {
+  if (!state || !state.preview.layers.length) return;
+  const idx = state.preview.selected;
+  await fetch("/preview/layer/remove", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ index: idx }),
+  });
+});
+$("live-remove-layer").addEventListener("click", async () => {
+  if (!state || !state.live.layers.length) return;
+  const idx = state.live.selected;
+  await fetch("/live/layer/remove", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ index: idx }),
+  });
+});
+
+// --- which deck is the operator focused on for the side panel? ---
+function focusedSlot() {
+  return (state && state.mode === "design") ? "preview" : "live";
+}
+
+function focusedLayer() {
+  if (!state) return null;
+  const slot = focusedSlot();
+  const comp = state[slot];
+  if (!comp || !comp.layers.length) return null;
+  return { slot, index: comp.selected, layer: comp.layers[comp.selected] };
+}
+
+// --- layer meta ---
+$("meta-blend").addEventListener("change", (e) => {
+  const f = focusedLayer();
+  if (!f) return;
+  patchMeta(f.slot, f.index, { blend: e.target.value });
+});
+$("meta-opacity").addEventListener("input", (e) => {
+  const f = focusedLayer();
+  if (!f) return;
+  const v = parseFloat(e.target.value);
+  $("meta-opacity-v").textContent = v.toFixed(2);
+  patchMeta(f.slot, f.index, { opacity: v });
+});
+$("meta-enabled").addEventListener("change", (e) => {
+  const f = focusedLayer();
+  if (!f) return;
+  patchMeta(f.slot, f.index, { enabled: e.target.checked });
+});
+let metaTimer = null;
+let pendingMeta = null;
+function patchMeta(slot, index, patch) {
+  pendingMeta = { slot, index, patch: { ...(pendingMeta?.patch || {}), ...patch } };
+  if (metaTimer) return;
+  metaTimer = setTimeout(async () => {
+    const m = pendingMeta;
+    pendingMeta = null;
+    metaTimer = null;
+    await fetch(`/${m.slot}/layer/blend`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ index: m.index, ...m.patch }),
+    }).catch(() => {});
+  }, 80);
+}
+
+// --- params panel (per-layer) ---
+function renderParams() {
+  const form = $("params-form");
+  const f = focusedLayer();
+  if (!f || !f.layer) {
+    form.innerHTML = `<div class="params-empty">No layer selected.</div>`;
+    setText($("side-layer-name"), "—");
+    return;
+  }
+  setText($("side-layer-name"), `${f.slot}#${f.index} · ${f.layer.name}`);
+  $("meta-blend").value = f.layer.blend;
+  if (document.activeElement !== $("meta-opacity")) $("meta-opacity").value = f.layer.opacity;
+  $("meta-opacity-v").textContent = (f.layer.opacity).toFixed(2);
+  $("meta-enabled").checked = !!f.layer.enabled;
+
+  if (!f.layer.param_schema || !f.layer.param_schema.length) {
+    form.innerHTML = `<div class="params-empty">No params declared.</div>`;
+    return;
+  }
+  const sigKey = `${f.slot}#${f.index}#${f.layer.name}`;
+  if (form.dataset.sig !== sigKey) {
+    form.dataset.sig = sigKey;
+    form.innerHTML = "";
+    for (const spec of f.layer.param_schema) {
+      const row = makeParamRow(spec, f.layer.param_values?.[spec.key], (val) => {
+        sendParam(f.slot, f.index, spec.key, val);
+      });
+      form.appendChild(row);
+    }
+  } else {
+    syncParamValues(form, f.layer.param_values || {});
+  }
+}
+
+function syncParamValues(form, values) {
+  for (const row of form.children) {
+    const key = row.dataset.key;
+    if (!key || !(key in values)) continue;
+    const v = values[key];
+    const input = row.querySelector("input, select");
+    if (!input || document.activeElement === input) continue;
+    if (input.type === "checkbox") input.checked = !!v;
+    else if (input.type === "color") input.value = String(v);
+    else input.value = v;
+    const valEl = row.querySelector(".value");
+    if (valEl && (input.type === "range" || input.type === "number")) {
+      valEl.textContent = (typeof v === "number") ? v.toFixed(2) : String(v);
+    }
+  }
+}
+
+function makeParamRow(spec, currentValue, onChange) {
+  const row = document.createElement("div");
+  row.className = "param-row";
+  row.dataset.key = spec.key;
+  const label = document.createElement("label");
+  label.textContent = spec.label || spec.key;
+  if (spec.help) label.title = spec.help;
+  row.appendChild(label);
+
+  const ctrl = document.createElement(spec.control === "select" ? "select" : "input");
+  const val = currentValue ?? spec.default;
+  let valNode = null;
+
+  if (spec.control === "slider") {
+    ctrl.type = "range";
+    ctrl.min = spec.min; ctrl.max = spec.max;
+    ctrl.step = spec.step ?? 0.01;
+    ctrl.value = val;
+    valNode = document.createElement("span");
+    valNode.className = "value";
+    valNode.textContent = Number(val).toFixed(2);
+    ctrl.addEventListener("input", () => {
+      const v = parseFloat(ctrl.value);
+      valNode.textContent = v.toFixed(2);
+      onChange(v);
+    });
+  } else if (spec.control === "int_slider") {
+    ctrl.type = "range";
+    ctrl.min = spec.min; ctrl.max = spec.max;
+    ctrl.step = spec.step ?? 1;
+    ctrl.value = val;
+    valNode = document.createElement("span");
+    valNode.className = "value";
+    valNode.textContent = String(val);
+    ctrl.addEventListener("input", () => {
+      const v = parseInt(ctrl.value, 10);
+      valNode.textContent = String(v);
+      onChange(v);
+    });
+  } else if (spec.control === "color") {
+    ctrl.type = "color";
+    ctrl.value = String(val || "#ffffff");
+    ctrl.addEventListener("input", () => onChange(ctrl.value));
+  } else if (spec.control === "toggle") {
+    ctrl.type = "checkbox";
+    ctrl.checked = !!val;
+    ctrl.addEventListener("change", () => onChange(ctrl.checked));
+  } else if (spec.control === "select") {
+    for (const opt of spec.options || []) {
+      const o = document.createElement("option");
+      o.value = opt; o.textContent = opt;
+      if (opt === val) o.selected = true;
+      ctrl.appendChild(o);
+    }
+    ctrl.addEventListener("change", () => onChange(ctrl.value));
+  } else if (spec.control === "palette") {
+    ctrl.type = "text";
+    ctrl.value = String(val || "");
+    ctrl.placeholder = "palette name";
+    ctrl.addEventListener("change", () => onChange(ctrl.value));
+  }
+  row.appendChild(ctrl);
+  if (valNode) row.appendChild(valNode);
+  else row.appendChild(document.createElement("span"));
+  return row;
+}
+
+let paramQueues = {};
+let paramTimers = {};
+function sendParam(slot, layerIndex, key, value) {
+  const q = paramQueues[slot] = paramQueues[slot] || {};
+  q[key] = value;
+  paramQueues[slot]._layer_index = layerIndex;
+  if (paramTimers[slot]) return;
+  paramTimers[slot] = setTimeout(async () => {
+    const queue = paramQueues[slot];
+    paramQueues[slot] = null;
+    paramTimers[slot] = null;
+    const layer_index = queue._layer_index;
+    delete queue._layer_index;
+    await fetch(`/${slot}/params`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values: queue, layer_index }),
+    }).catch(() => {});
+  }, 60);
+}
+
+// --- chat ---
+$("chat-send").addEventListener("click", sendChat);
+$("chat-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendChat();
+});
+
+async function sendChat() {
+  const input = $("chat-input");
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = "";
+  appendMsg("user", message);
+  $("chat-send").disabled = true;
+  $("chat-send").textContent = "…";
+  try {
+    const r = await fetch("/agent/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, session_id: sessionId }),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      appendMsg("tool-error", `chat failed: ${r.status} ${text}`);
+      return;
+    }
+    const body = await r.json();
+    sessionId = body.session_id;
+    if (body.assistant_text) appendMsg("assistant", body.assistant_text);
+    if (body.tool_call) {
+      const tr = body.tool_result || {};
+      const ok = tr.ok;
+      const name = body.tool_call.arguments?.name || body.tool_call.name;
+      if (ok) {
+        appendMsg("tool-ok", `↪ wrote effect: ${name}`);
+      } else {
+        const detail = JSON.stringify(tr.details ?? tr.error ?? tr);
+        appendMsg("tool-error", `❌ ${tr.error || "tool error"}\n${detail}`);
+      }
+    }
+  } catch (e) {
+    appendMsg("tool-error", `chat error: ${e}`);
+  } finally {
+    $("chat-send").disabled = false;
+    $("chat-send").textContent = "send";
+  }
+}
+
+function appendMsg(kind, text) {
+  const el = document.createElement("div");
+  el.className = `msg ${kind}`;
+  if (kind === "user") el.innerHTML = `<div class="label">you</div>${escapeAttr(text)}`;
+  else if (kind === "assistant") el.innerHTML = `<div class="label">agent</div>${escapeAttr(text)}`;
+  else el.textContent = text;
+  chatLog.appendChild(el);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+// --- audio link ---
+$("btn-audio").addEventListener("click", async (e) => {
+  e.preventDefault();
+  try {
+    const r = await fetch("/audio/ui");
+    if (!r.ok) return;
+    const j = await r.json();
+    let url = j.tailnet_ui_url && location.protocol === "https:" ? j.tailnet_ui_url : j.ui_url;
+    if (url) window.open(url, "_blank");
+  } catch (_) {}
+});
+
+// --- per-tick state apply ---
+function applyState() {
+  if (!state) return;
+  setText($("fps-pill"), `${state.fps?.toFixed?.(0) ?? "?"} fps`);
+  const a = state.audio;
+  if (a && a.connected) {
+    setText($("audio-pill"), `audio L${a.low?.toFixed?.(2) ?? "0"} M${a.mid?.toFixed?.(2) ?? "0"}`);
+    $("audio-pill").className = "pill ok";
+  } else {
+    setText($("audio-pill"), "audio off");
+    $("audio-pill").className = "pill warn";
+  }
+  document.body.classList.toggle("design-mode", state.mode === "design");
+  document.body.classList.toggle("live-mode", state.mode === "live");
+  $("btn-design").classList.toggle("active", state.mode === "design");
+  $("btn-live").classList.toggle("active", state.mode === "live");
+  setText($("viz-mode-pill"), state.mode);
+  $("viz-mode-pill").className = "pill " + (state.mode === "live" ? "bad" : "ok");
+
+  const m = state.masters;
+  if (m) {
+    if (document.activeElement !== $("m-bri")) $("m-bri").value = m.brightness;
+    if (document.activeElement !== $("m-sat")) $("m-sat").value = m.saturation;
+    if (document.activeElement !== $("m-spd")) $("m-spd").value = m.speed;
+    if (document.activeElement !== $("m-aud")) $("m-aud").value = m.audio_reactivity;
+    setText($("v-bri"), m.brightness?.toFixed?.(2) ?? "1.00");
+    setText($("v-sat"), m.saturation?.toFixed?.(2) ?? "1.00");
+    setText($("v-spd"), m.speed?.toFixed?.(2) ?? "1.00");
+    setText($("v-aud"), m.audio_reactivity?.toFixed?.(2) ?? "1.00");
+    $("m-frz").checked = !!m.freeze;
+  }
+
+  if (state.blackout) {
+    $("btn-blackout").classList.add("danger");
+    $("btn-blackout").classList.remove("ghost");
+    setText($("btn-blackout"), "● BLACKOUT");
+  } else {
+    $("btn-blackout").classList.remove("danger");
+    $("btn-blackout").classList.add("ghost");
+    setText($("btn-blackout"), "⚫ blackout");
+  }
+
+  renderDecks();
+  renderParams();
+}
+
+connectStateStream();
+fetch("/state").then((r) => r.json()).then((s) => { state = s; applyState(); });

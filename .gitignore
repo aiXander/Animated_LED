@@ -12,3 +12,9 @@ build/
 
 # Secrets — `.env.example` is the template that's checked in.
 .env
+
+# Effects on disk are runtime state, seeded from src/ledctl/surface/examples/.
+config/effects/
+
+# Frames file moved temporarily during the v2 surface refactor.
+/tmp/frames_v1.py
