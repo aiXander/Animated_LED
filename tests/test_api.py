@@ -132,3 +132,48 @@ def test_audio_state(client: TestClient):
     assert r.status_code == 200
     body = r.json()
     assert "connected" in body
+
+
+def test_preview_save_round_trips_through_library(client: TestClient):
+    """Operator hits 💾 save → /preview/save → effect reappears in /effects."""
+    r = client.post(
+        "/preview/save",
+        json={"name": "operator_saved", "summary": "the band's intro look"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["saved"] == "operator_saved"
+
+    listing = client.get("/effects").json()["effects"]
+    assert any(e["name"] == "operator_saved" for e in listing)
+
+
+def test_preview_save_rejects_bad_name(client: TestClient):
+    r = client.post("/preview/save", json={"name": "Bad Name With Spaces"})
+    assert r.status_code == 422
+
+
+def test_preview_save_409_when_no_overwrite_and_exists(client: TestClient):
+    client.post("/preview/save", json={"name": "first_save"})
+    r = client.post("/preview/save",
+                    json={"name": "first_save", "overwrite": False})
+    assert r.status_code == 409
+
+
+def test_load_preview_wipes_agent_history(client: TestClient):
+    """Library pull replaces preview source — the LLM's rolling buffer must
+    be cleared so it doesn't reference stale source on the next turn."""
+    # Seed the rolling buffer manually (skip the LLM round-trip).
+    sessions = client.app.state.agent_sessions
+    sess = sessions.get_or_create(None)
+    sess.append_messages([
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "ok"},
+    ])
+    assert len(sess.messages) == 2
+
+    r = client.post("/effects/twin_comets_with_sparkles/load_preview", json={})
+    assert r.status_code == 200
+    assert len(sess.messages) == 0
+    # Operator-visible transcript is untouched (we only wipe the model buffer).
+    # `turns` was empty in this test anyway, but assert it didn't blow up.
+    assert sess.turns == []

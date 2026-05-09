@@ -70,8 +70,8 @@ cd /Users/xandersteenbrugge/Documents/Projects/animated_LED
 
 # Tests
 .venv/bin/pytest
-.venv/bin/pytest -v tests/test_surface_primitives.py            # single file
-.venv/bin/pytest tests/test_mixer.py::test_crossfade_uses_wall_t # single test
+.venv/bin/pytest -v tests/test_runtime.py            # single file
+.venv/bin/pytest tests/test_examples.py::test_pulse_mono_runs  # single test
 
 # Lint
 .venv/bin/ruff check src tests
@@ -81,191 +81,252 @@ cd /Users/xandersteenbrugge/Documents/Projects/animated_LED
 
 The system is a real-time LED controller for an 1800-LED festival install (4 × 450 WS2815 strips on metal scaffolding, centre-fed via DDP into a Gledopto/WLED controller).
 
-**Render loop** (`engine.py`): fixed-timestep async loop at `target_fps`. Each tick — build a `RenderContext` (effective `t = wall_t × masters.speed`, `audio.*_norm` pre-scaled by `masters.audio_reactivity`, frozen `t` if `masters.freeze`) → `Mixer.render(ctx, out)` walks the compiled layer trees and blends each into the accumulator → master output stage (saturation pull → brightness gain) → `PixelBuffer.to_uint8(gamma)` → `Transport.send_frame()`. Frames drop rather than spiral on lag.
+The big shift in **surface v2 (the current branch)** is that effects are no longer composed from a typed primitive graph; the LLM authors a Python `Effect` subclass per chat turn and the operator stacks them Resolume-style into a *composition*. See `surface_v2_design_plan.md` for the long-form rationale and `surface_v2_phased_plan.md` for the v1/v1.1 cuts. The summary below describes the code as it actually exists today.
 
-**Key layers:**
-- `topology.py` — Spatial model of all 1800 LEDs. Normalised positions (each axis in [-1, 1]) derived from `config.yaml` strip geometries. Primitives must use `topology.normalised_positions`, never raw indices.
-- `surface.py` — **The single control surface.** Owns the entire visual vocabulary: colour/shape utilities, the primitive registry, every primitive's pydantic `Params` + `compile()`, named palettes, the spec types (`NodeSpec`, `LayerSpec`, `UpdateLedsSpec`), the compiler (`compile(spec, topology) → CompiledNode`), and `generate_docs()` for the prompt-ready CONTROL SURFACE block. **Adding a new visual idea is a one-place change**: write a `@primitive` class — the agent prompt and operator UI both pick it up via `generate_docs()` / `GET /surface/primitives` automatically. This module never imports from `engine.py` or `mixer.py` (they import it).
-- `masters.py` — Operator-owned `MasterControls` (`brightness`, `speed`, `audio_reactivity`, `saturation`, `freeze`) and per-frame `RenderContext`. Deliberately kept out of the DSL — the LLM never produces or alters them. Bounds enforced in `clamped()`: brightness/saturation ∈ [0, 1], speed/audio_reactivity ∈ [0, 3], freeze: bool. Audio reactivity is a single multiplier applied to the band scalars from the external feed; there is no in-process feature cleaning slider.
-- `mixer.py` — Stack of `Layer(node, blend, opacity)` with blend modes (normal/add/screen/multiply), crossfade between stacks, master output stage. Crossfade alpha uses `ctx.wall_t` so operator direction isn't slowed by `speed=0.5` or stopped by `freeze=true`. Per-layer rendering uses `ctx.t` (master-speed-scaled).
+**Render loop** (`engine.py`): fixed-timestep async loop at `target_fps`. Each tick — compute `wall_t / dt / effective_t` (`effective_t += dt × speed`; `dt` is clamped at 2× the target frame interval so a hiccup doesn't tele-port stateful effects), build an `AudioView` (each band already pre-multiplied by `masters.audio_reactivity` here in the engine; the LLM uses raw `ctx.audio.low/mid/high`), call `Runtime.render(...)` → `(live_rgb, sim_rgb)` float32, copy each into a `PixelBuffer`, encode to uint8 (gamma + clip), and ship via `SplitTransport.send(led_frame=…, sim_frame=…)`. Frames drop rather than spiral on lag — same as v1. The render loop sleeps until either the next deadline OR an audio-kick event (`engine.kick_audio()` from the OSC listener) — gated by a `kick_min_interval` so beats can't unpace the loop.
+
+**Key modules:**
+- `topology.py` — Spatial model of all 1800 LEDs. Normalised positions (each axis in [-1, 1]) derived from `config.yaml` strip geometries. Effects address LEDs through `ctx.pos` (the (N, 3) float32 array) and the named frames in `ctx.frames.*`.
+- `masters.py` — Operator-owned `MasterControls` (`brightness`, `speed`, `audio_reactivity`, `saturation`). Deliberately invisible to LLM-authored effects as writes — surfaced as `ctx.masters` (a frozen `MastersView`, read-only). `audio_reactivity` is the single global attenuator applied once in `engine._build_audio_view()` before the bands reach the effect. `brightness` ∈ [0, 2]; values >1 use an adaptive headroom envelope (recent peak + release half-life) so "louder than 1" doesn't just clip immediately.
+- `surface/` — The whole new runtime; see "Surface v2" below.
 - `pixelbuffer.py` — Float32 working buffer in [0, 1]. Gamma (default 2.2) applied once here, not in WLED.
-- `transports/` — Pluggable output: `simulator` (WebSocket to browser), `ddp` (UDP to WLED, 480 px/packet, PUSH on the final packet only), `multi` (both). Swapped via `config.transport.mode`.
+- `transports/` — Pluggable output. `simulator` (WebSocket to browser), `ddp` (UDP to WLED, 480 px/packet, PUSH on the final packet only), and `split.py` — `SplitTransport` owns one sim leg + zero-or-one DDP leg and exposes `send(*, led_frame, sim_frame)`. In live mode the engine passes the same uint8 bytes to both legs; in design mode the LED leg gets the LIVE composition's encoding while the sim leg gets the PREVIEW. `transport/pause` only blocks the LED leg; `sim/pause` only blocks the sim leg. (`multi.py` from v1 was deleted — this is its replacement.)
 - `audio/` — Thin bridge to the external [Realtime_PyAudio_FFT](https://github.com/Jaymon/Realtime_PyAudio_FFT) audio-feature server. The LED controller does **not** capture or analyse audio itself — it spawns the audio-server as a subprocess and consumes its OSC feed:
   - `state.py` — `AudioState` holds the latest `low/mid/high` band energies (already auto-scaled to ~[0, 1] on the audio server side), plus device name, samplerate, blocksize, band cutoffs, and a `connected` flag. Single writer (the OSC listener thread), many lock-free readers.
-  - `bridge.py` — `OscFeatureListener` (UDP socket on port 9000 by default; `/audio/lmh`, `/audio/meta`, `/audio/beat`, `/audio/bpm` handlers; staleness watchdog gated on `lmh` only), `AudioServerSupervisor` (launches the `audio-server` console script as a subprocess, pipes its stdout into the LED logger, terminates cleanly on shutdown), and `AudioBridge` that owns both. Failures are deliberately soft: if the binary is missing, port is taken, or packets stop arriving, the LED render loop keeps going with `audio_band → 0`, `audio_beat → 0`, `audio_bpm → fallback`, and a warning in the terminal.
+  - `bridge.py` — `OscFeatureListener` (UDP socket on port 9000 by default; `/audio/lmh`, `/audio/meta`, `/audio/beat`, `/audio/bpm` handlers; staleness watchdog gated on `lmh` only), `AudioServerSupervisor` (launches the `audio-server` console script as a subprocess, pipes its stdout into the LED logger, terminates cleanly on shutdown), and `AudioBridge` that owns both. Failures are deliberately soft: if the binary is missing, port is taken, or packets stop arriving, the LED render loop keeps going with `ctx.audio.low/mid/high → 0`, `ctx.audio.beat → 0`, `ctx.audio.bpm → fallback`, and a warning in the terminal.
   - The audio-server's own browser UI (default `http://127.0.0.1:8766`) is the canonical place to pick the input device, retune band cutoffs, and save presets. The 'audio' link in the LED operator UI opens that URL in a new tab.
-- `agent/` — Phase 6 language-driven control panel. Thin layer over OpenRouter, NOT a multi-tool agent loop:
-  - `tool.py` — single `update_leds(layers, crossfade_seconds, blackout)` tool. The argument is the *complete* new layer stack as a tree of `{kind, params}` primitives, never a diff. The surface compiler type-checks the tree (palette in a scalar slot is rejected, leaf must be `rgb_field`, etc.); on failure the tool result carries a structured `{path, msg, valid_kinds}` error which the LLM sees on the next turn (via the rolling buffer) and self-corrects. Calls `Engine.crossfade_to` — same code path as `POST /presets/{name}`.
-  - `system_prompt.py` — `build_system_prompt(...)` regenerated **fresh every turn**: install summary, current layer-stack JSON, audio snapshot, **read-only master values**, full primitive catalogue from `surface.generate_docs()`, anchor examples, anti-patterns. Dominant token cost — keep primitive `Params` `description=` strings tight.
-  - `session.py` — in-memory `SessionStore` + `ChatSession` with `history_max`-capped rolling buffer (heals dangling `tool` messages after trim) and per-session rolling-window rate limit. Sessions wipe on restart (v1).
+- `agent/` — Thin layer over OpenRouter, NOT a multi-tool agent loop. **The single tool is now `write_effect`** (see `surface/tool.py` below):
+  - `session.py` — in-memory `SessionStore` + `ChatSession` with `history_max`-capped rolling buffer (heals dangling `tool` messages after trim), per-session rolling-window rate limit, and `reset_all_buffers()` (called when an operator action replaces preview source outside the agent's own write_effect path — library load, pull-live-to-preview — so the LLM's prior `write_effect` payloads in the deque don't reference source that's no longer in preview). Sessions wipe on restart.
   - `client.py` — thin OpenAI-compatible wrapper aimed at OpenRouter. Imports `openai` lazily; `MissingApiKey` raised at first call.
-- `api/server.py` — FastAPI app. Endpoints: `/state`, `/topology`, `/config` (PUT for layout edits), `/surface/primitives`, `/layers` (POST/PATCH/DELETE), `/masters` (GET/PATCH), `/presets` (GET list, POST save current stack as new preset), `/presets/{name}` (POST to apply), `/blackout` + `/resume`, `/calibration/*`, `/audio/state` + `/audio/ui` (read-only — device picking lives on the external audio-server), `/healthz`, `/ws/frames` (WebSocket frame broadcast), `/ws/state` (WebSocket state broadcast). Landing page (`/`) hosts the LED viz, chat UI, and live status panel; `/editor` is the layout editor.
-- `api/auth.py` — optional shared-password gate for the entire HTTP/WS surface (Phase 8). Activated by setting `auth.password` in YAML; off by default for dev. Sets a `ledctl_auth` cookie via `/login` (form post) or `?password=…` query, gates HTTP via Starlette middleware, and rejects WS upgrades pre-accept with close code 4401 if the cookie is missing/wrong. `/login`, `/logout`, `/healthz` are always public. Render loop and DDP transport are unaffected — auth only protects the public-facing API surface.
-- `api/agent.py` — `/agent/chat` (synchronous LLM round-trip via `asyncio.to_thread`), `/agent/sessions/{id}` (GET/DELETE), `/agent/config` (read-only; never echoes the API key). 503 on disabled/missing key, 429 on rate-limit hit, 502 on LLM failure.
+- `api/server.py` — FastAPI app. Operator endpoints, organised by what they touch:
+  - **Library:** `GET /effects`, `POST /effects/{name}/load_preview`, `POST /effects/{name}/load_live`, `POST /effects/{name}/star`, `DELETE /effects/{name}`, `POST /preview/save`.
+  - **Per-slot composition:** `POST /promote` (crossfade live ← preview), `POST /pull_live_to_preview` (hard cut), `POST /mode` (`design`|`live`), `GET /active`.
+  - **Per-layer (slot ∈ {preview, live}):** `PATCH /{slot}/params`, `POST /{slot}/select`, `POST /{slot}/layer/remove`, `POST /{slot}/layer/reorder`, `PATCH /{slot}/layer/blend` (blend / opacity / enabled toggle).
+  - **Output controls:** `GET /masters`, `PATCH /masters` (with optional `persist: true` write-back into the active YAML), `POST /blackout` + `/resume`, `POST /transport/pause` + `/resume` (DDP only), `POST /sim/pause` + `/resume`, `POST /system/reboot`.
+  - **Diagnostics + setup:** `GET /state` (full snapshot incl. compositions, masters, audio, ddp), `GET /topology`, `GET /healthz`, `GET/PUT /config` (PUT rewrites the strip layout and hot-swaps the topology), `POST /calibration/{solo,walk,stop}`, `GET /audio/state` + `/audio/ui` (read-only — device picking lives on the external audio-server).
+  - **WebSockets:** `/ws/frames` (frame broadcast — sim canvas), `/ws/state` (state broadcast — operator UI panels). Both honour the auth gate via `?password=` on the upgrade URL.
+  - The landing page `/` hosts the dual-mode operator UI (mode toggle + simulator + composition decks + masters + chat).
+- `api/auth.py` — optional shared-password gate for the entire HTTP/WS surface. Activated by setting `auth.password` in YAML; off by default for dev. Sets a `ledctl_auth` cookie via `/login` (form post) or `?password=…` query, gates HTTP via Starlette middleware, and rejects WS upgrades pre-accept with close code 4401 if the cookie is missing/wrong. `/login`, `/logout`, `/healthz` are always public. Render loop and DDP transport are unaffected — auth only protects the public-facing API surface.
+- `api/agent.py` — `POST /agent/chat` (synchronous LLM round-trip via `asyncio.to_thread`, supports up to `agent.retry_on_tool_error` automatic retries with `LAST EFFECT ERROR` injected into the next system prompt), `GET/DELETE /agent/sessions/{id}`, `GET/PATCH /agent/config` (read-only on key; PATCH currently only adjusts `default_crossfade_seconds`, mirrored onto the live runtime). 503 on disabled/missing key, 429 on rate-limit hit, 502 on LLM failure.
 
 **Config validation** (`config.py` Pydantic schemas): duplicate strip IDs, overlapping pixel ranges, and over-capacity caught at startup.
 
-**Transport swap:** change `config.transport.mode` between `simulator` (dev) and `ddp` (production). All code above the transport layer is identical.
+**Transport swap:** change `config.transport.mode` between `simulator` (dev) and `ddp`/`multi` (production). All code above the transport layer is identical.
 
-## The control surface
+## Surface v2 — LLM-as-author Effects + Resolume-style compositions
 
-Every visual primitive lives in the `surface/` package. There are no named effects — a layer is a tree of `{kind, params}` nodes, each validated by its own pydantic `Params` model. The full catalogue (with JSON Schema for every primitive) is served live at `GET /surface/primitives` and embedded into the LLM system prompt every turn.
+There is no primitive graph any more. A *layer* is a single Python `Effect` subclass authored by the LLM (or hand-written + saved as an example). A *composition* is a Resolume-style stack of layers (each with a blend mode + opacity + enabled toggle). The `Runtime` owns two compositions — **PREVIEW** (the LLM's scratchpad, rendered to the simulator in design mode) and **LIVE** (always rendered to the LEDs). The operator clicks **Promote** to crossfade live ← preview.
+
+`surface_v2_design_plan.md` is the long-form rationale; `surface_v2_phased_plan.md` carves out the v1 vs v1.1 cuts. The summary below describes the code as it actually exists today on the `surface-v2-rewrite` branch.
 
 ### Package layout (`src/ledctl/surface/`)
 
-The original 2300-line `surface.py` was split during the effect refactor (see `effect_refactor_plan.md`). Public API is unchanged — `from ledctl.surface import compile_layers, generate_docs, primitives_json, NodeSpec, LayerSpec, UpdateLedsSpec, Compiler, REGISTRY, set_lut_size, …` still works.
-
 ```
 src/ledctl/surface/
-  __init__.py             — re-exports the public API
-  shapes.py               — hex_to_rgb01, hsv_to_rgb01, apply_shape (cosine/saw/pulse/gauss), clip_scalar
-  palettes.py             — NAMED_PALETTES, _bake_lut, _lut_from_*, set_lut_size, mutable LUT_SIZE
-  spec.py                 — NodeSpec / LayerSpec / UpdateLedsSpec + the Gemini flattened-params recovery validator
-  registry.py             — REGISTRY, @primitive, Primitive, CompiledNode, OutputKind, broadcast_kind/_to_rgb
-  compiler.py             — Compiler, CompileError, CompiledLayer, compile_layers, compile_unconstrained
-  frames.py               — FRAME_DESCRIPTIONS + build_frames(topology) → derived dict
-  docs.py                 — generate_docs, primitives_json, EXAMPLE_TREES, ANTI_PATTERNS, _compact_params_schema
-  primitives/
-    __init__.py           — imports every leaf module (registers via @primitive side-effect)
-    scalar_t.py           — Constant, Lfo, AudioBand, AudioBeat, AudioBpm, BpmClock, BeatCount, StepSelect, Pulse, Clamp, RangeMap
-    scalar_field.py       — Wave, Radial, Gradient, Position, Frame, Noise, Trail (+ _resolve_axis_or_index helper)
-    palette.py            — PaletteNamed, PaletteStops, PaletteHsv
-    rgb_field.py          — PaletteLookup, Solid, Sparkles
-    particles.py          — Comet, ChaseDots, Ripple (stateful per-frame integrators)
-    combinators.py        — Mix, Remap, Threshold, Add/Mul/Screen/Max/Min binary ops
-    recipes.py            — Breathing, Strobe (compile to a sub-tree of leaves via _expand_recipe)
+  __init__.py        — re-exports: Runtime, Effect, EffectInitContext, EffectFrameContext,
+                        AudioView, FrameMap, MastersView, ParamStore, ParamView,
+                        EffectStore, StoredEffect, EffectCompileError, MAX_SOURCE_BYTES,
+                        Composition, Layer, ActiveEffect (alias), CrossfadeState, BLEND_MODES,
+                        WriteEffectArgs, write_effect_tool_schema, apply_write_effect,
+                        WRITE_EFFECT_TOOL_NAME, build_runtime_namespace, build_system_prompt,
+                        compile_effect, named_palette, named_palette_names, NAMED_STOPS, LUT_SIZE
+  base.py            — Effect base class + EffectInitContext / EffectFrameContext / FrameMap /
+                        AudioView / MastersView / ParamView / ParamStore / RigInfo
+  helpers.py         — hex_to_rgb, hsv_to_rgb, lerp, clip01, gauss, pulse, tri, wrap_dist,
+                        palette_lerp, log, PI, TAU, LUT_SIZE
+  palettes.py        — NAMED_STOPS + named_palette()/named_palette_names() — the LUTs the LLM
+                        gets via `named_palette('fire'|'rainbow'|'ice'|...)`
+  frames.py          — FRAME_DESCRIPTIONS + build_frames(topology) → derived dict (unchanged
+                        from v1 — ctx.frames.x / .u_loop / .side_top / ... etc.)
+  sandbox.py         — compile_effect(): AST scan (rejects imports + dunder access except
+                        __name__), restricted SAFE_BUILTINS, MAX_SOURCE_BYTES = 8 KB,
+                        single-Effect-subclass extraction
+  schema.py          — pydantic models for the write_effect tool call: WriteEffectArgs, the
+                        ParamSpec discriminated union (slider / int_slider / color / select /
+                        toggle / palette), key/source-size validators, ≤8 params per effect
+  prompt.py          — build_system_prompt(...): assembles the live-regenerated system prompt
+                        (YOUR JOB, PHYSICAL RIG, INSTALL, COORDINATE FRAMES, AUDIO INPUT,
+                        EFFECT CONTRACT, RUNTIME API, PARAM SCHEMA, PERFORMANCE RULES,
+                        ANTI-PATTERNS, EXAMPLE EFFECTS, OPERATOR MASTERS, CURRENT PREVIEW
+                        COMPOSITION, LAST EFFECT ERROR?, TOOL)
+  tool.py            — apply_write_effect handler + write_effect_tool_schema. Validate →
+                        compile → init+fence-test → install into preview's selected layer →
+                        save to disk. Auto-merge: prior preview-layer values for matching keys
+                        carry forward as the new layer's initial values.
+  runtime.py         — Runtime + Composition + Layer + CrossfadeState + RenderStats +
+                        build_runtime_namespace(). Owns LIVE + PREVIEW slots, mode, crossfade,
+                        masters output stage (saturation pull → adaptive brightness gain → clip),
+                        per-layer rolling render-time stats, calibration override hook.
+  persistence.py     — EffectStore: filesystem CRUD over `config/effects/<slug>/{effect.py,
+                        effect.yaml}`. install_examples_if_missing() copies bundled examples on
+                        first boot. save_values() persists slider tweaks alongside the source.
+  examples/          — bundled defaults: pulse_mono, audio_radial,
+                        palette_wash_with_kick_sparkles, twin_comets_with_sparkles
 ```
 
-`surface/__init__.py` imports the layers in the right order so `@primitive` decorators fire at module-load time. Adding a new primitive is still a single file change: drop a `@primitive` class into the appropriate file under `primitives/` and the doc generator + REST catalogue + LLM prompt pick it up automatically.
+### The Effect contract
 
-### The four output kinds the compiler enforces
+Each effect is a single Python module with exactly one `Effect` subclass at top level. Lifecycle:
 
-| kind            | what it produces                       | typical primitives                                                |
-| --------------- | -------------------------------------- | ----------------------------------------------------------------- |
-| `scalar_field`  | per-LED scalar in [0, 1]               | `wave`, `radial`, `noise`, `position`, `frame`, `gradient`        |
-| `scalar_t`      | one scalar per frame                   | `lfo`, `audio_band`, `audio_beat`, `audio_bpm`, `bpm_clock`, `beat_count`, `step_select`, `constant` |
-| `palette`       | LUT_SIZE-entry RGB LUT (default 256)   | `palette_named`, `palette_stops`, `palette_hsv`                   |
-| `rgb_field`     | per-LED RGB (the layer leaf)           | `palette_lookup`, `solid`, `sparkles`, `comet`, `chase_dots`, `ripple`, `breathing`, `strobe` |
+```python
+class MyEffect(Effect):
+    def init(self, ctx):
+        # ctx.n, ctx.pos (N,3) f32, ctx.frames.<name>, ctx.strips, ctx.rig
+        # Precompute per-LED arrays + state buffers here. Runs ONCE per swap.
+        # `self.out` is preallocated by the base class as (N, 3) float32.
+        ...
 
-Polymorphic combinators (`mix`, `mul`, `add`, `screen`, `max`, `min`, `remap`, `threshold`, `clamp`, `range_map`, `trail`) resolve their output kind from their inputs at compile time and broadcast where it makes sense (`rgb_field × scalar_t → rgb_field`, `palette × palette → palette` for `mix`).
+    def render(self, ctx):
+        # ctx.t, ctx.wall_t, ctx.dt, ctx.n
+        # ctx.frames.<name>, ctx.pos
+        # ctx.audio.{low, mid, high, beat, beats_since_start, bpm, connected, bands[name]}
+        # ctx.params.<key>   (operator-controlled values; writes are SOFT no-op + warning in v1)
+        # ctx.masters        (read-only MastersView for diagnostics)
+        # MUST return (N, 3) float32 in [0, 1]. Canonical pattern: fill self.out, return self.out.
+        ...
+```
 
-**Two pieces of sugar in the spec language:**
-- a bare number anywhere a node is expected becomes a `constant` (so `"speed": 0.3` is fine);
-- a bare palette string becomes a `palette_named` (so `"palette": "fire"` is fine).
+The runtime never mutates the effect's returned buffer (it copies once into a runtime-owned scratch before applying masters), so returning `self.out` and trusting next frame's `render` sees state untouched is safe.
+
+The runtime namespace injected into LLM-authored modules (built in `runtime.build_runtime_namespace(name)`):
+
+| name | purpose |
+| --- | --- |
+| `np` | numpy module |
+| `Effect` | base class to subclass exactly once |
+| `hex_to_rgb`, `hsv_to_rgb` | colour conversion (cached / broadcasting) |
+| `lerp`, `clip01`, `gauss`, `pulse`, `tri`, `wrap_dist` | math / shape helpers (most accept `out=`) |
+| `palette_lerp(stops, t)`, `named_palette(name)` | multi-stop palette sample / named LUT |
+| `rng` | `np.random.default_rng(seed)` seeded by SHA-256 of effect name → deterministic across reloads |
+| `log` | `logging.getLogger("ledctl.effect")` — never `print`, which isn't in builtins |
+| `PI`, `TAU`, `LUT_SIZE` (=256), `PALETTE_NAMES` | constants |
+
+Built-ins are stripped: no `import`, `eval`, `exec`, `open`, `__import__`, `getattr/setattr/delattr`, `globals`, `print`. The AST scan also rejects every dunder attribute access except `__name__`. Source size is capped at 8 KB. The threat model is "LLM typo," not "malicious operator" — see `surface_v2_design_plan.md` §14.
+
+### Compositions, blend modes, crossfade
+
+`Runtime.live` and `Runtime.preview` are each a `Composition`: a `list[Layer]` plus a `selected: int` index that the chat panel and param panel target.
+
+A `Layer` carries `{name, summary, source, instance, params, blend, opacity, enabled, consecutive_failures, perf}`. Blend modes: `normal`, `add`, `screen`, `multiply` (declared in `BLEND_MODES`; full list constants live on `runtime.py`). Layers render bottom-up into a per-slot accumulator (`_blend_into(dst, src, mode, opacity)`); the accumulator is then run through the master output stage and shipped.
+
+The render entry point is `Runtime.render(*, wall_t, dt, t_eff, audio) → (live_buf, sim_buf)`:
+- LIVE composition is always rendered into `_live_buf`. If a crossfade is active, the previous composition is also rendered into `_cf_buf` and the two are linearly blended by `alpha = elapsed/duration` (alpha uses `wall_t` so the speed master doesn't slow promotes); when elapsed exceeds duration the crossfade is dropped.
+- PREVIEW composition only renders in **design mode**, and at half the engine FPS by default (`preview_half_rate=True`) — the simulator is a UI preview and 30 fps is plenty; this halves design-mode CPU during the worst case (a live crossfade running concurrently with a preview render). On non-render frames the previous `_preview_buf` is returned.
+- Master output stage runs on each leg: saturation pull toward Rec.709 luminance → brightness gain (≤1 multiplicative; >1 uses an adaptive headroom envelope tracking the recent peak with a 0.5 s release half-life so "louder than 1" doesn't just clip immediately — see `_apply_master_output` / `_update_peak_envelope`) → clip to [0, 1].
+- Calibration override (`/calibration/solo|walk`) runs *after* the master stage on each leg, so calibration looks identical to what's actually being shipped.
+
+Crossfades are triggered automatically inside `install_layer("live", …)`, `remove_layer("live", …)`, `reorder_layer("live", …)`, and `promote()` — anything that mutates the LIVE composition. Preview swaps are deliberately hard-cuts (the operator is iterating; "did my fix work?" needs unambiguous feedback). Crossfade duration is the operator-owned `runtime.crossfade_seconds` (default seeded from `agent.default_crossfade_seconds` in YAML; mirrored on PATCH `/agent/config`).
+
+### Per-layer safety nets
+
+- **Init budget.** `_compile_layer` rejects an effect whose `init(ctx)` runs >200 ms. Most common cause: an O(N²) per-pair precompute.
+- **Fence test.** `_fence_test(layer, frames=30)` runs 30 synthetic render frames with a sine-modulated `low` and a `beat=1` every 6th frame; any exception, wrong shape `(N, 3)`, wrong dtype (must be float32), or NaN/Inf rejects the install. Exceptions are mapped to actionable hints by `_diagnostic_hint(...)` (the most common LLM misses are surfaced verbatim — `ctx.frames.x` vs `ctx.x`, `ctx.audio.low` vs `ctx.low`, `ctx.params.<key>` vs `ctx.params['<key>']`, write-to-params errors).
+- **Per-frame render isolation.** A layer that raises in `render()` → log traceback, increment `consecutive_failures`, skip the layer for that frame. After **3 consecutive failures** the layer is auto-disabled (`enabled=False`); operator can flip it back on from the layer-meta toggle.
+- **Watchdog (RenderStats).** Each layer tracks a 1 s rolling window of render times (`PER_LAYER_BUDGET_MS = 5.0`). If p95 stays over budget for 30 consecutive frames (~0.5 s @ 60 fps) the layer is disabled with a `[layer X] tripped render budget` warning. One-shot — the operator can re-enable.
+- **`dt` clamp.** The engine clamps `dt` at 2× the target frame interval before passing it to the runtime, so a hiccup (DDP retransmit, GC pause) doesn't tele-port stateful effects (comet heads, ripple ages).
 
 ### Named coordinate frames (`surface/frames.py`)
 
-`Topology.from_config()` precomputes a `derived: dict[str, np.ndarray]` of named per-LED scalars, and any primitive with an `axis: str` slot accepts any of these names (validated by `_resolve_axis_or_index`):
+Topology precomputes a `derived: dict[str, np.ndarray]` of named per-LED scalars; effects address them as `ctx.frames.<name>`. The same dict from v1; same headline frames:
 
 | frame             | meaning                                                              |
 | ----------------- | -------------------------------------------------------------------- |
-| `x`, `y`, `z`     | Cartesian axis components in [0, 1] (legacy form)                    |
+| `x`, `y`, `z`     | Cartesian axis components in [0, 1]                                  |
 | `signed_x/y/z`    | Same, but signed [-1, 1]                                             |
 | `radius`          | √(x²+y²) clipped to [0, 1] — concentric rings around centre column   |
 | `angle`           | atan2(y, x)/2π wrapped to [0, 1]                                     |
 | **`u_loop`**      | **Clockwise arc-position around the rig, [0, 1] from top centre**    |
 | `u_loop_signed`   | u_loop centred at top: [-0.5, +0.5]                                  |
 | `side_top` / `_bottom` / `_signed` | Top/bottom row masks (1/0, 1/0, +1/-1)                  |
-| `axial_dist`      | \|x\| ∈ [0, 1] — distance from the centre column (great for explode/collapse) |
+| `axial_dist`      | \|x\| ∈ [0, 1] — distance from the centre column                     |
 | `axial_signed`    | x ∈ [-1, 1] — symmetric explode coordinate                           |
 | `corner_dist`     | Distance to nearest corner, normalised                               |
-| `strip_id`        | Integer rank per strip (per config-listing order)                    |
+| `strip_id`        | Integer rank per strip (per config-listing order, int32)             |
 | `chain_index`     | Local index along the strip from the controller end, [0, 1]         |
 | `distance`        | √(x²+y²+z²) normalised — legacy alias                                |
 
-**`u_loop` is the headline frame.** It's a clockwise chain-order coordinate: the walker classifies each strip by `(y_sign, x sign of outer end)` and walks them in the order `top-right (forward) → bottom-right (reversed) → bottom-left (forward) → top-left (reversed)`. So a `wave(axis="u_loop", speed=0.3)` reads as motion *around the rectangle*, regardless of strip count or `reversed` flags. Same for `comet(axis="u_loop")`, `chase_dots(axis="u_loop")`, `ripple(axis="u_loop")`. Direction = sign of speed; flip via `mul(speed, step_select(beat_count(...), [1, -1]))`.
+`u_loop` is the headline frame. It's a clockwise chain-order coordinate built by classifying each strip by `(y_sign, x sign of outer end)` and walking them `top-right (forward) → bottom-right (reversed) → bottom-left (forward) → top-left (reversed)`. Motion along `u_loop` reads as motion *around the rectangle* regardless of strip count or `reversed` flags.
 
-`generate_docs()` emits a `FRAMES` section in the LLM system prompt listing every name with a one-line description. Operator UI receives the full list via `Topology.derived` keys.
+`build_system_prompt` emits a `COORDINATE FRAMES` block listing every name with its one-line `FRAME_DESCRIPTIONS` entry.
 
-### Beat-aware time vocabulary
+### The audio contract (effect-side)
 
-| primitive              | output     | what it does                                                                 |
-| ---------------------- | ---------- | ---------------------------------------------------------------------------- |
-| `bpm_clock(bpm, divisor, phase)` | `scalar_t` | BPM-synced sawtooth in [0, 1) per beat-fraction. divisor=1=per beat, 2=half, 4=sixteenth. |
-| `beat_count(bpm, divisor, mod_n)` | `scalar_t` | Integer beat counter mod N. Pair with `step_select` for "every Nth beat" idioms. |
-| `step_select(index, values)` | `scalar_t` | Pick `values[int(index) mod len(values)]`. Canonical direction-flip = `step_select(beat_count(bpm, mod_n=2), [1, -1])`. |
+The audio bridge writes the upstream OSC streams into `AudioState`; the engine packages them once per tick into an `AudioView` and **pre-multiplies the bands by `masters.audio_reactivity`**. So the LLM uses raw values:
 
-`bpm` and `divisor` are baked at compile time on `bpm_clock`/`beat_count` — they don't read the live `audio_bpm` value. To follow upstream tempo dynamically the operator re-applies the current preset (or compiles fresh layers) when the BPM changes — not a hot-swap path today (Phase G if it's ever needed).
+| field | type | semantics |
+| ----- | ---- | --------- |
+| `ctx.audio.low / .mid / .high` | float in [0, 1] | smoothed band energies, pre-multiplied by `masters.audio_reactivity` |
+| `ctx.audio.bands` | dict | `{"low": …, "mid": …, "high": …}` — convenient for `select`-param-driven band choice |
+| `ctx.audio.beat` | int | new onsets since the previous render — usually 0 or 1, occasionally 2; use `> 0` as a one-shot trigger |
+| `ctx.audio.beats_since_start` | int | monotonic onset counter |
+| `ctx.audio.bpm` | float | current tempo; falls back to 120.0 when disconnected |
+| `ctx.audio.connected` | bool | False = audio-server silent. low/mid/high will be 0.0 in this case. |
 
-### Particle / transient primitives (`primitives/particles.py`)
+**Migration rule for new effects.** Continuous reactivity uses raw `ctx.audio.low/mid/high`; never threshold those manually to detect kicks (use `ctx.audio.beat > 0` — the upstream onset detector is far better). Tempo uses `ctx.audio.bpm`. The audio server's smoothing + auto-scaling lives in *its* UI; tune there, not here. The system prompt's ANTI-PATTERNS block lists this verbatim so the LLM doesn't reinvent it.
 
-All three are stateful: they own per-instance buffers / RNGs / pool slots and read `ctx.t`, so `freeze` halts their state advance correctly.
+### Param schema + dynamic operator UI
 
-- **`comet(axis, speed, head_size, trail_length, trail_sparseness, palette, palette_pos, brightness, seed)`** — one head + exponential trail. `head_size` = head sigma (typical 0.02–0.1), `trail_length` = decay length behind the head, `trail_sparseness` 0..1 turns the trail from solid to meteor-grain via per-pixel stochastic cuts (seeded). Multiple comets via stacked layers (each with a distinct `seed` so trail grain doesn't lock together, and offset `speed` / start phase).
-- **`chase_dots(axis, count, width, speed, palette, palette_pos, palette_spread, brightness)`** — M evenly-spaced dots scrolling along an axis, vectorised gauss profile. `palette_spread > 0` colours each dot a different palette index across a window centred on `palette_pos`.
-- **`ripple(axis, rate, trigger, trigger_head_start_s, speed, width, decay_s, palette, palette_pos, brightness, seed)`** — concentric rings expanding outward along a distance frame (`radius`, `axial_dist`, `u_loop`). Two emission paths: continuous Poisson via `rate` (modulate with `audio_band` for energy-driven density) AND deterministic per-event via `trigger` (drive with `audio_beat()` for kick-locked rings — see "Audio reactivity contract" below). `trigger_head_start_s` (default 0.12 s) gives kick-locked rings a synthetic age at birth so they pop visibly on the beat instead of fading in from radius=0; only applies to `trigger` emissions, not the Poisson `rate` path. Up to 12 concurrent ripples per layer.
+The LLM declares 0–8 params per effect alongside the code. Each control type has its own pydantic model in `schema.py`:
 
-### Recipes (`primitives/recipes.py`)
+| `control` | extra fields | UI element |
+| --------- | ------------ | ---------- |
+| `slider` | `min, max, step?, default, unit?` | range input + numeric box |
+| `int_slider` | `min, max, step?, default` | integer range |
+| `color` | `default` (hex) | colour picker |
+| `select` | `options: [str], default` | dropdown |
+| `toggle` | `default: bool` | switch |
+| `palette` | `default` (a `named_palette` key) | palette dropdown + swatch |
 
-Compound primitives whose `compile()` builds an inner NodeSpec and re-enters the compiler — from the LLM's view they're one node with a few params, but they expand to the same primitive subtrees the agent could have written by hand. Currently:
+Slider drag → `PATCH /preview/params` (or `/live/params`) → `ParamStore.update(...)` (atomic on the asyncio loop, with bounds clamping in `ParamStore._coerce`) → next render's `ctx.params.<key>` sees the new value. No recompile, no LLM round-trip, no crossfade. Patches without `layer_index` target the slot's selected layer. Each successful patch also calls `EffectStore.save_values(...)` so a restart preserves the operator's tuning.
 
-- **`breathing(palette, period_s, floor, palette_pos)`** → `palette_lookup(constant, palette, pulse(lfo(sin), floor))`.
-- **`strobe(bpm, divisor, duty, palette, palette_pos)`** → `palette_lookup(constant, palette, lfo(pulse, period_s=60/(bpm·divisor), duty))`.
+**Param auto-merge.** When `apply_write_effect` installs a new layer, it scans the prior preview-selected layer's current values and carries forward any whose `key` matches a key in the new schema — so "regenerate but keep my colour and lead-offset" is mechanical. The LLM is told this in `prompt.py` so it picks new keys deliberately when a knob's meaning changes.
 
-Recipes go through the same type-checker, error paths, and schema as ordinary primitives.
+### Bundled examples + persistence
 
-### Modulation lives directly on the parameter
+Bundled examples live under `src/ledctl/surface/examples/<slug>/{effect.py, effect.yaml}` and are copied to `config/effects/<slug>/` on first boot via `EffectStore.install_examples_if_missing()`. Currently shipped: `pulse_mono`, `audio_radial`, `palette_wash_with_kick_sparkles`, `twin_comets_with_sparkles`.
 
-Instead of an old-style `bindings.brightness` slot, you pass an `audio_band(...)` node into `palette_lookup.brightness`. Audio reactivity is composable: `audio_band(band="low"|"mid"|"high")` returns a `scalar_t` sourced from the external audio-feature server (already smoothed and auto-scaled to ~[0, 1] — all attack/release/shaping live upstream and are tuned in the audio server's UI, not here). Wrap an `audio_band` in `range_map(in_min=0, in_max=1, out_min=floor, out_max=ceiling)` or in `pulse(by, floor)` if you need a baseline glow or soft cap.
+On disk, every saved effect is `config/effects/<slug>/effect.py` (real Python, diffable and SSH-editable on the Pi) plus `effect.yaml` (`{name, summary, source: 'agent'|'user', created_at, updated_at, params: <schema>, param_values: <current operator values>, starred: bool}`). On boot the runtime tries to load `pulse_mono` into both slots; if that fails the slot stays empty and a black layer is implicit.
 
-### Audio reactivity contract — `/audio/lmh` raw, `/audio/beat` for triggers
+The v1 `config/presets/<name>.yaml` files are **not** loaded any more — left on disk for reference only (no migration tool today).
 
-The audio server now publishes four OSC addresses on port 9000 (see "External audio dependency" below):
+### Adding / authoring an effect
 
-| address       | shape                         | surface primitive                                                |
-| ------------- | ----------------------------- | ---------------------------------------------------------------- |
-| `/audio/lmh`  | low/mid/high floats (~[0, 1]) | `audio_band(band="low"|"mid"|"high")` → `scalar_t`               |
-| `/audio/meta` | sample-rate / band cutoffs    | informational (system prompt + audio UI)                         |
-| `/audio/beat` | binary onset trigger          | `audio_beat()` → `scalar_t` (count of new beats since last frame, 0/1 typically) |
-| `/audio/bpm`  | continuous tempo float        | `audio_bpm(fallback)` → `scalar_t` (returns `fallback` while disconnected) |
+- LLM path: a chat message in design mode produces one `write_effect` tool call. The handler validates the schema, AST-scans + sandbox-compiles, runs `init()` against the real topology (≤200 ms), fence-tests 30 synthetic frames, persists, and swaps into the preview's selected layer (hard cut).
+- Operator save: drag sliders in design mode → click 💾 save → `POST /preview/save` writes the current preview-selected layer (incl. tweaked `param_values`) under a chosen name.
+- Hand-written: drop `effect.py` + `effect.yaml` under `config/effects/<slug>/` and reload. The same compile/init/fence-test pipeline runs on load.
 
-**The rule for new effects:**
-
-1. **Continuous reactivity** wants raw `audio_band(low|mid|high)` in its full dynamic range. **Never** introduce manual thresholding / Schmitt triggers / hand-rolled peak detectors against `audio_band(low)` — those produce mushy results and duplicate work the upstream onset detector already does correctly. The audio server's smoothing + auto-scaling lives in *its* UI; tune there, not here.
-2. **Discrete / one-shot triggers** wants `audio_beat()`. The packet semantics: the server sends `/audio/beat 1` *only* on rising edges (no `0`s), and the surface bridge increments a `beat_count` counter on each packet. `audio_beat()` returns the count of new beats since the last render — usually 0 or 1, occasionally 2 if two onsets fired between frames (no drops). Use as a binary trigger (`> 0`), as a multiplier (0 / 1), or feed directly into a primitive that interprets it as a count (`ripple.trigger`). Returns 0 cleanly while the upstream detector is silent or disconnected.
-3. **Tempo** wants `audio_bpm(fallback=120)`. Returns the latest published value, falls back to the literal when the tracker hasn't published yet.
-
-**If you find yourself writing `threshold(audio_band("low"), 0.6)` to detect kicks, stop and use `audio_beat()` instead.** Anything in the codebase that ever does the former must be migrated.
-
-### Adding a new primitive
-
-1. Write a `@primitive` class in the appropriate file under `surface/primitives/` with a pydantic `Params` model and a `compile()` that returns a `CompiledNode` of the right `output_kind`.
-2. That's it. The doc generator, REST primitive catalogue, and LLM system prompt all pick it up.
-
-The `Params` `description=` strings are user-facing — they feed both `GET /surface/primitives` and the LLM system prompt. **One line per field is the budget** (this is the dominant token cost).
-
-### Other notes
-
-- `palette_lookup.render()` (and similar leaves like `solid`, `sparkles`) returns its preallocated `_out` buffer — zero allocation per frame in the hot path. Tests that compare two consecutive frame snapshots must `.copy()` the first one explicitly.
-- Named palettes ship in `surface.NAMED_PALETTES`: `rainbow`, `fire`, `ice`, `sunset`, `ocean`, `warm`, `white`, `black`, `mono_<hex>`. Custom palettes are `{kind: "palette_stops", params: {stops: [{pos, color}, …]}}` or HSV-baked via `palette_hsv`.
-- Presets live in `config/presets/<name>.yaml` (sibling of the active config file). Each preset is `{ crossfade_seconds, layers: [{ node: {kind, params}, blend, opacity }, …] }`. Seed presets shipped today: `default`, `chill`, `peak`, `color_waves`, `gentle_whiteblue_waves`, `red_waves_blue_base`, `snare_sparkles`, `soft_purple_blue_wave`, `sunset_breathing`. Loaded by `presets.py`; saved via `POST /presets`.
+**Token budget reminder.** Per-field `description` strings on pydantic models, the example-effect blocks (`prompt.EXAMPLE_BASIC`, `EXAMPLE_ADVANCED`), and the prose blocks (`PHYSICAL_RIG`, `EFFECT_CONTRACT`, `PERFORMANCE_RULES`, `ANTI_PATTERNS`) are the dominant cost of the system prompt. Keep them tight.
 
 ## Coordinate convention
 
-Right-handed: `+x` = stage-right, `+y` = up, `+z` = toward audience. Origin = centre of scaffolding. All primitive math in normalised [-1, 1].
+Right-handed: `+x` = stage-right, `+y` = up, `+z` = toward audience. Origin = centre of scaffolding. `ctx.pos` is normalised so each axis is in [-1, 1]; `ctx.frames.x/y/z` are the same data rescaled to [0, 1].
 
 ## Phase status
 
-Phases 0–6 are complete (topology, DDP transport, surface engine, REST API, browser simulator + layout editor, audio analysis, language-driven control panel).
-
-Phase 8.1's digital prep also landed early — see "Auth + Pi deploy artefacts" below. Phase 7 (mobile operator UI), the rest of Phase 8 (INMP441 I²S setup, Tailscale, read-only rootfs, on-site bring-up), and Phase 9 (reliability/watchdog) are next.
+Surface v2 (LLM-as-author + Resolume-style layered compositions) is the current branch (`surface-v2-rewrite`). v1 + v1.1 from `surface_v2_phased_plan.md` are landed: dual-mode UI (Design / Live), layered compositions per slot, 30-frame fence test, per-layer render-budget watchdog, `dt` clamping, init-budget enforcement, param auto-merge across regenerations, design-mode preview at half-rate, save / load / star library. Auth gate, audio bridge, calibration, and DDP debug controls are inherited unchanged from v1. Mobile operator UI, hands-free / MIDI control, and the v3 "Surprise me" / autoplay-queue ideas are deferred (see `surface_v2_design_plan.md` §20).
 
 ## Auth + Pi deploy artefacts
 
 - `src/ledctl/api/auth.py` — shared-password gate (off in dev, on for Pi). Activated by setting `auth.password` in YAML. The cookie is `ledctl_auth`; first-visit login via `/login` form post or `?password=…` query. WS upgrades reject pre-accept with close code 4401 if the cookie is missing/wrong. `/login`, `/logout`, `/healthz` are always public so future watchdogs can probe past the gate. Render loop and DDP transport are unaffected.
 - `config/config.pi.yaml` — `auth.password: kaailed`, `server.host: 0.0.0.0`, full `masters:` block, `audio_server:` block (autostart=true, OSC port 9000, UI at :8766). The audio device picked at the audio-server's UI is persisted in *its* config.yaml — the LED config has no device field.
 - `config/config.dev.yaml` — no `auth.password`, so the gate is off. Tests assert this.
-- `tests/test_auth.py` — 11 cases (cookie/query/POST/WS, public-path allow-list, dev-config still open).
+- No dedicated `tests/test_auth.py` in v2 — the gate logic in `api/auth.py` is exercised indirectly through `tests/test_api.py` / `tests/test_e2e_pipeline.py` (which run with the dev config, where `auth.password` is unset and the gate is off). If we ever break the auth path it'll show as production breakage; worth restoring a focused test file before the next on-site deploy.
 - `deploy/ledctl.service` — systemd unit. `After=network-online.target sound.target`, `Restart=always`, `RestartSec=2`, `Nice=-5`, `audio` supplementary group, `ProtectSystem=full` + `ProtectHome=read-only` so it cohabits with overlayfs. Install: `sudo cp deploy/ledctl.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now ledctl`.
 - `.env.example` — template; copy to `.env` (gitignored) for the OpenRouter key. `cli.py` auto-loads it.
 
-## Agent (Phase 6)
+## Agent
 
 The OpenRouter API key is read from `OPENROUTER_API_KEY` (env var name configurable via `agent.api_key_env`). `cli.py` auto-loads `.env` from the repo root before parsing config — never put the key in YAML. With no key, `/agent/chat` returns a clear 503 and the render loop is unaffected.
 
-**Contract that holds the design together:** the LLM emits **one** `update_leds` per turn, with the *complete* new state. "Make it more red" → re-emit the whole stack with shifted colour stops. No `list_*` / `get_*` discovery tools — the system prompt carries the catalogue + current layer stack + audio snapshot + master values every turn.
+**Contract that holds the design together:** the LLM has exactly one tool — `write_effect({name, summary, code, params})` — and emits one tool call per turn with the *complete* new effect (Python source + param schema). Never a diff. "Make it more red" → re-emit the whole effect with the shifted defaults. No `list_*` / `get_*` discovery tools — the system prompt carries the install summary, COORDINATE FRAMES list, AUDIO INPUT snapshot, EFFECT CONTRACT, RUNTIME API, PARAM SCHEMA reference, PERFORMANCE RULES, ANTI-PATTERNS, two reference example effects (`pulse_mono` + `twin_comets_with_sparkles`), the read-only OPERATOR MASTERS values, and the **PREVIEW composition only** (selected layer's source + every layer's `param_values`). LIVE composition is deliberately invisible to the LLM — it's operator-controlled exclusively, and showing live source would tempt the LLM to "preserve" what's playing instead of authoring the preview cleanly.
 
-**Master controls are deliberately invisible to the LLM as writes.** The agent sees them as a read-only block in the system prompt and tells the user which slider to move when a request can only be honoured that way.
+**Where the effect lands.** The tool call replaces the *selected* PREVIEW layer (hard cut). DDP / live LEDs are unaffected until the operator clicks **Promote to live**. Before swap-in we run the full `Runtime._compile_layer` pipeline: validate schema → AST + sandbox compile → `init(ctx)` ≤200 ms → 30-frame fence test → on success, install + persist to `config/effects/<name>/`. On failure (any stage) the tool result carries `{ok: false, error, details}` with a diagnostic hint; the next turn's system prompt embeds it under `LAST EFFECT ERROR` so the LLM self-corrects. Up to `agent.retry_on_tool_error` consecutive auto-retries within a single chat turn before the failure surfaces to the operator. Each retry rebuilds the prompt fresh so the LLM sees its own previous error.
+
+**Master controls are deliberately invisible to the LLM as writes.** The system prompt's OPERATOR MASTERS block is read-only and the prompt explicitly tells the LLM: when a request can only be honoured by a master change ("brighter" while brightness is already 1.0; "less reactive" while audio_reactivity is high), tell the operator which slider to move instead of writing a redundant effect.
+
+**Param auto-merge.** When `apply_write_effect` installs the new layer, it carries forward operator-tuned values for any matching `key` in the prior preview-selected layer. The LLM is told this in PARAM SCHEMA so it picks new keys deliberately when a knob's meaning changes.
+
+**Operator side-channel.** When the operator does anything that mutates preview source outside the agent's own write_effect path — `POST /effects/<name>/load_preview`, `POST /pull_live_to_preview`, `POST /preview/save` (effectively a rename) — the API server calls `SessionStore.reset_all_buffers()` so the LLM's deque doesn't reference stale source. The operator-visible chat transcript (`turns`) is preserved; only the model-visible message buffer clears.
 
 ## Hardware notes
 
@@ -336,7 +397,7 @@ The render loop's DDP transport has a **`paused`** flag exposed over the API and
 | POST    | `/transport/pause`    | stop sending DDP → after ~2.5 s WLED takes back over          |
 | POST    | `/transport/resume`   | resume DDP → ledctl drives the LEDs                           |
 
-`/state` also embeds the same `ddp` block. The auth gate applies, so on the Pi: `curl 'localhost:8000/transport?password=kaailed' | python3 -m json.tool`. UI button lives next to freeze/blackout in the desktop landing page; disabled in dev (simulator-only mode) since there's no DDP transport to pause.
+`/state` also embeds the same `ddp` block. The auth gate applies, so on the Pi: `curl 'localhost:8000/transport?password=kaailed' | python3 -m json.tool`. There's no dedicated UI button today — drive it from the API; disabled in dev (simulator-only mode) since there's no DDP transport to pause.
 
 **Diagnostic counters.** `DDPTransport` exposes `frames_sent` / `packets_sent`; useful for confirming the Pi is actually transmitting. Healthy 60 fps × 1800 LEDs = 4 packets per frame (3×1450 B + 1×1090 B over the wire).
 
@@ -369,15 +430,15 @@ Audio capture / FFT / band-energy extraction / onset detection / tempo tracking 
 
 The audio-server stores its own settings in its own `config.yaml` (device, band cutoffs, smoothing, autoscale window, onset / tempo params). Tune those from its browser UI at `http://127.0.0.1:8766` — the 'audio' link in the LED operator UI opens it in a new tab.
 
-**OSC addresses consumed by the LED bridge** (handlers in `src/ledctl/audio/bridge.py`, fields in `src/ledctl/audio/state.py`):
+**OSC addresses consumed by the LED bridge** (handlers in `src/ledctl/audio/bridge.py`, fields in `src/ledctl/audio/state.py`, view in `src/ledctl/surface/base.py::AudioView`):
 
-| address       | payload                          | written into AudioState | surface primitive               |
-| ------------- | -------------------------------- | ----------------------- | ------------------------------- |
-| `/audio/lmh`  | three floats (low, mid, high)    | `state.{low,mid,high}` + `mark_packet()` (gates `connected`) | `audio_band(band)`              |
-| `/audio/meta` | sr/blocksize/n_fft + band cutoffs (+ optional device-name string trail) | `state.{samplerate,blocksize,n_fft_bins,*_lo,*_hi,device_name}` | informational                   |
-| `/audio/beat` | empty (rising-edge trigger only) | `state.beat_count += 1`, `state.last_beat_at` | `audio_beat()` (delta since last frame) |
-| `/audio/bpm`  | one float                        | `state.bpm` (None until first packet) | `audio_bpm(fallback)`           |
+| address       | payload                          | written into AudioState | exposed to effects as |
+| ------------- | -------------------------------- | ----------------------- | --------------------- |
+| `/audio/lmh`  | three floats (low, mid, high)    | `state.{low,mid,high}` + `mark_packet()` (gates `connected`) | `ctx.audio.low/mid/high` (pre-multiplied by `masters.audio_reactivity`) |
+| `/audio/meta` | sr/blocksize/n_fft + band cutoffs (+ optional device-name string trail) | `state.{samplerate,blocksize,n_fft_bins,*_lo,*_hi,device_name}` | informational (system prompt + audio HUD) |
+| `/audio/beat` | empty (rising-edge trigger only) | `state.beat_count += 1`, `state.last_beat_at` | `ctx.audio.beat` (delta since last frame; usually 0 or 1) + `ctx.audio.beats_since_start` |
+| `/audio/bpm`  | one float                        | `state.bpm` (None until first packet) | `ctx.audio.bpm` (falls back to 120.0 when disconnected) |
 
-**Soft-fail across all four addresses**: if the audio-server isn't running, the OSC port is taken, or any individual stream stops, the LED render loop keeps going with `audio_band` → 0, `audio_beat` → 0, `audio_bpm` → fallback, and a warning in the terminal. The watchdog only flags `connected = False` when `/audio/lmh` packets stop — beat/bpm absence is normal between onsets.
+**Soft-fail across all four addresses**: if the audio-server isn't running, the OSC port is taken, or any individual stream stops, the LED render loop keeps going with `ctx.audio.low/mid/high` → 0, `ctx.audio.beat` → 0, `ctx.audio.bpm` → fallback, and a warning in the terminal. The watchdog only flags `connected = False` when `/audio/lmh` packets stop — beat/bpm absence is normal between onsets. Effects should still look good silent (e.g. drive brightness from a slider with audio mixed on top via `amp = base + reactive * ctx.audio.low`).
 
 **Migration rule for new effects.** Continuous reactivity uses `audio_band(low|mid|high)` raw (no manual thresholding). Discrete triggers use `audio_beat()`. Tempo uses `audio_bpm()`. If you ever feel like writing `threshold(audio_band("low"), …)` to detect a kick — don't; that's exactly what `/audio/beat` is for, and the upstream onset detector has more signal than a level threshold ever will. Existing primitives that need beat semantics (e.g. `ripple.trigger`) take a `scalar_t` slot and the LLM is taught to wire `audio_beat()` in.

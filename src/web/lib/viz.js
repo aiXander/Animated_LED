@@ -11,9 +11,18 @@
 import { loadTopology } from "./state.js";
 import { setText } from "./util.js";
 
-const STRIP_THICKNESS = 12;
+// STRIP_THICKNESS used to be a fixed 12 device-px which was fine for a
+// roughly-square canvas but looks lost in a wide 15vh strip — the rig is
+// 30:1, so faithful aspect-ratio projection wastes most of the vertical
+// space. We now stretch x and y independently to fill the canvas (the sim
+// is a HUD, not a to-scale model) and derive strip thickness from the
+// per-row vertical share so each strip visually fills its half of the rig.
 const LED_WIDTH_SCALE = 1.0;
 const HOVER_DOT = 8;
+// Margins as a fraction of the canvas extent — keeps a tiny breathing
+// gap at either end of the rig regardless of viewport width.
+const HORIZONTAL_MARGIN_FRAC = 0.05;
+const VERTICAL_MARGIN_FRAC = 0.05;
 
 export function bindViz({
   root,           // outer #viz section (used for ResizeObserver)
@@ -67,24 +76,31 @@ export function bindViz({
 
   function reproject() {
     if (!leds.length) { projected = null; return; }
-    const margin = 24;
-    const ww = canvasW - 2 * margin;
-    const hh = canvasH - 2 * margin;
+    const ww = canvasW * (1 - 2 * HORIZONTAL_MARGIN_FRAC);
+    const hh = canvasH * (1 - 2 * VERTICAL_MARGIN_FRAC);
     const dx = bboxMax[0] - bboxMin[0] || 1;
     const dy = bboxMax[1] - bboxMin[1] || 1;
-    const s = Math.min(ww / dx, hh / dy);
+    // Stretch axes independently — the sim is a HUD, not a faithful map.
+    const sx = ww / dx;
+    const sy = hh / dy;
     const cx = canvasW / 2;
     const cy = canvasH / 2;
     const ox = (bboxMin[0] + bboxMax[0]) / 2;
     const oy = (bboxMin[1] + bboxMax[1]) / 2;
     projected = new Float32Array(leds.length * 2);
     for (let i = 0; i < leds.length; i++) {
-      projected[i * 2]     = cx + (leds[i].position[0] - ox) * s;
-      projected[i * 2 + 1] = cy - (leds[i].position[1] - oy) * s;
+      projected[i * 2]     = cx + (leds[i].position[0] - ox) * sx;
+      projected[i * 2 + 1] = cy - (leds[i].position[1] - oy) * sy;
     }
     ledRects = new Int32Array(leds.length * 4);
     const dpr = canvasDpr;
-    const thickDev = Math.max(1, Math.round(STRIP_THICKNESS * dpr));
+    // Strip thickness = 80% of a per-row vertical share. With 2 rows in our
+    // rig: each row gets canvasH/2; strips fill ~80% of that, leaving a thin
+    // visual gap between top and bottom rows.
+    const rows = _approxRowCount();
+    const perRowPx = canvasH / Math.max(1, rows);
+    const thickCss = Math.max(2, Math.floor(perRowPx * 0.8));
+    const thickDev = Math.max(1, Math.round(thickCss * dpr));
     const halfThickDev = (thickDev / 2) | 0;
     strips.forEach((strip) => {
       const off = strip.pixel_offset;
@@ -151,6 +167,20 @@ export function bindViz({
         }
       }
     });
+  }
+
+  // Count unique y-bands among strips — used to size strip thickness so the
+  // sim fills its viz strip vertically regardless of how many parallel rows
+  // the rig has. Two close-by y values count as one band.
+  function _approxRowCount() {
+    if (!strips.length) return 1;
+    const ys = strips.map((s) => 0.5 * (s.start[1] + s.end[1]));
+    ys.sort((a, b) => a - b);
+    let bands = 1;
+    for (let i = 1; i < ys.length; i++) {
+      if (Math.abs(ys[i] - ys[i - 1]) > 0.01) bands += 1;
+    }
+    return bands;
   }
 
   function pickLED() {

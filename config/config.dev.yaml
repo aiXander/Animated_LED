@@ -126,4 +126,3 @@ masters:
   speed: 1.0
   audio_reactivity: 1.0
   saturation: 1.0
-  freeze: false
