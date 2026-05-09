@@ -1,6 +1,6 @@
 # Surface v2 — LLM-as-Author Design Plan
 
-> **Goal.** Replace the typed `{kind, params}` primitive graph with **LLM-authored Python effects** that have direct access to a curated runtime API, plus an **auto-generated, ad-hoc operator control panel** the UI renders dynamically. Prototype in a fully isolated `surface_v2/` package, gated by a single boolean toggle in config — v1 stays untouched and shippable for the festival.
+> **Goal.** Replace the typed `{kind, params}` primitive graph with **LLM-authored Python effects** that have direct access to a curated runtime API, plus an **auto-generated, ad-hoc operator control panel** the UI renders dynamically. Operator UI runs in two modes (Design / Live) so the operator can prototype with the LLM without disturbing what's actually playing on the LEDs. **Full replacement** — the existing `src/ledctl/surface/` is removed in this refactor (current work is committed; no need to maintain two pathways).
 
 ---
 
@@ -16,15 +16,17 @@ This needs: two stateful particle objects, a side-aware spatial filter (`side_to
 
 **The shift.** Stop curating a vocabulary. Give the LLM:
 
-1. A clear **spatial model** (positions, named frames, strip layout).
-2. A clear **audio model** (the same `low / mid / high / beat / bpm` it already knows).
-3. A **render contract**: a Python `Effect` subclass with `__init__(ctx)` and `render(ctx) → (N, 3) float32` in `[0, 1]`.
-4. A small, ergonomic **helper namespace** (numpy, palette/HSV/gauss/pulse helpers, ...) and all existing params the LLM could use / reference in its code.
+1. A clear **spatial model** (positions, named frames, strip layout, ASCII diagram of the rig).
+2. A clear **audio model** (`low / mid / high / beat / bpm`, **already smoothed and auto-scaled upstream** — the LLM uses raw values).
+3. A **render contract**: a Python `Effect` subclass with `init(ctx)` and `render(ctx) → (N, 3) float32` in `[0, 1]`.
+4. A small, ergonomic **helper namespace** (numpy, palette/HSV/gauss/pulse helpers) and concrete documentation of every value in `ctx.*` (dtype, shape, range, example values).
 5. A **param schema** the LLM emits *alongside* the code, which the operator UI renders as a dynamic mini control panel (sliders, color pickers, dropdowns, toggles).
 
 The LLM writes short, vectorised numpy code (one Effect file = ~30–120 lines for most things). The UI gets dynamic controls per effect. The user can hand-tune via sliders without re-prompting.
 
-**Cost** of this freedom: a small Python sandbox, a livecoding error path, and trusting the LLM to write fast vector code. **Benefit**: arbitrary expressiveness, instant prototyping by description, and the v1 layer of "vocabulary work" disappears.
+Plus: the operator UI splits into **Design mode** (chat + preview-only render) and **Live mode** (sliders + render goes to LEDs). Means the LLM can stumble through three drafts of an effect without the dance floor noticing.
+
+**Cost** of this freedom: a Python sandbox tuned for the Pi's hot path, a livecoding error path, and trusting the LLM to write fast vector code. **Benefit**: arbitrary expressiveness, instant prototyping by description, and the v1 layer of "vocabulary work" disappears.
 
 ---
 
@@ -36,7 +38,7 @@ Going through `surface/primitives/` and the user's example prompt:
 - **Per-instance asymmetric configuration.** "Top comet red, bottom comet blue, top leads by 1/6" requires two `comet` layer instances + a manual `side_top`/`side_bottom` spatial mask. v1 has no way to make one comet *aware* of another.
 - **Compositional explosion.** What looks like one idea ("particles that leave fading sparkle trails") becomes a 7-deep node tree. The LLM authors it inconsistently across calls; small typos compile but produce visually wrong results that are hard to debug from a chat turn.
 - **Param surface is fixed.** The operator can only nudge the 5 master controls. The LLM cannot expose "lead offset between comets" as a UI dial — it can only re-emit the whole stack with a new constant.
-- **Token economy.** `surface/docs.py` regenerates the full primitive catalogue every system prompt. We're at ~7–8k tokens of catalogue today (after the Phase G refactor). Each new primitive grows that bill.
+- **Token economy.** `surface/docs.py` regenerates the full primitive catalogue every system prompt. We're at ~7–8k tokens of catalogue today. Each new primitive grows that bill.
 
 The pattern: every time the operator describes something genuinely new, **we** end up writing code, not the LLM. v2 inverts this.
 
@@ -46,7 +48,9 @@ The pattern: every time the operator describes something genuinely new, **we** e
 
 ### 3.1 What the LLM emits per turn
 
-A single tool call, **`write_effect`**, with shape:
+The LLM has **one tool**: `write_effect`. Every turn, it emits the *complete* new effect — code + param schema. There is deliberately no `update_params` / "patch a default" path: a chat turn from the user is treated as a request for *script-level* change. If the user just wanted a different colour or a slower speed, they'd drag the slider themselves — they're sitting in front of the operator UI with every knob already exposed.
+
+The tool call shape:
 
 ```jsonc
 {
@@ -55,41 +59,33 @@ A single tool call, **`write_effect`**, with shape:
   "code": "<python source as a single string>",
   "params": [
     {
-      "key": "leader_color",
-      "label": "Top comet colour",
-      "control": "color",
-      "default": "#ff2020"
+      "key": "leader_color", "label": "Top comet colour",
+      "control": "color", "default": "#ff2020"
     },
     {
-      "key": "follower_color",
-      "label": "Bottom comet colour",
-      "control": "color",
-      "default": "#1040ff"
+      "key": "follower_color", "label": "Bottom comet colour",
+      "control": "color", "default": "#1040ff"
     },
     {
-      "key": "lead_offset",
-      "label": "Top–bottom lead",
+      "key": "lead_offset", "label": "Top–bottom lead",
       "control": "slider",
       "min": 0.0, "max": 0.5, "step": 0.01,
       "default": 0.1667
     },
     {
-      "key": "speed",
-      "label": "Comet speed",
+      "key": "speed", "label": "Comet speed (cycles/s)",
       "control": "slider",
       "min": 0.05, "max": 2.0, "step": 0.01,
       "default": 0.4
     },
     {
-      "key": "sparkle_decay",
-      "label": "Sparkle fade time (s)",
+      "key": "sparkle_decay", "label": "Sparkle fade time (s)",
       "control": "slider",
       "min": 0.1, "max": 5.0, "step": 0.05,
       "default": 1.5
     },
     {
-      "key": "audio_band",
-      "label": "Brightness driver",
+      "key": "audio_band", "label": "Brightness driver",
       "control": "select",
       "options": ["low", "mid", "high"],
       "default": "low"
@@ -97,8 +93,6 @@ A single tool call, **`write_effect`**, with shape:
   ]
 }
 ```
-
-A second tool, **`update_params`**, just patches the active effect's param values without regenerating code. The LLM is taught: if the user's request is satisfiable by changing existing param defaults, prefer `update_params` (instant, no compile, no crossfade); otherwise `write_effect`.
 
 ### 3.2 What the code looks like
 
@@ -114,15 +108,15 @@ class TwinCometsWithSparkleTrails(Effect):
     def init(self, ctx):
         # ---- precompute spatial masks (cheap, runs once) ----
         # ctx.frames.x is per-LED in [0, 1]; signed_x in [-1, 1]
-        self.x = ctx.frames.x                         # (N,)
+        self.x = ctx.frames.x                         # (N,) float32
         self.top = ctx.frames.side_top.astype(bool)   # (N,) bool
         self.bottom = ctx.frames.side_bottom.astype(bool)
 
-        # ---- per-LED state buffers ----
+        # ---- per-LED state buffers (preallocate; never alloc in render) ----
         self.sparkle_age = np.full(ctx.n, np.inf, dtype=np.float32)
         self.sparkle_rgb = np.zeros((ctx.n, 3), dtype=np.float32)
 
-        # ---- comet state ----
+        # ---- comet state (scalars) ----
         self.head_top = 0.0       # x in [0, 1]
         self.head_bot = 0.0
         self.last_top_idx = -1
@@ -130,6 +124,7 @@ class TwinCometsWithSparkleTrails(Effect):
 
         # ---- output buffer (re-used every frame, no per-frame alloc) ----
         self.out = np.zeros((ctx.n, 3), dtype=np.float32)
+        self._fade = np.empty(ctx.n, dtype=np.float32)   # scratch
 
     def render(self, ctx):
         p = ctx.params
@@ -140,17 +135,18 @@ class TwinCometsWithSparkleTrails(Effect):
         self.head_bot = (self.head_top - p.lead_offset) % 1.0
 
         # ---- audio-driven brightness in [0.6, 1.0] ----
-        band = ctx.audio.bands[p.audio_band]   # 0..1, smoothed upstream
-        amp = 0.6 + 0.4 * band
+        # ctx.audio.bands is a dict; values are pre-smoothed in [0, 1].
+        amp = 0.6 + 0.4 * ctx.audio.bands[p.audio_band]
 
         # ---- decay sparkles (exp fade with half-life = sparkle_decay) ----
-        self.sparkle_age += dt
-        fade = np.exp(-self.sparkle_age / max(p.sparkle_decay, 1e-3))
-        self.out[:] = self.sparkle_rgb * fade[:, None]
+        np.add(self.sparkle_age, dt, out=self.sparkle_age)
+        np.divide(self.sparkle_age, max(p.sparkle_decay, 1e-3), out=self._fade)
+        np.exp(np.negative(self._fade, out=self._fade), out=self._fade)
+        np.multiply(self.sparkle_rgb, self._fade[:, None], out=self.out)
 
         # ---- draw comet heads as gaussians along x, masked top/bottom ----
-        self._stamp(self.out, self.head_top, hex_to_rgb(p.leader_color), self.top, amp)
-        self._stamp(self.out, self.head_bot, hex_to_rgb(p.follower_color), self.bottom, amp)
+        self._stamp(self.head_top, hex_to_rgb(p.leader_color), self.top, amp)
+        self._stamp(self.head_bot, hex_to_rgb(p.follower_color), self.bottom, amp)
 
         # ---- deposit sparkles at the head's nearest LED on each side ----
         self._deposit(self.head_top, hex_to_rgb(p.leader_color), self.top, "top")
@@ -158,21 +154,18 @@ class TwinCometsWithSparkleTrails(Effect):
 
         return self.out                             # (N, 3) float32 in [0, 1]
 
-    # ---- helpers (still inside the LLM's source) ----
-    def _stamp(self, dst, head_x, color, mask, amp):
+    def _stamp(self, head_x, color, mask, amp):
         d = np.abs(self.x - head_x)
         d = np.minimum(d, 1.0 - d)                  # wrap distance
-        g = np.exp(-(d * d) / (2 * 0.03 * 0.03)) * amp
-        dst[mask] += g[mask, None] * color
+        g = np.exp(-(d * d) * (1 / (2 * 0.03 * 0.03))) * amp
+        self.out[mask] += g[mask, None] * color
 
     def _deposit(self, head_x, color, mask, side):
-        # Snap a sparkle pixel near the head once per ~1/30 s
         idxs = np.where(mask)[0]
         i = idxs[np.argmin(np.abs(self.x[idxs] - head_x))]
         prev = self.last_top_idx if side == "top" else self.last_bot_idx
         if i != prev:
-            # fresh deposit: random nearby pixel for a sparkle feel
-            j = idxs[(np.searchsorted(self.x[idxs], head_x) + np.random.randint(-2, 3)) % idxs.size]
+            j = idxs[(np.searchsorted(self.x[idxs], head_x) + rng.integers(-2, 3)) % idxs.size]
             self.sparkle_age[j] = 0.0
             self.sparkle_rgb[j] = color
             if side == "top":
@@ -181,46 +174,56 @@ class TwinCometsWithSparkleTrails(Effect):
                 self.last_bot_idx = i
 ```
 
-That's the whole effect — ~50 lines of LLM-written Python. Note that nothing in the helper namespace was a special-cased primitive; everything came from numpy + a couple of helpers (`hex_to_rgb`, the named coordinate frames `ctx.frames.x` / `side_top` / `side_bottom`). **No new primitive class was needed.**
+That's the whole effect — ~50 lines of LLM-written Python. Note that nothing in the helper namespace was a special-cased primitive; everything came from numpy + a couple of helpers (`hex_to_rgb`, the named coordinate frames `ctx.frames.x` / `side_top` / `side_bottom`, the seeded `rng`). **No new primitive class was needed.**
 
 ### 3.3 Crucial properties
 
 - **One file = one effect.** No multi-class compositions; no "primitive registration." Discoverable, swappable, persistable.
 - **`init` runs once per swap.** All per-LED precompute, masks, RNGs, state buffers live there.
-- **`render` is hot-path.** Vectorised numpy. Returns `(N, 3) float32 in [0, 1]`. No allocation rule: encourage re-using `self.out`.
-- **Params are first-class and live.** Sliders update `ctx.params.<key>` between frames, no recompile. The LLM never sees user param changes — only the operator does.
+- **`render` is hot-path.** Vectorised numpy. Returns `(N, 3) float32 in [0, 1]`. Hard rule: no allocation in the hot path — preallocate everything in `init`, use `out=` kwargs.
+- **Buffer ownership: the runtime never mutates the effect's returned array.** The runtime copies the returned buffer once into a runtime-owned `master_buf` and applies the master output stage there. Cost is one `(1800, 3) float32` memcpy (~22 KB, ~3 µs on the Pi) — negligible vs. per-frame budget, and it removes a whole class of "why does my effect drift over time?" bugs. Effects can therefore freely return `self.out` and trust that next frame's `render` sees their state untouched.
+- **Params are first-class and live.** Sliders update `ctx.params.<key>` between frames, no recompile. The LLM never sees user param changes — only the operator does. Writes to `ctx.params` from inside the effect raise (not silent no-op) — silent failures are the opposite of helpful when the LLM is debugging from tracebacks.
 - **State is `self.*`.** No globals, no persistence between effect swaps (deliberately — "blank slate" is the model the LLM understands).
-- **`render` may raise.** We 'test-run' the code first, catch any errors, log the traceback, and ship the error back to the LLM for the next try. LLM gets 2 consecutive tries by default (see config.yaml). 
+- **`render` may raise.** We test-run the code first (init + ~30 synthetic render frames — see §9.1 fence test), catch any errors, log the traceback, and ship the error back to the LLM for the next try. LLM gets 2 consecutive retries by default (configurable in `config.yaml`).
+- **`rng` seeding policy.** `rng = np.random.default_rng(seed)` where `seed = stable_hash(effect_name)`. Deterministic across reloads (so "twin_comets" always has the same sparkle texture); unique per effect. If the operator wants a re-roll, the LLM can expose a `seed` int_slider param and incorporate it.
 
 ---
 
-## 4. Execution model
+## 4. Execution model — sandbox tuned for the Pi
 
-### 4.1 Sandboxed `exec`
+### 4.1 Substrate decision
 
-Python is the right substrate (already in the hot path, numpy is essential, festival deployment is a single trusted box — security threat model is "stop the LLM accidentally calling `os.system`" not "defend against malware").
+Python is the right substrate:
+
+- The render loop is already Python + numpy in-process; staying in-process avoids per-frame IPC.
+- Numpy is mandatory: at 1800 LEDs × 60 fps on a Pi 4/5, pure-Python `for` loops are ~10–30 ms per frame and miss budget on the first try; vectorised numpy hits sub-millisecond.
+- Single trusted festival deployment — security threat model is "stop the LLM accidentally calling `os.system`," not "defend against malware." See §13.
+
+### 4.2 Compile pipeline (one-time per effect)
 
 ```python
-# surface_v2/sandbox.py
+# surface/sandbox.py
 import builtins, ast, types
 
 _SAFE_BUILTINS = {n: getattr(builtins, n) for n in (
     "abs", "all", "any", "bool", "dict", "enumerate", "filter", "float",
     "int", "isinstance", "len", "list", "map", "max", "min", "pow", "range",
     "reversed", "round", "set", "slice", "sorted", "str", "sum", "tuple",
-    "zip", "type", "print",  # print routed to logger
+    "zip", "type",
 )}
-# explicitly absent: __import__, open, exec, eval, compile, input, getattr/setattr/delattr,
-#   globals, locals, vars, breakpoint, exit, quit
+# explicitly absent: __import__, open, exec, eval, compile, input,
+# getattr/setattr/delattr, globals, locals, vars, breakpoint, exit, quit, print
 
-_FORBIDDEN_NODES = (ast.Import, ast.ImportFrom)  # AST-level reject
+_FORBIDDEN_NODES = (ast.Import, ast.ImportFrom)
 
 def compile_effect(source: str, name: str) -> type[Effect]:
+    if len(source) > MAX_SOURCE_BYTES:        # default 8 KB
+        raise EffectCompileError(f"source too long ({len(source)} > {MAX_SOURCE_BYTES})")
     tree = ast.parse(source, filename=f"<llm:{name}>")
     for node in ast.walk(tree):
         if isinstance(node, _FORBIDDEN_NODES):
-            raise EffectCompileError("imports are forbidden — the runtime API "
-                                     "is already in the global namespace")
+            raise EffectCompileError(
+                "imports are forbidden — the runtime API is already in the global namespace")
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             raise EffectCompileError(f"dunder attribute access disallowed: {node.attr}")
     code = compile(tree, f"<llm:{name}>", "exec")
@@ -238,30 +241,40 @@ def compile_effect(source: str, name: str) -> type[Effect]:
 
 This is a **bag-check, not a vault**. It catches the LLM's reflex `import os` mistakes and prevents accidental file/network calls. Anyone who actually wanted to escape this could, but they'd need physical access to the prompt pane on the festival rig — out of scope.
 
-### 4.2 Lifecycle
+The AST scan and `compile()` happen **once**, at `write_effect` time. After that, the resulting code object runs at full CPython bytecode speed. There is **no per-frame sandbox overhead**: the restricted builtins live in the module's `__builtins__` dict, lookups are identical to a normal module, and `render(ctx)` is just a method call.
 
-```
-operator chats ──► LLM emits write_effect ──► sandbox compile ──► instantiate ──►
-                                                                     │
-                                                                     ▼
-                                                         init(EffectInitContext)
-                                                                     │
-                              ┌──────────────────────────────────────┤
-                              ▼                                      │
-                   per-frame: render(EffectFrameContext)              │
-                              │                                      │
-                              └──── crash ──► swap to error pulse ◄──┘
-                                              dispatch to LLM
-```
+### 4.3 Performance model (the part that matters on the Pi)
 
-Crossfade between two `Effect` instances is a 1:1 reuse of the existing `Mixer.crossfade_to` mechanism — render both, lerp, ship to transport.
+The Pi 4 (and Pi 5) is the deployment target. At 1800 LEDs × 60 fps the budget is **16.6 ms/frame**, of which ~3 ms is reserved for DDP encode/transmit and another ~2 ms for mixer post-stage + simulator broadcast. **Per-effect render budget: ~5 ms**, 8 ms during a crossfade (two effects render concurrently).
 
-### 4.3 Performance contract
+What actually hits the budget on the Pi, in priority order:
 
-The LLM is told in the system prompt:
-- **Budget:** `render` should complete in ≤5 ms for N=1800. Measure: we time every render and surface a rolling p95 alongside the catalogue. If the budget is missed for >2 s, the supervisor degrades gracefully (drops to half the target FPS, surfaces a warning to the operator UI).
-- **Idiom:** all per-LED work via numpy vector ops. Loops over `range(N)` are forbidden by convention (we don't enforce, but the prompt teaches the pattern hard).
-- **Output:** must be `(N, 3)` float32 (the loader checks shape and dtype on first render and raises with a clear message if wrong; LLM sees it and corrects).
+1. **Loops in Python over `N=1800`** — death. Pure-Python 1800-iter loop is 1–3 ms by itself on a Pi 4. Make this fail loudly: the system prompt forbids it, the example effects model the right pattern, and we surface render-time p95 in the UI so violations are visible. We do not try to detect loops statically — the LLM follows examples reliably here.
+2. **Per-frame allocation.** `np.zeros((N, 3))` triggers GC pressure (page-fault on first touch on the Pi). Rule: every per-LED array used by `render` is preallocated in `init`. The `Effect` base class provides `self.out` (the canonical `(N, 3) float32` output buffer) preallocated for the LLM, plus `self.scratch1d / scratch2d` if helpful.
+3. **dtype slop.** Default numpy is float64; Pi's NEON SIMD prefers float32. Mixed-dtype ops promote to float64 silently. Mitigation: every public array on `ctx.frames`, `ctx.pos`, audio scalars, palette LUTs is **float32**. Helpers (`hex_to_rgb`, `palette_lerp`) return float32. The system prompt has a one-liner: *"everything is float32; mixing in fp64 literals is fine but if you build large temporaries, keep them fp32."*
+4. **`out=` in-place ops.** `a + b * c` allocates twice; `np.multiply(b, c, out=tmp); np.add(a, tmp, out=tmp)` allocates zero. The flagship example demonstrates this pattern; the prompt teaches it as the second rule.
+5. **Avoid Python-side fancy indexing where vectorised math works.** `arr[mask] += g[mask] * c` is fine (numpy handles it in C); but per-LED if-branches in a Python loop are not.
+
+### 4.4 Watchdog (no hard kill — soft degrade)
+
+Every render is timed with `perf_counter`. We track:
+
+- Per-effect rolling **mean / p95 / p99** over the last 1 s.
+- **Fast trip:** if p95 exceeds the budget for **0.5 s** straight (~30 frames), the runtime:
+  1. Logs a warning with the offending effect name + p95.
+  2. Surfaces a red badge in the operator UI ("`render p95 = 14 ms — slow`").
+  3. Swaps that slot to the **safe-idle effect** (`pulse_mono` at 1 Hz, ~0.3 ms) and posts the slow effect's source + perf stats to the chat for the LLM to optimise.
+
+The 0.5 s window is deliberately tight — 2 s of stutter is 120 frames of jank visible to the dance floor, and the festival rule (§3 of `user_design_spec.md`) is "never break the show." Per-effect FPS halving was considered and dropped: it adds a per-effect scheduling state machine to the single asyncio render loop and the binary "swap to idle" outcome is what we actually want during a set.
+
+We do **not** try to interrupt mid-`render` — numpy holds the GIL through C and a hard-kill mid-call would corrupt the effect's `self.*` state. The watchdog is the pragmatic answer; the prompt's perf rules + examples are the prevention.
+
+### 4.5 Why not a separate process / thread / interpreter?
+
+- **Subprocess**: shipping `(N, 3) float32` over a pipe is ~22 KB / frame at 60 fps = 1.3 MB/s plus pickle overhead. On a Pi this is tens of ms of latency per frame for IPC alone. No.
+- **Thread**: the GIL means we'd serialise anyway. Numpy releases the GIL inside C, but the asyncio loop needs the result *before* it can encode and ship it; gain is zero, complexity is non-zero.
+- **Subinterpreter (PEP 684)**: still unstable in 3.11, no numpy-compatible model in 3.12. Revisit when 3.13's GIL story settles.
+- **Direct in-process `exec`** is the right answer. Sandbox at compile time, run at full speed at frame time.
 
 ---
 
@@ -274,63 +287,65 @@ The namespace `build_runtime_namespace()` populates is the **entire** surface ar
 | name             | type             | purpose                                                    |
 | ---------------- | ---------------- | ---------------------------------------------------------- |
 | `np`             | module           | numpy. The workhorse.                                      |
-| `Effect`         | class            | The base class to subclass.                                |
-| `hex_to_rgb`     | `(str) → (3,)`   | `'#ff8000'` → `np.array([1, 0.5, 0], float32)`.            |
-| `hsv_to_rgb`     | `(h, s, v) → (3,)` or vectorised over arrays | colour conversion. |
-| `lerp`           | `(a, b, t)`      | `a*(1-t) + b*t`, broadcasts.                               |
-| `clip01`         | `(x)`            | `np.clip(x, 0, 1)`.                                        |
-| `gauss`          | `(x, sigma)`     | normalised gaussian profile (peak = 1).                    |
+| `Effect`         | class            | The base class to subclass. Provides `self.out` preallocated as `(N, 3) float32`. |
+| `hex_to_rgb`     | `(str) → (3,) float32` | `'#ff8000'` → `np.array([1, 0.5, 0], float32)`. Cached.   |
+| `hsv_to_rgb`     | `(h, s, v) → (3,) float32` or vectorised over arrays | colour conversion. |
+| `lerp`           | `(a, b, t)`      | `a*(1-t) + b*t`, broadcasts; allocates only if `out` not given. |
+| `clip01`         | `(x, out=None)`  | `np.clip(x, 0, 1, out=out)`.                               |
+| `gauss`          | `(x, sigma, out=None)` | normalised gaussian profile (peak = 1).               |
 | `pulse`          | `(x, width)`     | cosine bump in `[-width, +width]`, peak = 1, else 0.       |
 | `tri`            | `(x)`            | triangle wave on [0, 1].                                   |
-| `wrap_dist`      | `(a, b, period)` | shortest signed distance with wrap (great for `u_loop`).   |
-| `palette_lerp`   | `(stops, t)`     | sample a multi-stop palette at scalar/array t.             |
-| `named_palette`  | `(name) → (LUT_SIZE, 3)` | look up `'fire'`, `'rainbow'`, etc.                |
-| `audio_smooth`   | `(state, key, halflife_s)` | pull a smoothed band value from a per-effect smoother. Helps avoid harsh visual jitter when the LLM wants softer reactivity than the upstream gives. |
+| `wrap_dist`      | `(a, b, period=1.0)` | shortest signed distance with wrap (great for `u_loop`). |
+| `palette_lerp`   | `(stops, t)`     | sample a multi-stop palette at scalar/array t. Returns float32. |
+| `named_palette`  | `(name) → (LUT_SIZE, 3) float32` | `'fire'`, `'rainbow'`, `'ocean'`, `'sunset'`, `'warm'`, `'ice'`, `'white'`, `'black'`. |
 | `rng`            | `np.random.Generator` | seeded per-effect, deterministic across reloads.      |
-| `log`            | logger           | `log.warning(...)` — never `print` to stdout.              |
+| `log`            | logger           | `log.warning(...)` — never `print` (which is excluded from builtins). |
 
-**Constants:** `PI`, `TAU`, `LUT_SIZE`.
+**Constants:** `PI`, `TAU`, `LUT_SIZE` (256).
 
-Anything else the LLM wants — sin, cos, exp, FFT — is `np.sin`, `np.cos`, `np.exp`, `np.fft`. We don't re-export numpy primitives; the LLM knows numpy.
+Anything else the LLM wants — `sin`, `cos`, `exp`, `fft` — is `np.sin`, `np.cos`, `np.exp`, `np.fft`. We don't re-export numpy primitives; the LLM knows numpy.
+
+**Removed vs. earlier draft:** no `audio_smooth` helper. Audio is already smoothed and auto-scaled upstream by the audio-server (`Realtime_PyAudio_FFT`). The LLM is told to use raw `ctx.audio.low / mid / high` directly.
 
 ### 5.2 The `EffectInitContext` (passed to `init`)
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class EffectInitContext:
-    n: int                                 # pixel count, e.g. 1800
-    pos: np.ndarray                        # (N, 3) float32 in [-1, 1]
+    n: int                                 # pixel count (e.g. 1800)
+    pos: np.ndarray                        # (N, 3) float32 in [-1, 1]; +x stage-right, +y up, +z toward audience
     frames: FrameMap                       # named per-LED scalars (see §5.3)
-    strips: list[StripInfo]                # per-strip metadata
-    config: dict                           # rig-level info (bbox, target_fps)
+    strips: list[StripInfo]                # per-strip metadata: id, pixel_count, geometry.start/.end
+    rig: RigInfo                           # bbox_min, bbox_max, target_fps, span_x_m, span_y_m
 ```
 
-`init` is also the right place to **declare derived per-LED arrays**: precompute distance-to-corner, rotated coords, anything spatial. It runs once per effect swap and never again, so cost is amortised.
+`init` is also the right place to **declare derived per-LED arrays**: precompute distance-to-corner, rotated coords, anything spatial. It runs once per effect swap and never again, so cost is amortised across the lifetime of the effect.
 
 ### 5.3 The `FrameMap` (named coordinate frames)
 
-Direct re-use of v1's `frames.py` (don't reinvent). Attribute access for ergonomics:
+Direct re-use of the existing `frames.py` content. Attribute access for ergonomics:
 
 ```python
-ctx.frames.x              # per-LED [0, 1]  (left → right)
-ctx.frames.y              # per-LED [0, 1]  (bottom → top)
-ctx.frames.signed_x       # per-LED [-1, 1]
-ctx.frames.signed_y       # per-LED [-1, 1]
-ctx.frames.u_loop         # per-LED [0, 1]  clockwise around the rig
-ctx.frames.u_loop_signed  # per-LED [-0.5, +0.5]
-ctx.frames.radius         # per-LED [0, 1]  from rig centre
-ctx.frames.angle          # per-LED [0, 1]  atan2(y,x)/2π wrapped
-ctx.frames.side_top       # per-LED 1.0 / 0.0  (top row mask)
-ctx.frames.side_bottom    # per-LED 1.0 / 0.0
-ctx.frames.side_signed    # per-LED +1 top, -1 bottom
-ctx.frames.axial_dist     # per-LED [0, 1]  |x|
-ctx.frames.axial_signed   # per-LED [-1, 1]
-ctx.frames.corner_dist    # per-LED [0, 1]
-ctx.frames.strip_id       # per-LED int32
-ctx.frames.chain_index    # per-LED [0, 1] within its own strip
+ctx.frames.x              # (N,) float32 in [0, 1]   — left → right (stage-x)
+ctx.frames.y              # (N,) float32 in [0, 1]   — bottom → top
+ctx.frames.z              # (N,) float32 in [0, 1]   — back → audience
+ctx.frames.signed_x       # (N,) float32 in [-1, 1]
+ctx.frames.signed_y       # (N,) float32 in [-1, 1]
+ctx.frames.u_loop         # (N,) float32 in [0, 1]   — clockwise around the rig from top-centre
+ctx.frames.u_loop_signed  # (N,) float32 in [-0.5, +0.5]
+ctx.frames.radius         # (N,) float32 in [0, 1]   — from rig centre
+ctx.frames.angle          # (N,) float32 in [0, 1]   — atan2(y,x)/2π wrapped
+ctx.frames.side_top       # (N,) float32 ∈ {0, 1}    — 1 on top row
+ctx.frames.side_bottom    # (N,) float32 ∈ {0, 1}    — 1 on bottom row
+ctx.frames.side_signed    # (N,) float32 ∈ {-1, +1}  — top = +1, bottom = -1
+ctx.frames.axial_dist     # (N,) float32 in [0, 1]   — |x|, distance from centre column
+ctx.frames.axial_signed   # (N,) float32 in [-1, 1]
+ctx.frames.corner_dist    # (N,) float32 in [0, 1]   — to nearest corner
+ctx.frames.strip_id       # (N,) int32               — 0..3 for the 4-strip rig
+ctx.frames.chain_index    # (N,) float32 in [0, 1]   — local index along this strip from controller end
 ```
 
-These are the same arrays v1 already builds in `topology.derived`. Surface v2's `FrameMap` is a thin attribute-access wrapper around that dict — no recomputation.
+These arrays are the SAME object across renders — the LLM may take views and slices safely; mutation is forbidden by convention (the prompt says so; we do not write-protect).
 
 ### 5.4 The `EffectFrameContext` (passed to `render` every tick)
 
@@ -339,38 +354,46 @@ These are the same arrays v1 already builds in `topology.derived`. Surface v2's 
 class EffectFrameContext:
     t: float                          # effective time (master.speed-scaled, freezes on freeze)
     wall_t: float                     # raw wall clock, monotonic
-    dt: float                         # seconds since previous render
-    audio: AudioView                  # see below
+    dt: float                         # seconds since previous render (~0.0167 at 60 fps)
+    audio: AudioView
     params: ParamView                 # current operator-controlled values, attribute access
-    masters: MasterControls           # READ-ONLY snapshot (saturation/brightness/etc)
+    masters: MastersView              # READ-ONLY snapshot (saturation/brightness/...). Diagnostic only.
 ```
 
-`AudioView`:
+**`AudioView`** — every value is **already smoothed and auto-scaled upstream by the audio-server**, then **pre-multiplied by `masters.audio_reactivity`** before reaching the effect. The LLM treats them as ready-to-use, doesn't see the master, and doesn't need to apply it. This keeps the operator's "audio reactivity" master a global, single-knob attenuator that works across every effect ever generated, without each effect having to opt in:
 
 ```python
 class AudioView:
-    low: float                                 # smoothed [0, 1]
-    mid: float                                 # smoothed [0, 1]
-    high: float                                # smoothed [0, 1]
-    bands: dict[str, float]                    # {"low": 0.7, "mid": 0.2, "high": 0.4}
-    beat: int                                  # number of new beats since last render (0 / 1 typically)
-    beats_since_start: int                     # monotonic counter
-    bpm: float                                 # current tempo, falls back to 120 when disconnected
-    connected: bool
+    low: float          # smoothed band energy in [0, 1] — typical range during a track: 0.1 – 0.9
+                        # quiet room: 0.0 – 0.1; bass kick at peak: ~0.7 – 1.0
+                        # cutoffs published live in /audio/meta (typical: 30 – 250 Hz)
+    mid: float          # smoothed band energy in [0, 1] — typical range: 0.05 – 0.7
+                        # carries vocals, snare body, melody  (typical 250 – 2000 Hz)
+    high: float         # smoothed band energy in [0, 1] — typical range: 0.05 – 0.6
+                        # carries hats, snare crack, sibilance (typical 2 – 8 kHz)
+    bands: dict[str, float]      # {"low": <low>, "mid": <mid>, "high": <high>}
+                                 # convenience for `ctx.audio.bands[ctx.params.audio_band]`
+    beat: int           # number of new beats since last render (0 most frames; 1 on a kick;
+                        # rarely 2 if two onsets fired in the same frame interval)
+                        # use `ctx.audio.beat > 0` as a one-shot trigger
+    beats_since_start: int   # monotonic onset counter
+    bpm: float          # current tempo, falls back to 120.0 when disconnected
+    connected: bool     # False when audio-server is silent / down. low/mid/high are 0.0 in this case
 ```
 
-`ParamView` is a `SimpleNamespace`-like object whose attributes are the current values of every param the effect declared. Mutating it does nothing (read-only proxy); the operator UI is the source of truth.
+**`ParamView`** is a `SimpleNamespace`-like object whose attributes are the current values of every param the effect declared. **Writes raise `TypeError`** (the operator UI is the source of truth — silent no-ops would just hide LLM bugs). If an effect needs a clamped or derived value, compute it locally each frame.
 
 ### 5.5 What's deliberately **not** in the namespace
 
 - File I/O, network, `subprocess`, anything that could touch the OS.
 - Other effects' state (effects don't talk to each other — single active effect).
 - The transport (effects compute pixels, they don't ship them).
-- A way to mutate masters (read-only — same rule v1 has).
+- A way to mutate masters or params (read-only — operator-owned).
+- `print` (use `log.info / log.warning`).
 
 ---
 
-## 6. Param schema & the dynamic UI
+## 6. Param schema & the dynamic UI controls
 
 The LLM's `params` array in the tool call is the contract for the auto-generated UI. The control vocabulary is small and stable:
 
@@ -381,7 +404,7 @@ The LLM's `params` array in the tool call is the contract for the auto-generated
 | `color`       | `default` (hex)                                | colour picker             |
 | `select`      | `options: [str, ...]`, `default`               | dropdown                  |
 | `toggle`      | `default: bool`                                | switch                    |
-| `palette`     | `default: str`                                 | named palette dropdown + preview swatch (re-uses v1's `NAMED_PALETTES` list) |
+| `palette`     | `default: str` (one of `named_palette` keys)   | named palette dropdown + preview swatch |
 
 Common metadata on every param:
 - `key`: snake_case identifier (must match attribute on `ctx.params`)
@@ -389,15 +412,15 @@ Common metadata on every param:
 - `help?`: optional tooltip text
 
 Validation happens on **two** sides:
-- **LLM side** (compile-time): the schema is type-checked against a pydantic model; bad shapes are returned to the LLM as a structured error like the v1 compile errors.
+- **LLM side** (compile-time): the schema is type-checked against a pydantic model; bad shapes are returned to the LLM as a structured error (similar to v1 compile errors).
 - **Runtime side**: when the operator changes a value, it's clamped to the param's bounds before the next frame. `select` values must be in `options`.
 
 **Live update path:**
 ```
-slider drag  ──►  PATCH /v2/effect/params  {key, value}
+slider drag  ──►  PATCH /effect/params  {key, value}
                             │
                             ▼
-                  ParamView.update(key, value)  (atomic on the asyncio loop)
+                  ParamStore.update(key, value)  (atomic on the asyncio loop)
                             │
                             ▼
                   next render() sees the new value
@@ -405,49 +428,314 @@ slider drag  ──►  PATCH /v2/effect/params  {key, value}
 
 No recompile, no crossfade, no LLM round-trip. This is the headline UX win.
 
----
+Soft cap: ≤8 params per effect. The LLM is taught to merge related knobs and avoid over-parameterising.
 
-## 7. The system prompt for v2
+### 6.1 Param carry-forward across regenerations
 
-Re-using the per-turn assembly pattern from `agent/system_prompt.py`. Sections, in order:
+When the LLM emits a new `write_effect` (replacing an effect the operator has been tuning via sliders), we **auto-merge by `key`**: for every param in the new schema whose `key` matches a param in the previous effect AND whose declared bounds/type accept the previous value, the previous value becomes the new effect's initial value (overriding the LLM's `default`). The LLM is told this in the system prompt — so:
 
-1. **INSTALL.** Topology summary (1800 LEDs, 4 strips, geometry), with a small ASCII rig diagram showing top-right / bottom-right / bottom-left / top-left labels.
-2. **COORDINATE FRAMES.** Names + one-liners (re-use `FRAME_DESCRIPTIONS`). The most important section. Includes a worked example: "to address only the top row, mask with `ctx.frames.side_top.astype(bool)`."
-3. **AUDIO.** Same content as today: device, band cutoffs, current values; how `low/mid/high/beat/bpm` are smoothed and scaled.
-4. **MASTERS** (read-only).
-5. **RENDER CONTRACT.** The `Effect` class signature, the two contexts, the return-shape rule, the no-import rule, the perf budget. ~30 lines.
-6. **RUNTIME API.** A flat reference table of every helper in the namespace (§5.1) with a one-line signature each. ~25 lines.
-7. **PARAM SCHEMA.** The control vocabulary table (§6). ~15 lines.
-8. **EXAMPLE EFFECTS.** Three handwritten reference effects shipped in `surface_v2/examples/`:
-    - **`pulse_mono.py`** — simplest possible: solid colour, brightness pulses on `audio.low`.
-    - **`audio_radial.py`** — palette-mapped radius with audio-driven brightness; demonstrates `frames.radius` + `palette_lerp`.
-    - **`twin_comets_with_sparkles.py`** — the one from §3.2 above, fully written out. Demonstrates state, side masks, particle deposit, audio modulation.
-9. **ANTI-PATTERNS.** Concrete things the LLM gets wrong:
-    - "Don't loop over `range(N)`. Vectorise."
-    - "Don't allocate inside `render`. Pre-allocate `self.out` in `init`."
-    - "Don't `import` anything — the namespace is given."
-    - "Don't normalise audio yourself; `ctx.audio.low` is already in `[0, 1]`."
-    - "Always return `(N, 3) float32` in `[0, 1]`. The loader rejects everything else."
-    - "Don't read masters except for diagnostics — the operator owns those."
-10. **CURRENT EFFECT.** Source of the active effect + its current param values. The LLM can choose to patch params (`update_params`) instead of regenerating.
-11. **TOOLS.** `write_effect` and `update_params` schemas.
+- For knobs that are conceptually unchanged (`leader_color`, `speed`), reuse the same `key` → the operator's tweak survives the regeneration automatically.
+- For knobs being renamed or re-bounded ("I'm renaming `comet_speed` → `sweep_speed` to match the new metaphor"), the LLM picks a new `key` and the slider resets to its declared default. This is correct: the meaning changed.
+- For knobs being dropped or added, no merge happens (no key match).
 
-Token estimate: ~5–6k tokens of system prompt (less than v1, because we trade the primitive catalogue for three reference examples and one runtime-API table).
+This way the common case ("regenerate but keep my colour and lead-offset") is mechanical and robust; the uncommon case (renamed/restructured params) is still the LLM's call. Falls back gracefully and saves prompt tokens vs. having the LLM hand-merge every time.
 
 ---
 
-## 8. Tool call surface for the agent
+## 7. Two-mode operator UI: Design vs. Live
 
-Two tools, both server-validated.
+This is a first-class architectural concept, not a UI affordance bolted on later. The two modes affect what gets rendered, where it gets sent, and what controls the operator sees.
 
-### 8.1 `write_effect`
+### 7.1 Mode semantics
+
+| mode         | sim viz shows               | DDP (physical LEDs) shows  | controls available                              |
+| ------------ | --------------------------- | -------------------------- | ----------------------------------------------- |
+| **Design**   | the *preview* effect (LLM scratchpad) | the *live* effect (last promoted) | chat + LLM tools + preview's param panel + "Promote to live" button |
+| **Live**     | mirrors DDP (the live effect)  | the live effect             | masters + live effect's param panel + "Switch to design" |
+
+In **Design mode** the operator can prompt the LLM, watch it iterate, accept and reject drafts, fiddle with sliders on the *preview* effect — all without disturbing the dance floor, because DDP keeps shipping the last-promoted live effect.
+
+In **Live mode** the operator is performing: param sliders, masters, blackout, freeze. No chat. The simulator viz mirrors the LEDs exactly so the operator can see what the room sees on screen.
+
+A **"Promote to live"** button in design mode crossfades the live slot from its current effect to the preview effect (over the operator's master crossfade duration). The preview slot keeps the same effect — promotion is a copy, not a move — so the operator can keep tweaking and re-promote as needed.
+
+A **"Pull live to preview"** button in design mode loads the current live effect into the preview slot, so the operator can iterate on what's actually playing.
+
+### 7.2 Engine / runtime data model
+
+```python
+class Runtime:
+    live: ActiveEffect      # always rendered; goes to DDP (and to sim in live mode)
+    preview: ActiveEffect   # active in design mode; goes to sim only
+    mode: Literal["design", "live"]
+    crossfade: CrossfadeState   # only ever applies to the LIVE slot
+
+@dataclass
+class ActiveEffect:
+    name: str
+    instance: Effect              # compiled, init'd
+    params: ParamStore            # current values
+    schema: list[ParamSpec]
+    perf: RollingStats            # render p50/p95/p99 over last 2s
+```
+
+Every frame:
+
+1. Render `live.instance` → `live_buffer (N, 3) float32`.
+2. If a live crossfade is in progress, also render the previous live effect and lerp into `live_buffer`.
+3. Apply master output stage (saturation pull → brightness gain → clip) to `live_buffer`.
+4. If `mode == "live"`:
+   - sim_buffer = live_buffer (no second render needed; identical content).
+5. If `mode == "design"`:
+   - Render `preview.instance` → `preview_buffer`.
+   - Apply masters to `preview_buffer` too (same masters; the operator wants to see how it'll look live).
+   - sim_buffer = preview_buffer.
+6. Encode + transmit:
+   - `ddp.send_frame(live_buffer.to_uint8(gamma))`
+   - `simulator.broadcast(sim_buffer.to_uint8(gamma))`
+
+Worst case (design mode + live crossfade): three renders per frame (preview, live, live-previous). At 5 ms/render budget that's 15 ms — still inside the 16.6 ms tick. Acceptable, and the watchdog catches violations (§4.4).
+
+### 7.3 Transport routing
+
+The current `MultiTransport` (sim + DDP) gets replaced by a **`SplitTransport`** with two methods:
+
+```python
+class SplitTransport:
+    sim: SimulatorTransport
+    led: DDPTransport | None       # None when running headless / dev sim-only
+
+    async def send(self, *, sim_frame: bytes, led_frame: bytes | None) -> None:
+        await self.sim.send_frame(sim_frame)
+        if self.led is not None and led_frame is not None:
+            await self.led.send_frame(led_frame)
+```
+
+Engine is the only caller; it picks `sim_frame` and `led_frame` per the mode rules above. `sim_frame is led_frame` (same bytes) in live mode and in dev-only setups — zero extra copy.
+
+The existing `transport/pause` API (Pi-vs-Gledopto debug) still applies: pausing only blocks the `led` leg; the sim leg continues so the operator UI viz stays alive. No changes needed beyond pointing at the new `SplitTransport`.
+
+### 7.4 UI sketch
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  [Design] [Live]                       brightness ▮▮▮▮▯  speed ▮▮▮▯▯  …     │
+├─────────────────────────────────────┬────────────────────────────────────────┤
+│                                     │  PARAMS — twin_comets_with_sparkles    │
+│           SIMULATOR VIZ             │  ──────────────────────────────────    │
+│                                     │  Top comet colour      ■ #ff2020       │
+│       (preview effect when in       │  Bottom comet colour   ■ #1040ff       │
+│        design; live effect when     │  Top–bottom lead       ▮▯▯▯▯ 0.166     │
+│        in live)                     │  Comet speed           ▮▮▯▯▯ 0.40      │
+│                                     │  Sparkle fade time     ▮▮▮▯▯ 1.5 s     │
+│                                     │  Brightness driver     [low ▾]         │
+│                                     │  ─────────────────────────────────     │
+│                                     │  perf: 1.4 ms  •  audio: low=0.7       │
+│                                     │  ┌────────────────────────────────┐    │
+│                                     │  │ Promote to live ▶              │    │
+│                                     │  └────────────────────────────────┘    │
+├─────────────────────────────────────┴────────────────────────────────────────┤
+│  CHAT (design mode only)                                                     │
+│  > make the trail spiral around the rig instead of stay on side              │
+│  ◀ Wrote new effect spiral_trails.py — preserved your colour + lead tweaks.  │
+│  > add a soft white flicker on every kick                                    │
+│  ◀ Wrote new effect spiral_trails_with_kick.py …                             │
+│                                                                              │
+│  Library: [pulse_mono] [audio_radial] [twin_comets_with_sparkles*] …         │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+In Live mode: chat collapses, library list collapses, "Promote to live" disappears, "Switch to design" appears. The viz/params/masters layout is identical so muscle memory carries over.
+
+### 7.5 Mode persistence
+
+Mode persists across page reloads (local-storage). Restart of the server defaults to **Live** mode (so a kicked Pi doesn't come back up rendering a half-finished preview to nothing).
+
+---
+
+## 8. The system prompt for v2
+
+Re-using the per-turn assembly pattern from `agent/system_prompt.py`. Sections, in order, with concrete content choices for the load-bearing ones:
+
+### 8.1 Section list
+
+1. **YOUR JOB.** One paragraph: you are an LED effect author. You write Python `Effect` classes that get hot-loaded into a render loop on a Raspberry Pi. The user describes what they want; you write the smallest Effect that delivers it. You also declare a small set of UI sliders so they can tune it without re-prompting you.
+2. **PHYSICAL RIG** (§8.2 below).
+3. **COORDINATE FRAMES** (§8.3 below).
+4. **AUDIO INPUT** (§8.4 below).
+5. **THE EFFECT CONTRACT** (§8.5 below).
+6. **RUNTIME API.** Flat reference table of every name in §5.1, one-line each.
+7. **PARAM SCHEMA.** The control vocabulary table (§6).
+8. **PERFORMANCE RULES** (§8.6 below).
+9. **EXAMPLE EFFECTS** (§8.7 below). Three handwritten reference effects.
+10. **ANTI-PATTERNS.** Concrete things the LLM gets wrong (vectorise; preallocate; no imports; trust audio scaling; return shape; no print).
+11. **CURRENT EFFECTS.** Source + current param values for both the `live` slot and the `preview` slot. Param values reflect any slider tweaks the operator has made since the effect was generated, so the LLM can see what the operator settled on and use those as the defaults of its next attempt. The LLM defaults to writing into `preview`.
+12. **LAST EFFECT ERROR** (only present if the previous attempt failed). Full traceback + the offending source.
+13. **TOOL.** `write_effect` schema (the only tool — every chat turn writes a new effect; the operator tunes within it via the UI sliders).
+
+Token estimate: ~6–7k tokens (less than v1 because we trade the primitive catalogue for three reference examples + integration docs).
+
+### 8.2 PHYSICAL RIG block (verbatim into prompt)
+
+```
+PHYSICAL RIG
+1800 LEDs (WS2815, 60 LEDs/m) on metal scaffolding.
+Layout: a tall RECTANGLE — two parallel horizontal rows, ~30 m wide, ~1 m
+vertically apart. Each row is two strips wired centre-out: total of 4 strips.
+
+         (top-left)                       (top-right)
+   ◄─────── 450 LEDs ◄──┐    ┌──► 450 LEDs ───────►
+                        │    │                                ▲ +y (up)
+                        │    │                                │
+                        │ FEED                                │
+                        │    │
+   ◄─────── 450 LEDs ◄──┘    └──► 450 LEDs ───────►
+        (bottom-left)                    (bottom-right)
+                                                             ─► +x (stage-right)
+
+Quadrants are addressed via the named frames `side_top` / `side_bottom` /
+`axial_signed` (see COORDINATE FRAMES). Logical pixel 0 of each strip is
+its inner end (centre of the rig). The frames `u_loop` and `chain_index`
+walk the rig clockwise so motion around the rectangle is one-line.
+
+Coordinate convention (right-handed):
+  +x = stage-right
+  +y = up
+  +z = toward the audience  (the rig is roughly planar in xy; z is small)
+Origin = centre of the rig. `ctx.pos` is normalised so each axis is in [-1, 1].
+```
+
+### 8.3 COORDINATE FRAMES block
+
+A table copied from §5.3 with one usage tip per frame, e.g.:
+
+```
+  side_top      bool-able mask of the top row.    Use:  mask = ctx.frames.side_top.astype(bool)
+  u_loop        clockwise around the rig [0,1].   Use:  for "around the rectangle" motion
+  signed_x      [-1,+1] left↔right.               Use:  for symmetric explode/collapse
+  ...
+```
+
+Plus a tiny worked snippet:
+
+```python
+# To draw something only on the top row, masked-additively:
+self.out[ctx.frames.side_top.astype(bool)] += my_per_led_rgb_top_array
+```
+
+### 8.4 AUDIO INPUT block (verbatim into prompt)
+
+```
+AUDIO INPUT
+The audio-server (Realtime_PyAudio_FFT) captures from a USB mic, runs an FFT,
+auto-scales each band's energy to ~[0, 1] via a long-window peak follower, and
+publishes the result over OSC. By the time you see it, EVERYTHING IS PRE-
+SMOOTHED AND SCALED. Use raw values; do not apply your own EMA/clamp/normalise.
+
+  ctx.audio.low      float in [0, 1]  — band energy ≈ 30–250 Hz (kick, sub).
+                                          quiet room ≈ 0.0–0.1
+                                          steady groove ≈ 0.3–0.6
+                                          peak kick ≈ 0.7–1.0
+  ctx.audio.mid      float in [0, 1]  — ≈ 250–2000 Hz (vocals, snare body, melody).
+                                          typical 0.05–0.7
+  ctx.audio.high     float in [0, 1]  — ≈ 2–8 kHz (hats, sibilance, crack).
+                                          typical 0.05–0.6
+  ctx.audio.bands    dict {"low":…, "mid":…, "high":…}  — for param-driven band selection.
+
+  ctx.audio.beat     int  — number of fresh onset events since the previous frame.
+                            Almost always 0 or 1; occasionally 2. Use `> 0` as a
+                            rising-edge trigger. NEVER threshold ctx.audio.low to
+                            detect kicks — the upstream onset detector is far better.
+  ctx.audio.beats_since_start  int monotonic counter.
+  ctx.audio.bpm      float  — current tempo. Falls back to 120.0 when disconnected.
+  ctx.audio.connected bool — False = audio-server silent. low/mid/high will be 0.0.
+
+LIVE READING (snapshot at request time):
+  device:    {device_name}
+  low  ({low_lo:.0f}–{low_hi:.0f} Hz):  {low:.3f}
+  mid  ({mid_lo:.0f}–{mid_hi:.0f} Hz):  {mid:.3f}
+  high ({hi_lo:.0f}–{hi_hi:.0f} Hz):    {high:.3f}
+  bpm:       {bpm:.1f}
+```
+
+(The live-snapshot block at the bottom is regenerated per-turn — same pattern as v1.)
+
+### 8.5 THE EFFECT CONTRACT block (verbatim into prompt)
+
+```
+HOW YOUR CODE GETS LOADED AND RUN
+
+Your code is a single Python module. We compile it with restricted builtins
+(no imports — everything you need is already in scope: numpy as `np`, the
+`Effect` base class, helpers, `rng`, `log`, constants). We extract the single
+`Effect` subclass you defined, instantiate it, and wire it into the renderer:
+
+    effect = YourEffectClass()
+    effect.init(EffectInitContext(n=1800, pos=…, frames=…, strips=…, rig=…))
+    # ... then 60 times per second, on the asyncio render loop:
+    rgb = effect.render(EffectFrameContext(t=…, dt=…, audio=…, params=…, masters=…))
+    # rgb must be a (1800, 3) float32 array with values in [0, 1].
+    # We do NOT copy this — we read it directly. Returning `self.out` after
+    # filling it in-place is the canonical pattern.
+
+LIFECYCLE
+  - `init(ctx)` runs ONCE per effect swap. Use it for ALL precomputation and
+    state allocation: per-LED masks, distance lookups, output buffer, RNG-seeded
+    arrays. The Pi appreciates it.
+  - `render(ctx)` runs every frame. Vectorised numpy. No allocation.
+
+WHAT YOU ARE NOT
+  - You are not a layer in a stack. There is exactly one active effect at a
+    time. If the user wants two patterns layered, write them in one Effect:
+    compute both, blend, return the result.
+  - You cannot read other effects, the transport, or the file system.
+  - You cannot modify ctx.params or ctx.masters — those are operator-owned.
+```
+
+### 8.6 PERFORMANCE RULES block
+
+```
+PERFORMANCE — THIS RUNS ON A RASPBERRY PI
+
+Target: render() < 5 ms per call at N=1800. Watchdog will swap your effect
+out and report back to you if you blow the budget for >2 seconds.
+
+  RULE 1: Vectorise. NEVER loop over `range(ctx.n)` in Python — use numpy.
+  RULE 2: Don't allocate in render(). Preallocate `self.out` and any
+          per-LED scratch buffers in `init`. Use `np.add(a, b, out=self.foo)`,
+          `arr *= …`, `np.exp(x, out=…)` style.
+  RULE 3: Stay in float32. ctx.frames.* and ctx.pos are float32; helpers
+          return float32; build temporaries with `np.empty(N, dtype=np.float32)`.
+          Mixing fp64 silently slows you down 2× on Pi.
+  RULE 4: Do per-LED math in vector form. Even small Python branches on
+          per-LED values will eat your budget.
+```
+
+### 8.7 EXAMPLE EFFECTS block
+
+Four handwritten reference effects shipped in `surface/examples/` (each ~30–100 lines, fully written into the prompt verbatim):
+
+- **`pulse_mono.py`** — simplest possible. Solid colour fills `self.out`, brightness pulses on `audio.low`. Demonstrates: `init` preallocation, `render` returning `self.out`, audio access, one slider param.
+- **`audio_radial.py`** — palette-mapped `frames.radius` scrolled by `t`, brightness modulated by audio. Demonstrates: per-LED scalar field, `palette_lerp`, `audio.bands[...]` with a `select` param.
+- **`palette_wash_with_kick_sparkles.py`** — *multi-component effect in one file.* A slow palette-wash background (`palette_lerp` along `u_loop`) plus per-frame stochastic kick-triggered sparkles overlaid additively. Demonstrates: how to write what v1 used to need a layer-stack for — compute A into one buffer, compute B into another, combine with `np.add(a, b, out=self.out)` + `clip01`. This is the canonical pattern any time the operator says "X plus Y" / "background X with Y on top."
+- **`twin_comets_with_sparkles.py`** — the §3.2 example, fully written out. Demonstrates: state, side masks, particle deposit, audio modulation, hand-rolled gaussian stamping, `rng`.
+
+These are simultaneously: the LLM's reference templates, the smoke-test fixtures (loaded by `tests/test_examples.py`), and the boot-time default (`pulse_mono`).
+
+---
+
+## 9. Tool call surface for the agent
+
+One tool, server-validated. The LLM never touches param values — those are operator-owned via the dynamic UI. A new chat turn from the user is treated as a request for a script-level change.
+
+### 9.1 `write_effect`
 
 ```jsonc
 {
   "type": "function",
   "function": {
     "name": "write_effect",
-    "description": "Replace the active LED effect with a new Python Effect class plus an operator UI param schema. Always emit the COMPLETE effect — never a diff.",
+    "description": "Replace the PREVIEW effect with a new Python Effect class plus an operator UI param schema. The operator promotes preview → live separately, and tunes individual values via the UI sliders. Always emit the COMPLETE effect — never a diff.",
     "parameters": {
       "type": "object",
       "additionalProperties": false,
@@ -455,7 +743,7 @@ Two tools, both server-validated.
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,40}$" },
         "summary": { "type": "string" },
-        "code": { "type": "string", "description": "A single Python module defining exactly one Effect subclass." },
+        "code": { "type": "string", "description": "A single Python module defining exactly one Effect subclass. Max 8 KB." },
         "params": { "type": "array", "items": { "$ref": "#/$defs/Param" } }
       }
     }
@@ -466,173 +754,218 @@ Two tools, both server-validated.
 Server flow on receipt:
 1. Validate the param schema (pydantic).
 2. AST-scan + sandbox-compile the code.
-3. Instantiate the Effect, call `init(ctx)` once.
-4. Fence-test: call `render(ctx)` once with synthetic context (t=0, dt=1/60, zeroed audio, defaults). Check `(N, 3) float32 in [0, 1]`.
-5. Persist `code` + `params` + `param_values` (the defaults) to `config/v2_effects/<name>.json`.
-6. Crossfade the engine to the new effect (using master crossfade duration).
-7. Tool result: `{ ok: true, name, params }` — or a structured error the LLM can read.
+3. Instantiate the Effect, call `init(ctx)` once. **Reject if `init` takes >200 ms** — common cause is a per-pair (N×N) precompute the LLM didn't realise was quadratic; we'd rather catch it here than have the operator see a hitch on promote.
+4. Fence-test: call `render(ctx)` for **30 synthetic frames** (~0.5 s of wall-time at `dt=1/60`) with a synthetic audio impulse train (a `beat=1` event every 6th frame, mid/high oscillating) and the param defaults. Check every frame is `(N, 3) float32 in [0, 1]` with no NaN/Inf. Time them; reject if any single render exceeds 50 ms or if mean exceeds 8 ms. Multi-frame fence-testing catches stateful bugs (NaN drift, off-by-one in deposit logic, sparkle pool overflow, scratch-buffer aliasing) that a 1-frame test misses.
+5. Persist `code` + `params` + `param_values` (the defaults) per the layout in §10.
+6. Swap into the **preview** slot (no crossfade — preview swap is hard, since the operator is iterating).
+7. Tool result: `{ ok: true, name, params }` — or a structured error the LLM can read on the next turn.
 
-### 8.2 `update_params`
+### 9.2 Why no `update_params` tool?
 
-```jsonc
-{
-  "type": "function",
-  "function": {
-    "name": "update_params",
-    "description": "Patch the active effect's parameter values without changing its code. Use this when the user's request is satisfiable by tuning existing knobs.",
-    "parameters": {
-      "type": "object",
-      "required": ["values"],
-      "properties": {
-        "values": { "type": "object", "additionalProperties": true }
-      }
-    }
-  }
-}
-```
+Earlier drafts had a second tool to patch param defaults without regenerating code, with the LLM choosing between the two. We dropped it. The rationale:
 
-Server flow: validate each key against the active effect's schema; clamp to bounds; apply atomically; broadcast updated values to all open UIs over the existing `/ws/state` channel.
+- The operator already has every param in front of them as a live slider. If they want a different colour or speed, the fastest path is the slider, not a chat round-trip.
+- A typed prompt almost always means "I want the *behaviour* to change," not "I want this one default tweaked." Funnelling these through `write_effect` is the right model.
+- Fewer tool branches → simpler prompt, smaller chance of the LLM picking the wrong one.
 
-### 8.3 Choosing between the two
-
-Hard rule in the system prompt: *"If every change the user requested can be done by adjusting an existing param's default, call `update_params`. Otherwise call `write_effect` (a complete new effect). Never both in the same turn."*
-
-This makes iteration cheap. "Make the top one orange instead of red" → one OSC packet, no Python compile, no crossfade flash.
+If a chat turn really is just a re-colour, the LLM can write a near-identical effect with the new default in ~2 seconds and the operator gets a cleaner mental model: "every chat turn produces a new effect; the sliders tune within an effect."
 
 ---
 
-## 9. Persistence
+## 10. Persistence
 
-`config/v2_effects/<slug>.json` per saved effect:
+Each saved effect lives in its own folder under `config/effects/`, with the Python source as a real `.py` file (not a string baked into JSON) and the metadata in a sibling YAML:
 
-```jsonc
-{
-  "name": "twin_comets_with_sparkle_trails",
-  "summary": "...",
-  "code": "<source>",
-  "params": [ ... ],            // schema
-  "param_values": { ... },      // current operator values
-  "created_at": "2026-05-09T...",
-  "updated_at": "2026-05-09T...",
-  "source": "agent" | "user"    // hand-written examples land in examples/ instead
-}
+```
+config/effects/twin_comets_with_sparkle_trails/
+  effect.py          ← Python source, real file (diffable, syntax-highlighted, SSH-editable on the Pi)
+  effect.yaml        ← metadata + param schema + current operator values
 ```
 
-REST endpoints (mirroring v1 presets):
+`effect.yaml`:
 
-| method | path                         | purpose                                |
-| ------ | ---------------------------- | -------------------------------------- |
-| GET    | `/v2/effects`                | list saved effects                     |
-| POST   | `/v2/effects/{name}/apply`   | crossfade to a saved effect            |
-| POST   | `/v2/effects/{name}/save`    | save the active effect under `name`    |
-| DELETE | `/v2/effects/{name}`         | remove from disk                       |
-| GET    | `/v2/active`                 | current effect: name, code, params, values |
-| PATCH  | `/v2/active/params`          | set one or more param values           |
+```yaml
+name: twin_comets_with_sparkle_trails
+summary: "Two comets sweep left→right..."
+source: agent          # or 'user' for hand-written
+created_at: 2026-05-09T...
+updated_at: 2026-05-09T...
+params:                # schema (see §6)
+  - key: leader_color
+    label: "Top comet colour"
+    control: color
+    default: "#ff2020"
+  - ...
+param_values:          # operator's current values (auto-merged into next regen — see §6.1)
+  leader_color: "#ff70a0"
+  lead_offset: 0.083
+  ...
+```
+
+The split matters for three reasons: `git diff` on the source file is readable; SSH-into-the-Pi-and-tweak-an-effect is one editor open away; and the disk-watcher hot-reload (open Q #4) becomes a one-liner with `watchdog` since `.py` and `.yaml` save events are well-defined. Bundled examples live under `src/ledctl/surface/examples/<slug>/effect.py` with the same shape.
+
+REST endpoints:
+
+| method | path                          | purpose                                       |
+| ------ | ----------------------------- | --------------------------------------------- |
+| GET    | `/effects`                    | list saved effects                            |
+| POST   | `/effects/{name}/load_preview`| load a saved effect into the PREVIEW slot     |
+| POST   | `/effects/{name}/load_live`   | load a saved effect into the LIVE slot (with crossfade) |
+| POST   | `/effects/{name}/save`        | save the active preview under `name`          |
+| DELETE | `/effects/{name}`             | remove from disk                              |
+| GET    | `/active`                     | both slots: name, code, params, values, mode  |
+| PATCH  | `/preview/params`             | set one or more preview param values          |
+| PATCH  | `/live/params`                | set one or more live param values             |
+| POST   | `/promote`                    | crossfade live ← preview (preview unchanged)  |
+| POST   | `/pull_live_to_preview`       | copy live → preview (preview overwritten)     |
+| POST   | `/mode`                       | set mode = "design" \| "live"                 |
+
+State persisted across restarts: `mode`, `live.name + values`, `preview.name + values`. On boot we re-instantiate from disk; if a saved effect's source no longer compiles (e.g. helper API changed), we fall back to `pulse_mono` for that slot and surface a warning in the UI.
 
 ---
 
-## 10. Engine integration & the toggle
+## 11. Engine integration (full overwrite, no toggle)
 
-A single config field, fully back-compat:
+The existing `surface/` package is removed. Engine, mixer, agent, API, and presets are reworked to talk to the new runtime directly. The migration path is destructive — we lean on the recent commits as the rollback boundary.
 
-```yaml
-# config/config.dev.yaml
-engine:
-  surface_version: "v1"   # default — current behaviour, untouched
+### 11.1 What gets deleted
+
+```
+src/ledctl/surface/                         — entire package
+src/ledctl/mixer.py                          — replaced by runtime.py (post-stage moves over)
+src/ledctl/agent/tool.py                     — replaced by surface/tool.py (write_effect / update_params)
+src/ledctl/agent/system_prompt.py            — replaced by surface/prompt.py
+config/presets/                              — kept on disk for reference, not loaded
+src/ledctl/presets.py                        — replaced by surface/persistence.py
+tests/test_surface_*.py                      — deleted (or moved to /tests/legacy_v1/ for diff inspection, .gitignored before commit)
+tests/test_mixer.py                          — rewritten against the new runtime
 ```
 
-```yaml
-# config/config.v2.yaml (or set on the Pi after testing)
-engine:
-  surface_version: "v2"
+### 11.2 What gets kept verbatim
+
+- `topology.py` (incl. `frames.py` content moved to `surface/frames.py` underneath the new package).
+- `audio/*` (state, bridge, supervisor — entirely audio-server-facing).
+- `masters.py` — operator-owned controls, render-loop concept, unchanged.
+- `pixelbuffer.py` — gamma encode + uint8 cast.
+- `transports/{base,ddp,simulator}.py` — but `multi.py` is replaced by `split.py` (§7.3).
+- `config.py` — gains a few fields (`engine.preview_default`, etc.); no removals.
+- `api/auth.py` — auth gate untouched.
+- `cli.py` — boot path unchanged.
+
+### 11.3 New folder layout
+
+```
+src/ledctl/
+  surface/                       ← THE new package (replacing the old one of the same name)
+    __init__.py                  — public API: Runtime, Effect, build_runtime_namespace
+    base.py                      — Effect base class, EffectInitContext, EffectFrameContext, AudioView, FrameMap, ParamView
+    frames.py                    — moved from old surface/, unchanged content
+    sandbox.py                   — AST scan + safe exec + class extraction
+    helpers.py                   — hex_to_rgb, hsv_to_rgb, gauss, pulse, lerp, clip01, palette_lerp, named_palette
+    palettes.py                  — NAMED_PALETTES, LUT baking (lifted from old surface/)
+    runtime.py                   — Runtime: live/preview slots, crossfade, param store, master output, watchdog
+    schema.py                    — pydantic models for tool calls + Param spec
+    persistence.py               — load/save effect JSONs from config/effects/
+    prompt.py                    — build_system_prompt(...): assembles §8 prompt
+    tool.py                      — apply_write_effect, apply_update_params handlers
+    examples/
+      pulse_mono/effect.py + effect.yaml
+      audio_radial/effect.py + effect.yaml
+      palette_wash_with_kick_sparkles/effect.py + effect.yaml
+      twin_comets_with_sparkles/effect.py + effect.yaml
+      __init__.py                — list of bundled examples
+  transports/
+    split.py                     — NEW: SimulatorTransport + DDPTransport with separate sim/led frames
+    multi.py                     — DELETED
+  engine.py                      — slimmed: owns Runtime, calls render → SplitTransport
+  api/
+    server.py                    — routes rebuilt against the new model
+    agent.py                     — points at surface/prompt + surface/tool
+config/
+  effects/<slug>/{effect.py, effect.yaml}   — NEW: persisted effects (source + metadata sidecar)
+  presets/                       — left in place for reference; no longer loaded
+src/web/
+  index.html                     — rebuilt as the dual-mode shell
+  lib/app.js                     — chat + dynamic param panel + viz + mode toggle
+tests/
+  test_sandbox.py                — AST scan, builtins, error reporting
+  test_runtime.py                — preview/live slots, crossfade, watchdog, split transport
+  test_examples.py               — load each example, fence-test, render 60 frames
+  test_persistence.py
+  test_prompt.py                 — sanity-checks the assembled system prompt
 ```
 
-Wiring inside `engine.py`:
+### 11.4 Engine rewrite (sketch)
 
 ```python
 class Engine:
-    def __init__(self, cfg, topology, transport, masters=None):
-        ...
-        if cfg.engine.surface_version == "v2":
-            from .surface_v2.runtime import V2Runtime
-            self._v2 = V2Runtime(topology)
-            self._render_path = self._render_v2
+    def __init__(self, cfg, topology, transport: SplitTransport, masters=None):
+        self.cfg = cfg
+        self.topology = topology
+        self.transport = transport
+        self.target_fps = cfg.project.target_fps
+        self.gamma = cfg.output.gamma
+        self.runtime = Runtime(topology, masters=masters or MasterControls())
+        self.runtime.load_default()    # pulse_mono into both slots on boot
+
+    async def _loop(self):
+        # ... (timing identical to today; period gating + audio kick) ...
+        ctx_live, ctx_preview = self.runtime.build_contexts(wall_t, dt, audio_view, masters)
+
+        live_buf = self.runtime.render_live(ctx_live)         # (N, 3) float32 in [0, 1]
+        if self.runtime.mode == "design":
+            preview_buf = self.runtime.render_preview(ctx_preview)
+            sim_buf = preview_buf
         else:
-            self._v2 = None
-            self._render_path = self._render_v1   # current code, unchanged
+            sim_buf = live_buf
+
+        led_bytes = self.runtime.encode(live_buf, self.gamma)
+        sim_bytes = led_bytes if sim_buf is live_buf else self.runtime.encode(sim_buf, self.gamma)
+        await self.transport.send(led_frame=led_bytes, sim_frame=sim_bytes)
 ```
 
-The render loop's body becomes:
-
-```python
-self.buffer.clear()
-self._render_path(ctx)        # v1 → mixer.render; v2 → v2.render_into
-if self.calibration is not None:
-    self._apply_calibration(wall_t)
-await self.transport.send_frame(self.buffer.to_uint8(self.gamma))
-```
-
-`V2Runtime` owns:
-- The active `Effect` instance.
-- The previous `Effect` instance during a crossfade.
-- Wall-clock crossfade math (re-using the same alpha curve).
-- Param store, audio smoother, rng seeding.
-- Compile + fence-test pipeline (called from the `write_effect` handler).
-- The post-render master output stage (saturation pull → brightness gain → clip), copied verbatim from `Mixer._apply_master_output`. The brightness master's adaptive headroom and the saturation pull are not v1-specific concepts — they're operator features and v2 must preserve them.
-
-**v2 deliberately has no concept of "layer stack" / blend modes.** One effect at a time. If we ever want layering back, the LLM can build it inside one `Effect` (it's just numpy compositing). This keeps the prototype focused.
-
-**v1 is untouched.** Every line under `src/ledctl/surface/`, every test under `tests/test_surface_*.py`, every preset under `config/presets/` keeps working when `surface_version: "v1"`.
-
----
-
-## 11. UI integration
-
-A new page, `/v2`, served alongside the existing `/` (which stays on v1). Flipping the config flag changes which page the operator opens; both work in dev simultaneously when the Pi is on v1 and the Mac is on v2.
-
-The v2 UI has three regions:
-
-1. **Live viz** (top): re-use the existing simulator canvas/WebSocket frame stream verbatim. No changes needed to `audio-meter.js` / `main-desktop.js` — the frame topic is the same.
-2. **Dynamic param panel** (left or right rail): rendered from the active effect's param schema. One control per param. Every change debounces to ~16 ms then `PATCH`es. Values reset to defaults via a per-param click; "reset all" button per effect.
-3. **Chat + active-code panel** (bottom or right): the existing chat UI on top, plus a collapsed view of the active effect's source (so the operator can read what the LLM wrote). A small "Save as…" / "Saved effects" library list above the chat.
-
-Plus the existing master row stays exactly as it is — masters are common to both engines.
-
-The dynamic panel rendering is small (one component per `control` type, ~150 lines of vanilla JS). No framework required; keep parity with the rest of the project's hand-rolled web UI style.
+`Runtime` owns everything that used to live in `Mixer` (master output stage, crossfade, blackout) plus the new preview slot, watchdog, and per-effect param/perf stores. Calibration overrides hook into `Runtime.encode` — same place Mixer applied them.
 
 ---
 
 ## 12. Crossfade between effects
 
-The mixer's crossfade math is engine-agnostic:
+Crossfade only ever applies to the **live** slot — preview swaps are hard cuts because the operator is actively iterating and a crossfade would make "did my fix work?" feedback ambiguous.
 
 ```python
-def _render_crossfade_v2(out, prev, curr, ctx, alpha):
-    a = prev.render(ctx)
-    b = curr.render(ctx)
-    np.multiply(a, 1.0 - alpha, out=out)
-    out += b * alpha
-    np.clip(out, 0.0, 1.0, out=out)
+def render_live(self, ctx) -> np.ndarray:
+    if self._cf is None:
+        return self._apply_masters(self.live.instance.render(ctx))
+    elapsed = ctx.wall_t - self._cf.start
+    if elapsed >= self._cf.duration:
+        self._cf = None
+        return self._apply_masters(self.live.instance.render(ctx))
+    alpha = clip01(elapsed / self._cf.duration)
+    a = self._cf.previous.render(ctx)
+    b = self.live.instance.render(ctx)
+    np.multiply(a, 1.0 - alpha, out=self._cf_scratch)
+    self._cf_scratch += b * alpha
+    np.clip(self._cf_scratch, 0.0, 1.0, out=self._cf_scratch)
+    return self._apply_masters(self._cf_scratch)
 ```
 
-`alpha` uses `ctx.wall_t` — same as v1, so freeze/speed don't slow the crossfade. Once `alpha >= 1.0` the previous Effect is dropped.
-
-The new Effect's `init` runs at `write_effect` time (during the fence test), so by the time the crossfade starts, there's no first-frame stall.
+Alpha uses `wall_t` so freeze/speed don't slow the crossfade — same v1 contract.
 
 ---
 
 ## 13. Error handling
 
-Three failure modes, each with a defined recovery path:
-
 | failure                                           | what happens                                                                                       |
 | ------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `write_effect` → SyntaxError / AST-disallowed     | tool result returns `{ok: false, error: "compile_failed", traceback: "..."}` — LLM self-corrects   |
-| `write_effect` → fence test crashes (`init` or first `render`) | same, but with the specific exception. Active effect is unchanged.                       |
-| live `render` raises after going active           | catch, log traceback, blank output for this frame. After 3 consecutive failures, swap back to the previous effect (or to a built-in "safe idle"). Surface the error in the chat for the next LLM turn. |
-| live `render` returns wrong shape / dtype         | same as above. The shape check costs ~50 ns per frame.                                             |
+| `write_effect` → SyntaxError / AST-disallowed     | tool result `{ok: false, error: "compile_failed", traceback}` — LLM self-corrects on next turn     |
+| `write_effect` → fence test crashes (`init` or first `render`) | same, with the specific exception. Preview slot unchanged.                              |
+| live `render` raises after going active           | catch, log traceback, blank that frame. After 3 consecutive failures, swap that slot to `pulse_mono` (safe idle) and surface the error in the chat for the next LLM turn. |
+| live `render` returns wrong shape / dtype         | same as above. Shape check costs ~50 ns / frame and runs on first render only after a swap.        |
+| watchdog: p95 over budget for 2 s                 | warn → halve target FPS for that effect → if still over, swap to `pulse_mono`, post perf report to chat |
 
-All error tracebacks are surfaced to the LLM in the next turn's system prompt under a **`LAST EFFECT ERROR`** section, so the LLM can fix without the operator having to re-prompt.
+All error tracebacks are surfaced to the LLM on the next turn under a **`LAST EFFECT ERROR`** section, so the LLM can fix without the operator having to re-prompt.
+
+LLM gets up to **2 automatic consecutive retries** (configurable in `config.yaml`) before the chat asks the operator whether to keep trying.
 
 ---
 
@@ -646,194 +979,192 @@ We're not building a public sandbox. Threat model:
 
 Mitigations:
 
-- **AST reject** of `import` and dunder access (§4.1).
-- **Stripped builtins** (no `eval/exec/open/__import__/...`).
-- **Render budget watchdog**: every `render` runs in the asyncio loop directly (we don't move to a thread — overhead would dominate). We measure wallclock and emit a warning + degrade FPS if the rolling p95 exceeds budget. We do *not* try to interrupt mid-render — numpy holds the GIL through C and a hard kill would corrupt state. The pragmatic answer is the budget warning + manual swap to the safe idle effect.
-- **No `subprocess`, no `socket`** — they're not in the namespace and `import` is gone.
+- **AST reject** of `import` and dunder access (§4.2).
+- **Stripped builtins** — no `eval/exec/open/__import__/print/getattr/setattr/...`.
+- **Source size cap** (8 KB).
+- **Render budget watchdog** (§4.4). We do *not* try to interrupt mid-render — numpy holds the GIL through C and a hard kill mid-call would corrupt state. The pragmatic answer is the budget warning + automatic swap to safe idle.
 
-Good enough for the festival rig. If we ever serve this to untrusted users, swap `exec` for a real sandbox (subinterpreter / Pyodide-in-process / RestrictedPython). Out of scope for v2.
-
----
-
-## 15. Folder layout
-
-Strictly isolated; v1 imports nothing from v2 and vice-versa (except `topology` and `audio` which are shared infrastructure):
-
-```
-src/ledctl/
-  surface/               # v1, untouched
-  surface_v2/            # NEW
-    __init__.py          — public API: V2Runtime, Effect, build_runtime_namespace
-    base.py              — Effect base class, EffectInitContext, EffectFrameContext, AudioView, FrameMap, ParamView
-    sandbox.py           — AST scan + safe exec + class extraction
-    helpers.py           — hex_to_rgb, hsv_to_rgb, gauss, pulse, lerp, clip01, palette_lerp, named_palette, audio_smooth, ...
-    runtime.py           — V2Runtime: holds active+previous effects, crossfade, param store, render-into-buffer, brightness/saturation post-stage
-    schema.py            — pydantic models for tool call (write_effect, update_params) + Param
-    persistence.py       — load/save effect JSONs from config/v2_effects/
-    prompt.py            — build_system_prompt_v2(...): assembles the §7 prompt
-    tool.py              — apply_write_effect(...), apply_update_params(...) — the tool handlers
-    examples/
-      pulse_mono.py
-      audio_radial.py
-      twin_comets_with_sparkles.py
-      README.md           — these are the LLM's reference templates AND smoke tests
-  api/
-    server.py            — adds /v2/* routes when surface_version == "v2"
-    agent.py             — branches on surface_version to pick the right tool/prompt
-config/
-  v2_effects/            — persisted LLM-generated effects live here
-src/web/
-  v2.html                — operator page for v2 mode
-  lib/v2-app.js          — ~600 lines of vanilla JS: chat + dynamic param panel + viz reuse
-tests/
-  test_surface_v2_sandbox.py
-  test_surface_v2_runtime.py
-  test_surface_v2_examples.py    — load each example, fence-test, render 60 frames, snapshot RGB stats
-```
+Good enough for the festival rig. If we ever serve this to untrusted users, swap `exec` for a real sandbox (subinterpreter / RestrictedPython / Pyodide-in-process). Out of scope.
 
 ---
 
-## 16. Implementation plan (suggested phasing)
+## 15. Implementation plan (suggested phasing)
 
-### Phase 0 — scaffolding (½ day)
-- [ ] Create `surface_v2/` skeleton with empty modules + the toggle field (`engine.surface_version`).
-- [ ] Wire engine branching so v1 still runs identically when flag is absent.
-- [ ] Smoke test: tests pass, dev server still works on v1.
+### Phase 0 — destructive cut (½ day)
+- [ ] Confirm working tree is clean (it is).
+- [ ] Branch `surface-v2-rewrite`.
+- [ ] Delete the v1 surface package, mixer, agent tool/prompt, presets.py, related tests.
+- [ ] Move `frames.py` content into the new `surface/frames.py`.
+- [ ] Stub the new `surface/` package so the tree compiles.
+- [ ] Engine boots into a hardcoded "all-black" effect; tests are red but project runs.
 
 ### Phase 1 — runtime + sandbox (1 day)
-- [ ] `Effect` base class, `EffectInitContext`, `EffectFrameContext`, `FrameMap` (wraps `topology.derived`), `AudioView`, `ParamView`.
-- [ ] `helpers.py` — full §5.1 surface, with tests for each helper.
-- [ ] `sandbox.py` — AST scan, restricted builtins, `compile_effect()`. Tests: imports rejected, dunder access rejected, normal numpy code accepted.
-- [ ] `runtime.py` — `V2Runtime.swap_to(EffectClass)`, `render_into(buffer, ctx)`, crossfade. Audio smoother per-effect. Master output stage (copied from mixer).
+- [ ] `Effect` base class (with preallocated `self.out`), `EffectInitContext`, `EffectFrameContext`, `FrameMap`, `AudioView`, `ParamView`, `MastersView`.
+- [ ] `helpers.py` — full §5.1 surface, with tests for each helper (focused on float32 correctness and `out=` paths).
+- [ ] `sandbox.py` — AST scan, restricted builtins, `compile_effect()`. Tests: imports rejected, dunder access rejected, source-size cap, normal numpy code accepted.
+- [ ] `runtime.py` — live/preview slots, mode switch, crossfade, watchdog scaffold, ParamStore. Master output stage (saturation pull → adaptive brightness → clip), copied from the old mixer.
+- [ ] `transports/split.py` — replace MultiTransport.
 
 ### Phase 2 — example effects + smoke harness (½ day)
 - [ ] `examples/pulse_mono.py`, `audio_radial.py`, `twin_comets_with_sparkles.py`. These double as **acceptance tests** for the runtime API.
-- [ ] `tests/test_surface_v2_examples.py`: load each example, instantiate against a synthetic 1800-LED topology, render 60 frames with synthetic audio, assert no exceptions + bounded RGB.
+- [ ] `tests/test_examples.py`: load each example, instantiate against a synthetic 1800-LED topology, render 60 frames with synthetic audio, assert no exceptions + bounded RGB + render time under 5 ms (skip the timing assertion in CI on x86; only assert it on the Pi run).
 
 ### Phase 3 — REST + persistence (½ day)
-- [ ] `/v2/active` (GET), `/v2/active/params` (PATCH), `/v2/effects` (GET/POST/DELETE/apply).
-- [ ] `persistence.py` — load on boot, save on `write_effect`.
-- [ ] Default effect on boot: `pulse_mono` from the examples directory.
+- [ ] All endpoints from §10.
+- [ ] `persistence.py` — load on boot, save on `write_effect`, fall back to `pulse_mono` if a saved source no longer loads.
+- [ ] Boot defaults: `pulse_mono` in both slots; mode = "live".
 
 ### Phase 4 — agent integration (1 day)
-- [ ] `prompt.py` — assemble the §7 system prompt; reuse `topology` summary + audio summary helpers from v1.
-- [ ] `tool.py` — `write_effect` and `update_params` handlers.
-- [ ] `api/agent.py` — branch on `surface_version` to pick the v2 tool set + prompt.
-- [ ] Iterate on the prompt with the real LLM until the user's flagship "twin comets" prompt one-shots cleanly. **This is the acceptance bar for Phase 4** — if it doesn't one-shot, the prompt is wrong.
+- [ ] `prompt.py` — assemble §8 prompt.
+- [ ] `tool.py` — `write_effect` handler (the only tool).
+- [ ] `api/agent.py` — wired to the new tools/prompt.
+- [ ] **Acceptance:** the user's flagship "twin comets with sparkle trails" prompt one-shots cleanly. If it doesn't, the prompt is wrong — iterate until it does.
 
 ### Phase 5 — operator UI (1 day)
-- [ ] `src/web/v2.html` + `lib/v2-app.js`: dynamic param panel (slider/color/select/toggle/palette renderers), chat, active-code viewer, saved-effects list.
+- [ ] `index.html` rebuilt as the dual-mode shell.
+- [ ] `lib/app.js`: mode toggle, dynamic param panel (slider/color/select/toggle/palette), chat (visible only in design), live-code viewer, saved-effects list, masters row, preview/live indicators, "Promote to live" / "Pull live to preview" buttons.
 - [ ] Reuse simulator canvas + WebSocket frame stream verbatim.
-- [ ] Wire the master row.
 
 ### Phase 6 — polish (rolling)
-- [ ] Render budget watchdog + p95 readout in UI.
-- [ ] "Pin" / "Star" effects for quick-recall.
-- [ ] LLM-side: teach it to prefer `update_params` when possible (anti-pattern in the prompt: "regenerating code when only a default changed").
-- [ ] Move v2 default effect to Pi config when stable; keep flag.
+- [ ] Render budget watchdog wired to UI badge.
+- [ ] "Star" effects for quick-recall in the library.
+- [ ] LLM-side: monitor whether the LLM is faithfully carrying forward the operator's param tweaks from the previous effect's `param_values` into the new effect's defaults; tighten the prompt if it isn't.
+- [ ] Pi field-test sweep: measure per-example render time on the rig, tune budget if needed.
 
-**Total: ~3.5–4.5 dev days to a usable prototype the user can drive on the rig.**
+**Total: ~4–5 dev days** to a usable system the user can drive on the rig.
 
 ---
 
-## 17. Open questions (worth deciding before code)
+## 16. Open questions (worth deciding before code)
 
-1. **Single-effect vs. layer stack.** v2 starts single-effect for prototype clarity. Do we ever want stacking back? My take: **no** — the LLM is good at writing a unified effect; layer stacks were a v1 affordance because primitives were limited.
-
-2. **Effects calling each other.** Could we let the LLM `apply_named_effect("pulse_mono")` from inside its own `render`? Tempting (sub-effects), but breaks the "one file, one Effect" mental model. Skip for v2. If the user wants composition, the LLM writes both pieces in one effect.
-
+1. **Single-effect vs. layer stack.** v2 is single-effect per slot for prototype clarity. The LLM is good at writing a unified effect; layer stacks were a v1 affordance because primitives were limited. Revisit if a real prompt fails because of this.
+2. **Effects calling each other.** Could we let the LLM `apply_named_effect("pulse_mono")` from inside its own `render`? Tempting (sub-effects), but breaks the "one file, one Effect" mental model. Skip for v2.
 3. **Crossfade duration.** Use the existing master crossfade slider (already operator-owned). The LLM never picks the duration. Same v1 contract.
-
-4. **Audio smoothing inside effects.** Provide `audio_smooth(ctx.audio, "low", halflife_s=0.1)` so the LLM can locally smooth without touching upstream config? **Yes** — give it the helper, but the prompt guides it to use raw bands by default (the upstream is already auto-scaled).
-
-5. **Hot-reload from disk.** Should we watch `config/v2_effects/*.json` and auto-apply on change? Useful for developer tinkering on the Pi. **Yes** but behind a config flag, off by default.
-
-6. **`update_params` vs. `update_param`.** The schema lets the LLM patch many at once — good (single tool call for "make it warmer and slower"). Keep plural.
-
-7. **Error pulse vs. blackout on render crash.** I prefer **error pulse** (1 Hz dim red breathing) — the operator sees something is wrong; blackout looks like a power fail. Configurable.
-
-8. **Token budget for `code`.** The flagship `twin_comets_with_sparkles` is ~50 lines; the LLM will be tempted to write more. Cap at 6 KB of code per effect (~150 lines), reject above with a structured error to keep the agent disciplined.
-
-9. **Naming.** `surface_v2` is fine for the prototype folder; rename later (`effects/`, `vj/`, etc.) once we know the right name.
-
-10. **Mobile UI.** Out of scope for v2. The dynamic param panel is desktop-first; a phone-friendly version comes after Phase 7 of the master roadmap.
+4. **Hot-reload from disk.** Should we watch `config/effects/*.json` and auto-load? Useful for developer tinkering on the Pi via SSH. **Yes** behind a config flag, off by default.
+5. **Behaviour on render crash.** Blank frame for the failing render, then 3-strikes swap to `pulse_mono`. Configurable to "1 Hz dim red breathing" if blank is too jarring.
+6. **Code-size cap.** 8 KB / ~200 lines per effect. Reject above with a structured error to keep the agent disciplined.
+7. **Mobile UI.** Out of scope. Dual-mode panel is desktop-first; phone-friendly version comes later.
+8. **Preview crossfade.** Hard-cut on preview swap (so the operator sees the new code immediately). Crossfade only on live promote / preset load on the live slot.
+9. **What happens to the old `config/presets/`?** Leave on disk for reference; not loaded by the new runtime. We can write a one-shot migration tool that takes a v1 preset and asks the LLM to translate it to a v2 Effect, but that's a separate project.
+10. **Carrying operator tweaks forward.** Resolved: **auto-merge by `key`** (see §6.1). Mechanical merge for matching keys whose previous value fits the new bounds; the LLM is told this in the prompt and chooses keys deliberately (reuse for "same knob, new effect"; rename for "this knob means something different now"). Hybrid keeps the common case bulletproof without losing the LLM's ability to restructure params freely.
 
 ---
 
-## 18. The "north star" worked example
+## 17. The "north star" worked example, end to end
 
-To make sure the design is sound, walk the user's flagship prompt end-to-end:
+The user's flagship prompt walked through the new system:
 
 > *"Create two comets going from left to right, the top one is leading the bottom one by 1/6th of the total distance. After a comet has passed, it leaves behind sparkles flickering in its color that gradually darken and fade out. The top comet is red, the bottom one deep blue. Both of them are pulsating in brightness between 0.6 and 1.0 max brightness based on the 'low' audio signal."*
 
-### Operator action
-Types into the v2 chat. Hits send.
+### Operator
+- Switches to **Design mode** (single click).
+- Types into chat. Hits send.
+- LEDs continue showing whatever the current `live` effect is — dance floor undisturbed.
 
 ### LLM round-trip
-- Reads system prompt: knows about `frames.side_top`, `frames.x`, `audio.low`, the `Effect` contract, the param schema, the worked `twin_comets_with_sparkles` example.
+- Reads system prompt: knows the rig is a 1800-LED rectangle, `frames.side_top` masks the top row, `audio.low` is pre-smoothed in `[0, 1]`, `Effect` contract, `rng`, `hex_to_rgb`, `wrap_dist`, the worked example template.
 - Emits one `write_effect` tool call with code ≈ §3.2 above + a six-param schema.
 
 ### Server
+- Param schema validated.
 - AST scan: clean.
 - Sandbox compile: ok.
 - `init(synthetic_ctx)` runs in <1 ms (precompute masks).
-- Fence-test `render(synthetic_ctx)`: returns `(1800, 3) float32`, all in `[0, 1]`. Pass.
-- Save to `config/v2_effects/twin_comets_with_sparkle_trails.json`.
-- Crossfade engine to new effect over operator's master crossfade duration (e.g. 1 s).
+- Fence-test `render(synthetic_ctx)`: returns `(1800, 3) float32`, all in `[0, 1]`, takes ~1.4 ms. Pass.
+- Save to `config/effects/twin_comets_with_sparkle_trails.json`.
+- Hard-swap into the **preview slot** — operator sees it instantly in the simulator.
 - Tool result `{ok: true, name, params}`.
 
-### UI
+### UI (design mode)
 - Param panel updates: 6 controls appear (two colour pickers, four sliders, one dropdown).
 - Chat shows the LLM's `summary` + a "View source" disclosure.
-- LEDs show the new effect, audio-reactive.
+- Simulator viz shows the new effect, audio-reactive — but the LEDs still show the previous live effect.
 
-### Iteration
-Operator drags `lead_offset` from 0.166 → 0.083 → comets get tighter. No LLM call.
-Operator: "make the leader a brighter pink" → LLM emits `update_params({"leader_color": "#ff70a0"})`. Single round-trip, no compile.
-Operator: "now make the trail particles spiral around the rig instead of stay on side" → fundamental change. LLM emits `write_effect` with new code (using `frames.u_loop` + `wrap_dist`).
+### Iteration in design mode
+- Operator drags `lead_offset` from 0.166 → 0.083 → comets get tighter on screen. No LLM call.
+- Operator drags `leader_color` to a brighter pink in the UI colour picker. No LLM call.
+- Operator: "now make the trail particles spiral around the rig instead of stay on side" → script-level change. LLM emits `write_effect` with new code (using `frames.u_loop` + `wrap_dist`). The system prompt's CURRENT EFFECTS block already shows it the operator's tweaked values (`lead_offset = 0.083`, `leader_color = "#ff70a0"`), so the new effect's defaults preserve the operator's tuning.
+
+### Promote
+- Operator clicks **"Promote to live"**. The live slot crossfades from the previous effect to `twin_comets_with_sparkle_trails` over the master crossfade duration.
+- Operator can stay in design mode (sim still showing preview, which is the same effect now) or switch to **Live mode** (sim now mirrors LEDs; sliders only, chat hidden) for the rest of the set.
 
 This is the UX we're building toward.
 
 ---
 
-## 19. What v2 deliberately gives up vs. v1
+## 18. What gets removed from v1, and why that's fine
 
-In the spirit of "no half-finished implementations" — the things v2 does **not** carry over from v1, and why that's fine:
+In the spirit of "no half-finished implementations" — the things v2 explicitly drops:
 
-- **Layer stack + blend modes.** One effect at a time. Compose inside the effect.
-- **Type-checked compositional graph.** Replaced by "the loader runs the code; if it crashes, you see the traceback." Pythonic, less safe, much more expressive.
-- **Cross-effect palette / scalar reuse.** No shared compile-time vocabulary. Each effect re-derives what it needs from `frames` + `helpers`.
-- **`primitives_json` REST catalogue.** v2 doesn't have primitives. The "catalogue" is the system prompt + the `examples/` directory.
-- **Persisted layer-stack presets.** Replaced by persisted whole-effect JSONs. v1 presets stay readable in v1 mode.
+- **The typed primitive graph.** Replaced by Python code. The compile-time safety we lose is replaced by (a) AST sanity-checks, (b) fence-test on `init` + first `render`, (c) live watchdog with auto-rollback. The expressivity gained is large; the safety lost is recoverable.
+- **Layer stacks + blend modes.** One effect per slot. Compose inside the effect.
+- **Cross-effect palette / scalar reuse.** Each effect re-derives what it needs from `frames` + `helpers`.
+- **`primitives_json` REST catalogue.** No primitives. Catalogue is the system prompt + `examples/`.
+- **Persisted layer-stack presets** (`config/presets/*.yaml`). Replaced by per-effect JSONs (`config/effects/*.json`). Old YAML files stay on disk for reference but the new runtime doesn't load them.
 
-Things v2 keeps verbatim:
+Things kept verbatim:
 
 - Topology + named coordinate frames.
-- Audio bridge + AudioState semantics.
-- Master controls (brightness/saturation/speed/freeze/audio_reactivity), including adaptive headroom.
-- Crossfade math and the operator's crossfade slider.
+- Audio bridge + `AudioState` semantics + the audio-server subprocess.
+- Master controls (brightness/saturation/speed/freeze/audio_reactivity), incl. adaptive headroom.
+- Crossfade math (only applied to the live slot now).
 - Calibration overrides.
-- Transport layer.
-- DDP-pause / blackout semantics.
+- DDP / simulator transports + the `transport/pause` API.
+- Auth gate.
 
-The split is clean: v2 changes **what gets rendered**, not **how it's shipped**.
+The split is clean: v2 changes **what gets rendered and how the operator interacts with it**, not **how it's shipped**.
 
 ---
 
-## 20. Decision summary
+## 19. Decision summary
 
 | question                                  | answer                                                          |
 | ----------------------------------------- | --------------------------------------------------------------- |
 | Substrate for LLM-authored code           | Python with sandboxed `exec`, AST-scanned, restricted builtins  |
 | Effect shape                              | One `Effect` subclass per file: `init(ctx)` + `render(ctx) → (N,3) float32` |
-| Spatial vocabulary                        | Re-use v1's named frames (`x / u_loop / radius / side_top / ...`) via `ctx.frames.*` |
-| Audio vocabulary                          | Same as v1 (`low / mid / high / beat / bpm / connected`) via `ctx.audio.*` |
-| Param schema                              | Six control types (`slider / int_slider / color / select / toggle / palette`), declared per-effect by the LLM |
-| Operator UI                               | Dynamic panel auto-rendered from the schema; PATCH-on-change, no recompile |
-| Iteration                                 | Two LLM tools: `write_effect` (full new effect), `update_params` (patch defaults). Prefer the latter when possible. |
-| State                                     | Per-effect via `self.*`. No globals, no inter-effect state.     |
-| Crossfade & error recovery                | Reuse v1 mixer crossfade; render errors → 1 s error pulse, then revert + report to LLM |
-| v1 compatibility                          | Single config flag `engine.surface_version: v1 | v2`. v1 untouched, all current tests/presets keep working. |
-| Estimated build time                      | ~3.5–4.5 dev days to a usable prototype                          |
+| Spatial vocabulary                        | Named frames (`x / u_loop / radius / side_top / signed_x / ...`) via `ctx.frames.*`, all float32, plus `ctx.pos` |
+| Audio vocabulary                          | `low / mid / high / beat / bpm` via `ctx.audio.*` — pre-smoothed and pre-scaled upstream; LLM uses raw values |
+| Sandbox cost on the Pi                    | One-time at compile; zero per-frame overhead. Per-frame perf comes from numpy + preallocated buffers + float32. |
+| Param schema                              | Six control types declared per-effect by the LLM                |
+| Operator modes                            | **Design** (chat + preview-only render) and **Live** (sliders + render to LEDs). Sim and DDP can show different streams in design mode. |
+| Iteration                                 | One LLM tool: `write_effect` (full new effect, into preview). Operator tunes within an effect via the UI sliders — never via the chat. Param values auto-merge by `key` across regenerations (§6.1) so colour/speed tweaks survive automatically; the LLM picks new keys when a knob's meaning changes. |
+| State                                     | Per-effect via `self.*`. No globals, no inter-effect state. Runtime never mutates the effect's returned buffer (one memcpy into `master_buf` before masters apply). |
+| Crossfade & error recovery                | Crossfade only on live promote. Render errors → blank frame, 3-strikes swap to `pulse_mono`, error reported to LLM. Watchdog trips after **0.5 s** of p95-over-budget (not 2 s) to keep stutter off the dance floor. |
+| Storage                                   | `config/effects/<slug>/{effect.py, effect.yaml}` — Python source as a real file, metadata + param schema + values in a sibling YAML. Diffable, SSH-editable, ready for disk-watch hot-reload. |
+| Migration path                            | Full replacement — old surface package and mixer deleted in this refactor. |
+| Estimated build time                      | ~4–5 dev days to a usable system on the rig                     |
 
-The bet: **a 600-line runtime + a great system prompt outperforms a 2,500-line typed primitive graph**, because the LLM is the right tool to author the long tail of effects, and we should give it room to actually do that.
+The bet: **a ~700-line runtime + a great system prompt outperforms a 2,500-line typed primitive graph**, because the LLM is the right tool to author the long tail of effects, and we should give it the room — and the right amount of context about the Pi, the rig, and the signals — to actually do that.
+
+---
+
+## 20. Future work — nice to have, deferred to v3
+
+These came up during v2 design but don't need to land in the first cut. Each is a self-contained follow-up; none of them are blockers for getting the user on a rig with a working LLM-authored effect loop.
+
+### 20.1 Performance / runtime
+
+- **Design-mode preview at half-rate.** During a live crossfade in design mode the worst case is three renders per tick (live, live-previous, preview). At ~5 ms/render budget that's 15 ms of 16.6 ms — uncomfortably close on a Pi 4. v3: render the preview every other frame (the simulator viz is a UI preview, not on stage; 30 fps is plenty for visual judgment). Halves design-mode CPU during crossfades.
+- **Adaptive render-budget per effect.** Today the budget is a single number (5 ms). v3: track the live effect's actual mean and dynamically grant the preview slot whatever's left. Lets a cheap live effect host a more expensive preview without false-positive watchdog trips.
+- **Per-effect `dt` clamping or substepping.** If the asyncio loop hiccups (e.g. DDP packet retransmit), `dt` could jump to ~50 ms and stateful effects (comets, ripples) would tele-port. v3: cap `dt` at e.g. 2× target, or substep stateful integrators.
+
+### 20.2 Authoring / LLM ergonomics
+
+- **`update_params` tool (LLM-driven preset shifts).** v2 deliberately has only `write_effect`; the operator tunes via sliders. v3 might introduce a second tool that lets the LLM emit *just* a new `param_values` dict for the current effect (e.g. "warmer, slower" → re-colour without rewriting code). Cheaper, faster, but adds prompt complexity. Revisit when the operator complains about the round-trip cost of full regenerations for tiny tweaks.
+- **Sub-effects / effect composition.** v2 is one Effect per slot. v3 could expose `apply_named_effect("pulse_mono", out=…)` so an Effect can render an existing effect into a buffer and modulate it (e.g. "tint and blur this saved effect"). Tempting but breaks the "one file, one Effect" mental model. Only worth it if real prompts repeatedly want this.
+- **Hot-reload from disk.** v2 ships behind a config flag (open Q #4). v3: turn on by default with a debounce + fence-test before swap, so editing `config/effects/<slug>/effect.py` over SSH on the Pi just works. The new file layout (real `.py`) makes this trivial to implement.
+- **Library-side effect "stars" / quick-recall.** Phase 6 polish flagged it. v3: a starred-effects rail in the operator UI for one-tap recall mid-set, with thumbnail previews rendered offline.
+- **v1 preset migration tool.** A one-shot "translate this v1 layer-stack YAML into a v2 Effect" prompt + scaffold. Useful only if the v1 presets contain looks the operator misses; defer until that complaint actually surfaces.
+
+### 20.3 Operator UX
+
+- **Mobile / tablet operator UI.** Out of scope for v2 (desktop-first dual-mode shell). v3: phone-friendly Live mode (sliders + masters + promote-from-library, no chat) since the operator is often physically away from a laptop (`user_design_spec.md` §9).
+- **Hands-free / MIDI / OSC param control.** Hardware fader / knob → param key. Same `PATCH /params` plumbing under the hood.
+- **"Surprise me" / generative riffs.** `user_design_spec.md` §10 — let the LLM volunteer a riff on the current effect ("twin comets but in spiral form") on operator request. Just another `write_effect` invocation with a different prompt template; UI affordance only.
+
+### 20.4 Reliability / safety
+
+- **Stronger sandbox (subinterpreter or RestrictedPython).** v2's threat model is "LLM typo," not "malicious input" (§14). v3 only matters if we ever expose the chat to untrusted users (livestream guests, etc.) — at which point swap `exec` for a real isolation boundary.
+- **State-snapshot on crash.** When the watchdog swaps an effect to `pulse_mono`, currently we lose its `self.*` state. v3: pickle a snapshot for post-mortem so the LLM can reason about which buffer was misbehaving.
+- **Render-time CPU profiling fed back to the LLM.** v2 reports p95. v3: capture per-call profile data ("85% of time in `np.exp` over 1800 elements") and surface it in the next system prompt so the LLM can target the actual hotspot.
