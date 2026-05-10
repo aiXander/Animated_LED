@@ -121,8 +121,11 @@ ANTI-PATTERNS — don't do these
   - `import os` / `import math` / `import numpy as np` → REJECTED at compile. np is already in scope.
   - `for i in range(ctx.n): self.out[i] = …` → ~5 ms wasted; vectorise instead.
   - `self.out = np.zeros((ctx.n, 3))` inside render() → allocation in the hot path.
-  - `if ctx.audio.low > 0.6: ...` to detect kicks → use `ctx.audio.beat > 0` (rising-edge).
+  - `if ctx.audio.low > 0.6: ...` to detect kicks → use `ctx.audio.beat` (float in [0, 1] on onset).
   - thresholding `audio_band` to detect onsets → upstream onset detector is far better.
+  - using `ctx.audio.low/mid/high` as the trigger for ANY rhythmic / discrete event (flashes,
+    sparkle spawns, colour swaps, particle bursts, "on the kick" behaviour) → default is
+    `ctx.audio.beat`. Bands are for continuous amplitude-following only.
   - smoothing audio yourself (EMA, peak-follow) → audio is ALREADY smoothed and auto-scaled.
   - `print(...)` → not in builtins. Use `log.warning(...)`.
   - returning float64 → cast to float32, or fill `self.out` (already float32) in place.
@@ -181,7 +184,7 @@ class TwinCometsWithSparkles(Effect):
     def render(self, ctx):
         p = ctx.params
         dt = ctx.dt
-        self.head_top = (self.head_top + p.speed * dt) % 1.0
+        self.head_top = (self.head_top + p.comet_rate * dt) % 1.0
         self.head_bot = (self.head_top - p.lead_offset) % 1.0
 
         amp = 0.6 + 0.4 * float(ctx.audio.bands[p.audio_band])
@@ -256,7 +259,7 @@ def _audio_block(audio_state: AudioState | None) -> str:
         return (
             "AUDIO INPUT\n"
             "Audio-server is disconnected. ctx.audio.low/mid/high will be 0.0 and\n"
-            "ctx.audio.beat will be 0. Build effects that still look good silent\n"
+            "ctx.audio.beat will be 0.0. Build effects that still look good silent\n"
             "(e.g. drive brightness from a slider with audio mixed on top via\n"
             "`amp = base + reactive * ctx.audio.low`)."
         )
@@ -275,10 +278,22 @@ def _audio_block(audio_state: AudioState | None) -> str:
         f"  ctx.audio.mid      float in [0, 1]  ({bands[1][0]:.0f}–{bands[1][1]:.0f} Hz, vocals/snare)\n"
         f"  ctx.audio.high     float in [0, 1]  ({bands[2][0]:.0f}–{bands[2][1]:.0f} Hz, hats/sibilance)\n"
         "  ctx.audio.bands    dict {'low','mid','high'} — convenient for select-param-driven band\n"
-        "  ctx.audio.beat     int — number of fresh onsets since previous frame\n"
-        "                          (almost always 0 or 1; use `> 0` as a rising-edge trigger).\n"
+        "  ctx.audio.beat     float in [0, 1] — 0.0 on most frames; on a fresh onset, equals the\n"
+        "                          master audio_reactivity (clamped to 1) so beat-driven flashes\n"
+        "                          scale linearly with the master. DEFAULT to this for ANY rhythmic /\n"
+        "                          discrete reactivity — kicks, hits, pulses, flashes, sparkle\n"
+        "                          deposits, particle spawns, colour swaps on the beat, anything that\n"
+        "                          should fire 'on the music'. Driven by an upstream onset detector\n"
+        "                          with much lower latency and far better precision than thresholding\n"
+        "                          a band yourself. Only fall back to ctx.audio.low/mid/high for\n"
+        "                          discrete triggers if the operator explicitly asks for amplitude-\n"
+        "                          following behaviour ('react to bass loudness', not 'on the kick').\n"
+        "                          Use as a multiplier:\n"
+        "                              flash = ctx.audio.beat * p.kick_amount\n"
+        "                          OR as a rising-edge trigger:\n"
+        "                              if ctx.audio.beat > 0: ...spawn a particle...\n"
         "                          NEVER threshold ctx.audio.low to detect kicks.\n"
-        "  ctx.audio.beats_since_start  int monotonic onset counter\n"
+        "  ctx.audio.beats_since_start  int monotonic onset counter (NOT scaled by reactivity)\n"
         "  ctx.audio.bpm      float — current tempo. Falls back to 120.0 when disconnected.\n"
         "  ctx.audio.connected  bool — False = audio off; low/mid/high will be 0.0.\n\n"
         f"LIVE READING (snapshot at request time):\n"
@@ -323,7 +338,19 @@ def _param_schema_block() -> str:
         "  - palette:     {default: name}                       — named palette dropdown\n\n"
         "Read values via `ctx.params.<key>`. The operator drags sliders → ctx.params updates between\n"
         "frames; you do nothing special. Only declare what's worth tuning by hand. The system carries\n"
-        "the operator's slider tweaks across regenerations when you reuse the same `key`.\n"
+        "the operator's slider tweaks across regenerations when you reuse the same `key`.\n\n"
+        "PER-EFFECT vs MASTER controls — feel free to declare effect-local `brightness`, `speed`,\n"
+        "`audio_intensity`, etc. They live close to the effect and shape THIS layer specifically.\n"
+        "The operator masters are GLOBAL POST-PROCESSING applied on top of the composed output and\n"
+        "shared across every stacked layer — your per-effect knobs come first, masters come second.\n"
+        "Concretely:\n"
+        "  - your `speed` slider acts on the time you integrate (e.g. `head += p.speed * ctx.dt`);\n"
+        "    master `speed` then scales `ctx.dt` itself, so the two compose cleanly\n"
+        "  - your `brightness` / `intensity` slider attenuates your effect's output; master\n"
+        "    `brightness` runs at the very end of the master chain after layers are blended\n"
+        "  - your `audio_intensity` slider scales how strongly THIS effect responds to audio;\n"
+        "    master `audio_reactivity` already pre-multiplies `ctx.audio.low/mid/high/beat` so\n"
+        "    silencing all reactivity is a single global slider away.\n"
     )
 
 

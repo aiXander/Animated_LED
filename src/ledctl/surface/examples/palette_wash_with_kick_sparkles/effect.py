@@ -37,11 +37,15 @@ class PaletteWashWithKickSparkles(Effect):
 
         # Drop a fresh batch on each beat. Use a fixed-density sample so the
         # peak sparkle count is bounded.
-        if int(ctx.audio.beat) > 0:
+        # ctx.audio.beat is a float in [0, 1] (0 most frames; on a kick it
+        # equals master audio_reactivity clipped to 1). Use it as both the
+        # rising-edge trigger AND as the deposit intensity multiplier.
+        beat_amp = float(ctx.audio.beat)
+        if beat_amp > 0.0:
             n = int(ctx.params.sparkle_count)
             if n > 0:
                 idx = rng.integers(0, ctx.n, size=n)
-                col = hex_to_rgb(p.sparkle_color)
+                col = hex_to_rgb(p.sparkle_color) * beat_amp
                 self.sparkle_age[idx] = 0.0
                 self.sparkle_rgb[idx] = col
                 # Re-emit the just-fresh sparkles into _spark too so they

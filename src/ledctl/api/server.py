@@ -26,6 +26,8 @@ Endpoints:
   - /blackout, /resume            blackout the live leg
   - /transport/pause, /resume     pause/resume DDP only
   - /sim/pause, /sim/resume       pause/resume sim broadcasts
+  - /sim/fps                      PATCH {fps} — UI viz Hz (1..60)
+  - /engine/fps                   PATCH {fps} — LED-leg engine Hz (1..240)
   - /calibration/solo|walk|stop   override LEDs with a solid pattern
   - /audio/state, /audio/ui       audio bridge state + UI URL
   - /masters                      GET/PATCH operator master row
@@ -55,6 +57,12 @@ from ..audio import AudioBridge
 from ..config import AppConfig, AudioServerConfig, StripConfig
 from ..engine import Engine
 from ..masters import MasterControls
+from ..playlist import (
+    DEFAULT_PLAY_SECONDS,
+    MIN_PLAY_SECONDS,
+    Playlist,
+    default_playlist_path,
+)
 from ..surface import (
     BLEND_MODES,
     EffectCompileError,
@@ -177,6 +185,22 @@ class StarRequest(BaseModel):
     starred: bool
 
 
+class RenameEffectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    new_name: str = Field(..., pattern=r"^[a-z][a-z0-9_]{0,40}$")
+
+
+class PlaylistEntryIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., pattern=r"^[a-z][a-z0-9_]{0,40}$")
+    play_seconds: float = Field(DEFAULT_PLAY_SECONDS, ge=MIN_PLAY_SECONDS, le=3600.0)
+
+
+class PlaylistPutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    entries: list[PlaylistEntryIn] = Field(default_factory=list)
+
+
 # ---- yaml writers ---- #
 
 
@@ -257,7 +281,7 @@ def create_app(
     effects_dir: Path | None = None,
 ) -> FastAPI:
     topology = Topology.from_config(cfg)
-    sim = SimulatorTransport()
+    sim = SimulatorTransport(target_fps=float(cfg.transport.sim.fps))
     transport = _build_split_transport(cfg, sim)
     masters = _masters_from_config(cfg)
     runtime = Runtime(
@@ -269,6 +293,7 @@ def create_app(
     eff_dir = (effects_dir or DEFAULT_EFFECTS_DIR).resolve()
     store = EffectStore(eff_dir)
     store.install_examples_if_missing()
+    playlist = Playlist.load(default_playlist_path(eff_dir.parent))
 
     # Boot defaults: try to load `pulse_mono` into both slots; if that fails
     # for any reason, fall back to a single black layer.
@@ -300,13 +325,15 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         await engine.start()
+        playlist.attach(runtime, store)
         broadcaster = asyncio.create_task(
-            _state_broadcaster(state_clients, _full_state_payload, engine.target_fps),
+            _state_broadcaster(state_clients, _full_state_payload, lambda: sim.target_fps),
             name="ledctl-state-broadcaster",
         )
         try:
             yield
         finally:
+            playlist.stop()
             broadcaster.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await broadcaster
@@ -326,6 +353,7 @@ def create_app(
     app.state.effect_store = store
     app.state.config_path = config_path
     app.state.audio_bridge = audio_bridge
+    app.state.playlist = playlist
 
     from .agent import install_agent_routes
     install_agent_routes(app, cfg.agent)
@@ -456,6 +484,7 @@ def create_app(
         return {
             "fps": round(engine.fps, 2),
             "target_fps": engine.target_fps,
+            "sim_fps": float(sim.target_fps),
             "frame_count": engine.frame_count,
             "dropped_frames": engine.dropped_frames,
             "elapsed": round(engine.elapsed, 3),
@@ -473,6 +502,7 @@ def create_app(
             "crossfade_seconds": runtime.crossfade_seconds,
             "live": snap["live"],
             "preview": snap["preview"],
+            "playlist": playlist.state(),
         }
 
     @app.get("/state")
@@ -577,6 +607,35 @@ def create_app(
             "saved": stored.name,
             "summary": stored.summary,
             "param_count": len(stored.param_schema),
+        }
+
+    @app.post("/effects/{name}/rename")
+    async def rename_effect(name: str, body: RenameEffectRequest) -> dict:
+        if not store.exists(name):
+            raise HTTPException(status_code=404, detail=f"no effect {name!r}")
+        if body.new_name != name and store.exists(body.new_name):
+            raise HTTPException(
+                status_code=409,
+                detail=f"an effect named {body.new_name!r} already exists",
+            )
+        try:
+            stored = store.rename(name, body.new_name)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except (OSError, ValueError) as e:
+            raise HTTPException(status_code=500, detail=f"rename failed: {e}") from e
+        # Any layers currently loaded from the old name keep working but their
+        # `name` attribute would still reference the old slug — subsequent
+        # /params drags would call store.save_values(<old>) which silently
+        # no-ops (yaml gone). Walk both compositions and update.
+        for slot in ("preview", "live"):
+            for layer in runtime.composition(slot).layers:
+                if layer.name == name:
+                    layer.name = stored.name
+        _wipe_agent_history()
+        return {
+            "renamed": {"from": name, "to": stored.name},
+            "summary": stored.summary,
         }
 
     @app.post("/effects/{name}/star")
@@ -758,6 +817,38 @@ def create_app(
             raise HTTPException(status_code=422, detail="bad src/dst")
         return runtime.snapshot()
 
+    # ---- playlist ---- #
+
+    @app.get("/playlist")
+    async def get_playlist() -> dict:
+        return playlist.state()
+
+    @app.put("/playlist")
+    async def put_playlist(body: PlaylistPutRequest) -> dict:
+        for entry in body.entries:
+            if not store.exists(entry.name):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"unknown effect {entry.name!r}; not in library",
+                )
+        playlist.replace_entries([e.model_dump() for e in body.entries])
+        return playlist.state()
+
+    @app.post("/playlist/start")
+    async def start_playlist() -> dict:
+        if not playlist.entries:
+            raise HTTPException(status_code=409, detail="playlist is empty")
+        try:
+            playlist.start()
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return playlist.state()
+
+    @app.post("/playlist/stop")
+    async def stop_playlist() -> dict:
+        playlist.stop()
+        return playlist.state()
+
     # ---- masters ---- #
 
     @app.get("/masters")
@@ -835,6 +926,35 @@ def create_app(
     async def post_sim_resume() -> dict:
         sim.paused = False
         return {"sim_paused": False}
+
+    @app.patch("/sim/fps")
+    async def patch_sim_fps(payload: dict) -> dict:
+        """Set the UI viz frame rate (Hz). Independent of the LED-leg engine
+        rate. Lower = less Pi CPU spent on `tobytes()` + WebSocket sends +
+        Tailscale/WireGuard encryption + /ws/state JSON snapshots."""
+        try:
+            new_fps = float(payload.get("fps"))
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail="missing/invalid 'fps'") from e
+        try:
+            sim.set_target_fps(new_fps)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"sim_fps": float(sim.target_fps)}
+
+    @app.patch("/engine/fps")
+    async def patch_engine_fps(payload: dict) -> dict:
+        """Set the LED-leg engine tick rate (Hz). The render loop re-reads
+        `target_fps` every tick so the change is live."""
+        try:
+            new_fps = int(payload.get("fps"))
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail="missing/invalid 'fps'") from e
+        try:
+            engine.set_target_fps(new_fps)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"target_fps": engine.target_fps}
 
     # ---- system ---- #
 
@@ -983,11 +1103,14 @@ def create_app(
 async def _state_broadcaster(
     clients: set[WebSocket],
     payload_fn,
-    target_fps: float,
+    fps_fn,
 ) -> None:
-    period = 1.0 / max(1.0, float(target_fps))
+    """Push `_full_state_payload()` to every /ws/state client at the rate
+    returned by `fps_fn` (the sim/UI FPS — re-read each tick so a slider drag
+    takes effect immediately)."""
     next_tick = time.perf_counter()
     while True:
+        period = 1.0 / max(1.0, float(fps_fn()))
         next_tick += period
         sleep = next_tick - time.perf_counter()
         if sleep > 0:

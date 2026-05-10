@@ -65,8 +65,10 @@ class AudioView:
     low: float = 0.0
     mid: float = 0.0
     high: float = 0.0
-    beat: int = 0                # new onsets since previous render (0 most frames)
-    beats_since_start: int = 0   # monotonic counter
+    beat: float = 0.0            # 0.0 most frames; on a fresh onset, equal to
+                                 # min(1.0, masters.audio_reactivity) so beat-driven
+                                 # flashes scale linearly with the operator master.
+    beats_since_start: int = 0   # monotonic counter (independent of reactivity)
     bpm: float = 120.0
     connected: bool = False
 

@@ -92,6 +92,25 @@ class Engine:
             return
         loop.call_soon_threadsafe(ev.set)
 
+    # ---- runtime fps ---- #
+
+    # Snap values exposed in the operator UI. Keep the list in sync with the
+    # `<input type="range">` mapping in main-desktop.js. Validating against
+    # an explicit list (vs a free range) means an arbitrary PATCH /engine/fps
+    # can't land the engine at a value the UI can't display.
+    ALLOWED_TARGET_FPS: tuple[int, ...] = (24, 30, 40, 60, 90)
+
+    def set_target_fps(self, fps: int) -> int:
+        """Live-tunable LED leg rate. The render loop re-reads `target_fps`
+        every tick, so the new value takes effect on the next iteration."""
+        v = int(fps)
+        if v not in self.ALLOWED_TARGET_FPS:
+            raise ValueError(
+                f"engine target_fps must be one of {list(self.ALLOWED_TARGET_FPS)}, got {fps}"
+            )
+        self.target_fps = v
+        return self.target_fps
+
     # ---- masters ---- #
 
     def set_masters(self, **patch: object) -> MasterControls:
@@ -156,11 +175,19 @@ class Engine:
         beats_now = int(getattr(s, "beat_count", 0))
         delta = max(0, beats_now - beats_seen)
         self._last_beats = beats_now
+        # Beat is a per-frame intensity in [0, 1]:
+        #   - 0.0 on frames with no fresh onset
+        #   - on an onset, set to min(1.0, audio_reactivity) so beat-driven
+        #     flashes scale linearly with the master, without ever exceeding 1.
+        # This gives effects a clean "beat" multiplier they can compose with
+        # their own per-effect intensity params (e.g. `flash = ctx.audio.beat
+        # * p.kick_amount`), and 0 reactivity silences beat-driven content.
+        beat_out = float(min(1.0, gain)) if delta > 0 else 0.0
         return AudioView(
             low=float(s.low) * gain,
             mid=float(s.mid) * gain,
             high=float(s.high) * gain,
-            beat=delta,
+            beat=beat_out,
             beats_since_start=beats_now,
             bpm=float(s.bpm) if s.bpm is not None else 120.0,
             connected=bool(s.connected),
@@ -188,17 +215,20 @@ class Engine:
             self._task = None
 
     async def _loop(self) -> None:
-        period = 1.0 / float(self.target_fps)
-        kick_min_interval = period * 0.7
+        # `target_fps` is re-read each tick so the operator can adjust the LED
+        # leg's rate live (slider in the UI / PATCH /engine/fps) without
+        # restarting the loop.
         t0 = time.perf_counter()
         fps_window_start = t0
         fps_window_frames = 0
         last_wall = t0
-        last_render = t0 - period
+        last_render = t0 - 1.0 / float(max(1, int(self.target_fps)))
         kick = self._audio_kick
 
         try:
             while not self._stop.is_set():
+                period = 1.0 / float(max(1, int(self.target_fps)))
+                kick_min_interval = period * 0.5
                 deadline = last_render + period
                 while True:
                     now = time.perf_counter()
@@ -242,21 +272,38 @@ class Engine:
                 last_wall = wall_t
                 self.elapsed = wall_t
 
-                self.effective_t += dt_wall * float(self.masters.speed)
+                # Master speed scales BOTH the effective time-axis used by
+                # effects (`ctx.t`) and the per-frame `ctx.dt` they integrate
+                # against — without scaling dt too, effects that integrate
+                # state by hand (`head += speed_param * ctx.dt`) ignore the
+                # master speed entirely. wall_t stays unscaled so crossfades
+                # complete in real-world seconds.
+                speed = float(self.masters.speed)
+                dt_scaled = dt_wall * speed
+                self.effective_t += dt_scaled
 
                 audio_view = self._build_audio_view()
 
+                # The sim transport throttles to its own `target_fps` (UI
+                # rate, default 24 Hz) independently of the engine tick. When
+                # the UI frame isn't due — or no browser is connected, or sim
+                # is paused — we skip the preview render AND the sim encode
+                # so the Pi spends every cycle on the LIVE composition + DDP.
+                sim_active = self.transport.sim.should_send_now()
                 live_rgb, sim_rgb = self.runtime.render(
                     wall_t=wall_t,
-                    dt=dt_wall,
+                    dt=dt_scaled,
                     t_eff=self.effective_t,
                     audio=audio_view,
+                    render_preview=sim_active,
                 )
 
                 # Encode + send.
                 np.copyto(self.live_pb.rgb, live_rgb)
                 live_bytes = self.live_pb.to_uint8(self.gamma)
-                if sim_rgb is live_rgb:
+                if not sim_active:
+                    sim_bytes = None
+                elif sim_rgb is live_rgb:
                     sim_bytes = live_bytes
                 else:
                     np.copyto(self.sim_pb.rgb, sim_rgb)

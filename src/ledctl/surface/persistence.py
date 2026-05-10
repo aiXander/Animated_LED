@@ -164,6 +164,30 @@ class EffectStore:
         shutil.rmtree(d)
         return True
 
+    def rename(self, old: str, new: str) -> StoredEffect:
+        """Rename a saved effect on disk: move the directory + rewrite the
+        `name` field in effect.yaml. Returns the freshly-loaded record."""
+        _validate_name(old)
+        _validate_name(new)
+        if old == new:
+            return self.load(old)
+        src = self.root / old
+        dst = self.root / new
+        if not src.is_dir():
+            raise FileNotFoundError(f"no saved effect {old!r} at {src}")
+        if dst.exists():
+            raise ValueError(f"an effect named {new!r} already exists")
+        src.rename(dst)
+        yml = dst / "effect.yaml"
+        try:
+            meta = yaml.safe_load(yml.read_text()) or {}
+        except Exception:
+            meta = {}
+        meta["name"] = new
+        meta["updated_at"] = time.time()
+        yml.write_text(yaml.safe_dump(meta, sort_keys=False, default_flow_style=False))
+        return self.load(new)
+
     # ---- bundled examples ---- #
 
     def install_examples_if_missing(self) -> list[str]:
