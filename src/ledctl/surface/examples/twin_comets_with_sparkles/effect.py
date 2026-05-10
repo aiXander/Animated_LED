@@ -18,10 +18,10 @@ class TwinCometsWithSparkles(Effect):
     def render(self, ctx):
         p = ctx.params
         dt = float(ctx.dt)
-        speed = float(p.speed)
+        rate = float(p.comet_rate)
         lead = float(p.lead_offset)
 
-        self.head_top = (self.head_top + speed * dt) % 1.0
+        self.head_top = (self.head_top + rate * dt) % 1.0
         self.head_bot = (self.head_top - lead) % 1.0
 
         amp = 0.6 + 0.4 * float(ctx.audio.bands[p.audio_band])

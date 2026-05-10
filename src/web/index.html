@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>aaiLED — surface v2</title>
+  <title>aaiLED</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <meta name="theme-color" content="#050505" />
   <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
@@ -11,6 +11,8 @@
   <style>
     :root {
       color-scheme: dark;
+      /* Live mode = darkest. Design mode overrides --bg + --panel below to
+         feel a touch brighter so it's always obvious which tab you're on. */
       --bg: #050505;
       --panel: #0c0c0c;
       --line: #1a1a1a;
@@ -23,13 +25,20 @@
       --warn: #fbbf24;
       --bad: #f87171;
       --ok: #4ade80;
+      --design-bg: #14161c;
+      --design-panel: #1a1d24;
       font-size: clamp(14px, 1.1vmin + 5px, 18px);
+    }
+    body.design-mode {
+      --bg: var(--design-bg);
+      --panel: var(--design-panel);
     }
     *, *::before, *::after { box-sizing: border-box; }
     html, body {
       margin: 0; height: 100%; background: var(--bg); color: var(--text);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       overflow: hidden;
+      transition: background 0.18s ease;
     }
     button {
       background: #161616; color: var(--text); border: 1px solid var(--line-bright);
@@ -51,39 +60,87 @@
       border: 1px solid var(--line-bright); border-radius: 3px;
       padding: 0.25rem 0.45rem;
     }
-    input[type="range"] { padding: 0; -webkit-appearance: none; height: 4px; background: #222; border: none; }
-    input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; background: var(--accent-strong); border-radius: 50%; cursor: pointer; }
-    input[type="color"] { padding: 0; height: 24px; width: 38px; cursor: pointer; }
+    input[type="range"] {
+      padding: 0; -webkit-appearance: none; appearance: none;
+      height: 8px; background: #050505;
+      border: 1px solid #4a4d5a; border-radius: 4px;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 18px; height: 18px;
+      background: var(--accent); border: 2px solid var(--accent-strong);
+      border-radius: 50%; cursor: pointer;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 18px; height: 18px; background: var(--accent);
+      border: 2px solid var(--accent-strong); border-radius: 50%; cursor: pointer;
+    }
+    input[type="range"]::-moz-range-track {
+      height: 8px; background: #050505;
+      border: 1px solid #4a4d5a; border-radius: 4px;
+    }
     a { color: var(--accent); text-decoration: none; }
 
-    /* Three rows: topbar (auto) → full-width simulator (15vh) → main content (rest). */
-    #app { display: grid; grid-template-rows: auto 15vh 1fr; height: 100%; }
+    /* Top → viz (flex) → main content. The titlebar carries mode toggle +
+       all top-level buttons; comp-header carries promote / pull-live. */
+    #app { display: grid; grid-template-rows: auto auto 1fr; height: 100%; min-height: 0; }
 
-    #topbar {
-      display: flex; gap: 0.6rem; align-items: center;
-      padding: 0.4rem 0.7rem; border-bottom: 1px solid var(--line);
-      background: var(--panel); flex-wrap: wrap; position: relative;
+    #titlebar {
+      position: relative;
+      display: flex; align-items: center;
+      padding: 0.4rem 0.9rem;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
     }
-    #topbar .group { display: flex; align-items: center; gap: 0.5rem; }
-    #mode-toggle {
-      display: flex; background: #161616; border: 1px solid var(--line-bright);
-      border-radius: 4px; overflow: hidden;
+    #titlebar .left, #titlebar .right {
+      flex: 1 1 0; display: flex; align-items: center; gap: 0.5rem;
     }
-    #mode-toggle button {
-      border: 0; border-radius: 0; padding: 0.3rem 0.9rem;
-      background: transparent; color: var(--dim);
+    #titlebar .right { justify-content: flex-end; }
+    #titlebar .center {
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      display: flex; align-items: center; pointer-events: none;
     }
-    #mode-toggle button.active { background: var(--accent-bg); color: #dbeafe; }
+    #titlebar .center > * { pointer-events: auto; }
     .pill { padding: 0.2rem 0.55rem; border-radius: 999px; background: #161616;
             border: 1px solid var(--line-bright); font-size: 0.7rem; color: var(--dim); }
     .pill.ok { color: var(--ok); border-color: #1e3a1e; }
     .pill.bad { color: var(--bad); border-color: #5a1a1a; }
     .pill.warn { color: var(--warn); border-color: #5a3a0a; }
 
-    /* Audio HUD overlay — sits in the top-right corner of the simulator.
-       Four vertically-stacked meters (low / mid / high / beat) + BPM. The
-       beat meter snaps to 100% on each new onset and decays so it's visible
-       even though the underlying signal is binary. */
+    /* Compact FPS sliders in the header. Slider value is the index into a
+       discrete-value table (24/30/40/60/90 for LED, 12/24/30/40/60 for UI),
+       so dragging the thumb snaps cleanly between stops. */
+    .fps-ctrl {
+      display: flex; align-items: center; gap: 0.35rem;
+      padding: 0.18rem 0.55rem; border-radius: 999px;
+      background: #161616; border: 1px solid var(--line-bright);
+      font-size: 0.7rem; color: var(--dim);
+    }
+    .fps-ctrl .lbl { color: var(--dim); }
+    .fps-ctrl input[type="range"] { width: 64px; margin: 0; }
+    .fps-ctrl .val {
+      color: var(--text); min-width: 1.7rem; text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #mode-toggle {
+      display: flex; background: #161616; border: 1px solid var(--line-bright);
+      border-radius: 6px; overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+    #mode-toggle button {
+      border: 0; border-radius: 0; padding: 0.55rem 1.7rem;
+      background: transparent; color: var(--dim);
+      font-size: 0.95rem; font-weight: 600; letter-spacing: 0.14em;
+    }
+    #mode-toggle button.active { background: var(--accent-bg); color: #dbeafe; }
+    body.live-mode #mode-toggle button[data-mode="live"].active {
+      background: #7a1a1a; color: #fee2e2;
+    }
+
+    /* Audio HUD overlay — sits in the top-right corner of the simulator. */
     #audio-hud {
       position: absolute; top: 0.45rem; right: 0.5rem; z-index: 10;
       display: flex; flex-direction: column; gap: 0.18rem;
@@ -98,9 +155,7 @@
       display: grid; grid-template-columns: 2.2rem 1fr 2.4rem;
       align-items: center; gap: 0.4rem;
     }
-    #audio-hud .meter .lbl {
-      color: var(--dim); text-align: right; font-size: 0.66rem;
-    }
+    #audio-hud .meter .lbl { color: var(--dim); text-align: right; font-size: 0.66rem; }
     #audio-hud .meter .bar {
       position: relative; height: 6px; background: #1a1a1a;
       border-radius: 3px; overflow: hidden;
@@ -112,7 +167,10 @@
     #audio-hud .meter.low  .fill { background: linear-gradient(90deg, #b91c1c, #fbbf24); }
     #audio-hud .meter.mid  .fill { background: linear-gradient(90deg, #1d4ed8, #93c5fd); }
     #audio-hud .meter.high .fill { background: linear-gradient(90deg, #047857, #6ee7b7); }
-    #audio-hud .meter.beat .fill { background: linear-gradient(90deg, #f59e0b, #fde68a); }
+    #audio-hud .meter.beat .fill {
+      background: linear-gradient(90deg, #f59e0b, #fde68a);
+      transition: none;
+    }
     #audio-hud .meter .num {
       color: var(--text); font-size: 0.65rem; text-align: right;
       font-variant-numeric: tabular-nums;
@@ -126,44 +184,24 @@
       color: var(--text); font-variant-numeric: tabular-nums; font-size: 0.78rem;
     }
 
-    /* Stacked masters panel — brightness / speed / audio / saturation / crossfade,
-       one row each. Lives above the params form in the side column. */
+    /* Stacked masters panel — brightness / speed / audio / saturation /
+       crossfade, one row each. LIVE-only — hidden in design mode. */
     .masters-stack { display: flex; flex-direction: column; gap: 0.32rem;
-                     padding: 0.5rem 0.7rem; }
+                     padding: 0.5rem 0.9rem; }
     .masters-stack .row {
-      display: grid; grid-template-columns: 4rem 1fr 2.6rem;
-      gap: 0.5rem; align-items: center; font-size: 0.74rem; color: var(--dim);
+      display: grid; grid-template-columns: 6.2rem 1fr 2.6rem;
+      gap: 0.6rem; align-items: center; font-size: 0.78rem; color: var(--dim);
     }
     .masters-stack .row input[type="range"] { width: 100%; }
-    .masters-stack .row .value { color: var(--text); text-align: right; font-size: 0.72rem; }
+    .masters-stack .row .value { color: var(--text); text-align: right; font-size: 0.74rem;
+                                 font-variant-numeric: tabular-nums; }
 
-    /* Top viz strip: full width, ~15vh, with the column header inline. */
+    /* Viz — full width, takes ~24% of the page so it stays prominent. */
     #col-viz { display: flex; flex-direction: column; min-width: 0; min-height: 0;
-               border-bottom: 1px solid var(--line); background: var(--bg); }
-
-    /* Main content row split: compositions (left) + masters/params/chat (right). */
-    #main { display: grid;
-            grid-template-columns: 1fr 1.05fr;
-            grid-template-rows: 1fr;
-            height: 100%; min-height: 0; }
-
-    #col-comp { display: flex; flex-direction: column; min-width: 0; min-height: 0;
-                border-right: 1px solid var(--line); background: var(--panel); }
-    #col-side { display: flex; flex-direction: column; min-width: 0; min-height: 0;
-                background: var(--panel); overflow-y: auto; }
-
-    .col-header {
-      display: flex; align-items: center; gap: 0.6rem;
-      padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--line);
-      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;
-      color: var(--dim); background: #0a0a0a;
-    }
-    .col-header .grow { flex: 1; }
-
-    #viz { position: relative; flex: 1 1 auto; min-height: 0; }
-    /* Inline header above the viz strip — keeps the section labelled
-       without eating into the 15vh budget too aggressively. */
-    #col-viz .col-header { padding: 0.25rem 0.7rem; }
+               border-bottom: 1px solid var(--line); background: var(--bg);
+               height: 22vh; }
+    #viz { position: relative; flex: 1 1 auto; min-height: 0;
+           padding: 0 0.7rem 0.4rem; }
     #canvas { display: block; width: 100%; height: 100%; }
     #cal-banner {
       position: absolute; top: 0.5rem; right: 0.5rem;
@@ -176,67 +214,210 @@
       padding: 0.15rem 0.4rem; border-radius: 3px; cursor: pointer;
     }
 
-    .deck { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;
-            border-bottom: 1px solid var(--line); }
-    .deck:last-child { border-bottom: none; }
-    .deck-header { display: flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.7rem;
-                   border-bottom: 1px solid var(--line); }
-    .deck-header .name { font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; }
-    .deck-header .name.live { color: #fca5a5; }
-    .deck-header .name.preview { color: #93c5fd; }
-    .deck-header .grow { flex: 1; }
-    .layer-list { flex: 1; overflow-y: auto; padding: 0.3rem 0.4rem; min-height: 0; }
-    .layer-row {
-      display: flex; align-items: center; gap: 0.35rem;
-      padding: 0.3rem 0.4rem; margin-bottom: 0.2rem;
-      border: 1px solid var(--line-bright); border-radius: 3px;
-      background: #0a0a0a; cursor: pointer;
+    /* Main content row split: composition deck (left) + side panel (right). */
+    #main { display: grid;
+            grid-template-columns: 1fr 1.05fr;
+            grid-template-rows: 1fr;
+            min-height: 0; height: 100%; }
+    #col-comp { display: flex; flex-direction: column; min-width: 0; min-height: 0;
+                border-right: 1px solid var(--line); background: var(--panel); }
+    #col-side { display: flex; flex-direction: column; min-width: 0; min-height: 0;
+                background: var(--panel); overflow-y: auto; }
+
+    .col-header {
+      position: relative;
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.45rem 0.9rem; border-bottom: 1px solid var(--line);
+      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--dim); background: rgba(0,0,0,0.18);
     }
+    .col-header .grow { flex: 1; }
+    .col-header.live-header { color: #fca5a5; }
+    .col-header.design-header { color: #93c5fd; }
+    .col-header .promote-center {
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      padding: 0.3rem 0.95rem; letter-spacing: 0.06em;
+    }
+
+    .deck { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
+    .layer-list { flex: 1; overflow-y: auto; padding: 0.4rem 0.5rem; min-height: 0; }
+    /* Layer row: single horizontal line, drag horizontally to scrub opacity.
+       The fill bar grows from the left edge so the box is its own opacity
+       slider; idx, name, the .2f opacity number, and the action cluster all
+       sit on the same vertical centre line. */
+    .layer-row {
+      position: relative; overflow: hidden; user-select: none;
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      margin-bottom: 0.35rem;
+      min-height: 5.2rem;
+      border: 1px solid var(--line-bright); border-radius: 4px;
+      background: #0a0a0a;
+      cursor: ew-resize;
+      touch-action: none;
+      font-size: 0.72rem;
+      color: var(--dim);
+    }
+    body.design-mode .layer-row { background: #131620; }
     .layer-row:hover { background: #131313; }
-    .layer-row.selected { border-color: var(--accent-strong);
-                          background: rgba(59, 130, 246, 0.08); }
+    .layer-row.selected { border-color: var(--accent-strong); }
+    .layer-row.selected .opacity-fill { background: rgba(59, 130, 246, 0.30); }
     .layer-row.disabled { opacity: 0.4; }
-    .layer-row .idx { font-size: 0.65rem; color: var(--dim); min-width: 1rem; }
-    .layer-row .name { flex: 1; font-size: 0.78rem; min-width: 0;
-                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .layer-row .blend { font-size: 0.65rem; color: var(--dim); }
-    .layer-row .opacity { font-size: 0.65rem; color: var(--dim); min-width: 2.4rem; text-align: right; }
-    .deck-actions { display: flex; gap: 0.3rem; padding: 0.35rem 0.7rem;
-                    border-top: 1px solid var(--line); }
+    .layer-row .opacity-fill {
+      position: absolute; inset: 0 auto 0 0; pointer-events: none;
+      background: rgba(59, 130, 246, 0.18);
+      transition: width 60ms linear;
+    }
+    .layer-row > .idx,
+    .layer-row > .name,
+    .layer-row > .opacity-num,
+    .layer-row > .layer-actions { position: relative; z-index: 1; }
+    .layer-row .idx { min-width: 1.4rem; }
+    .layer-row .name {
+      flex: 1; min-width: 0; font-size: 0.82rem; color: var(--text);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .layer-row .opacity-num {
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      font-size: 1.05rem; letter-spacing: 0.06em;
+      font-variant-numeric: tabular-nums;
+      color: rgba(255,255,255,0.92);
+      text-shadow: 0 0 6px rgba(0,0,0,0.65);
+    }
+    .layer-row.selected .opacity-num { color: #fff; }
+    .layer-row .layer-actions {
+      display: flex; align-items: center; gap: 0.25rem;
+    }
+    .layer-row .layer-actions button,
+    .layer-row .layer-actions select {
+      font-size: 0.68rem; line-height: 1;
+      padding: 0.18rem 0.36rem; border-radius: 3px;
+      background: rgba(0,0,0,0.55); color: var(--text);
+      border: 1px solid var(--line-bright); cursor: pointer;
+      font-family: inherit;
+    }
+    .layer-row .layer-actions button:hover,
+    .layer-row .layer-actions select:hover {
+      background: rgba(0,0,0,0.85); border-color: #3a3a3a;
+    }
+    .layer-row .layer-actions .layer-blend {
+      padding: 0.18rem 0.2rem; max-width: 5.5rem;
+    }
+    .layer-row .layer-actions .delete-btn {
+      color: #fca5a5; border-color: #5a1a1a;
+    }
+    .layer-row .layer-actions .delete-btn:hover {
+      background: #2a0a0a; border-color: #7a1a1a;
+    }
+    .deck-actions { display: flex; gap: 0.35rem; padding: 0.55rem 0.9rem;
+                    border-top: 1px solid var(--line); flex-wrap: wrap; }
+    body.live-mode .deck-actions { display: none; }
+    .deck-actions #add-layer {
+      flex: 1 1 auto;
+      padding: 0.55rem 1rem;
+      font-size: 0.88rem; letter-spacing: 0.06em; font-weight: 600;
+      background: rgba(59, 130, 246, 0.5);
+      color: #f0f7ff;
+      border: 1px solid rgba(96, 165, 250, 0.5);
+      border-radius: 5px;
+    }
+    .deck-actions #add-layer:hover {
+      background: rgba(59, 130, 246, 0.65);
+      border-color: rgba(147, 197, 253, 0.7);
+    }
     .deck-empty { padding: 1rem; color: var(--dim); font-size: 0.78rem; text-align: center; }
 
     .panel-section { border-bottom: 1px solid var(--line); }
-    .panel-section .body { padding: 0.5rem 0.7rem; }
-    .params-form { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.5rem 0.7rem; }
+    .panel-section .body { padding: 0.5rem 0.9rem; }
+
+    /* Layer-effects pane: distinct background tint vs the chat below so
+       the operator sees them as two separate menus at a glance. */
+    .layer-pane { background: #0e0f13; border-bottom: 2px solid var(--line-bright); }
+    body.design-mode .layer-pane { background: #20242f; }
+    .layer-pane .col-header { background: rgba(0,0,0,0.28); }
+    #chat { background: var(--panel); }
+
+    .params-form { display: flex; flex-direction: column; gap: 0.45rem;
+                   padding: 0.5rem 0.9rem; }
     .param-row { display: grid; grid-template-columns: minmax(7rem, 1fr) auto auto;
-                 gap: 0.5rem; align-items: center; }
-    .param-row label { font-size: 0.74rem; color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
-    .param-row .value { font-size: 0.72rem; color: var(--text); min-width: 2.5rem; text-align: right; }
-    .params-empty { color: var(--dim); font-size: 0.78rem; padding: 0.4rem 0.7rem; }
+                 gap: 0.6rem; align-items: center; }
+    .param-row label { font-size: 0.78rem; color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+    .param-row .value { font-size: 0.74rem; color: var(--text); min-width: 2.5rem; text-align: right;
+                        font-variant-numeric: tabular-nums; }
+    .params-empty { color: var(--dim); font-size: 0.78rem; padding: 0.5rem 0.9rem; }
 
-    .layer-meta-row { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;
-                      padding: 0.35rem 0.7rem; border-bottom: 1px solid var(--line);
-                      background: #0a0a0a; font-size: 0.72rem; color: var(--dim); }
-    .layer-meta-row select { font-size: 0.72rem; padding: 0.15rem 0.3rem; }
-    .layer-meta-row input[type="range"] { width: 70px; }
+    /* Color swatch button (clicking opens the wheel popover). */
+    .color-btn {
+      width: 38px; height: 22px; border-radius: 3px; cursor: pointer;
+      border: 1px solid var(--line-bright);
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.4);
+    }
+    .color-btn:hover { border-color: var(--accent); }
+    .color-popover {
+      position: absolute; z-index: 200;
+      background: var(--panel); border: 1px solid var(--line-bright); border-radius: 6px;
+      padding: 0.6rem; box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+      display: none; user-select: none;
+    }
+    .color-popover.open { display: block; }
+    .color-popover .wheel-wrap {
+      position: relative; width: 200px; height: 200px;
+    }
+    .color-popover canvas.wheel { width: 200px; height: 200px; cursor: crosshair;
+                                  border-radius: 50%; }
+    .color-popover .marker {
+      position: absolute; width: 12px; height: 12px;
+      border-radius: 50%; border: 2px solid #fff;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.6);
+      pointer-events: none; transform: translate(-50%, -50%);
+    }
+    .color-popover .v-row {
+      display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem;
+      font-size: 0.72rem; color: var(--dim);
+    }
+    .color-popover .v-row input[type="range"] { flex: 1; }
+    .color-popover .hex-row {
+      display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem;
+      font-size: 0.72rem; color: var(--dim);
+    }
+    .color-popover .hex-row input { flex: 1; font-size: 0.78rem; }
 
-    #chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-    #chat-log { flex: 1; overflow-y: auto; padding: 0.5rem 0.7rem;
+    #chat { display: flex; flex-direction: column; flex: 1 1 0; min-height: 12rem; }
+    #chat-log { flex: 1; overflow-y: auto; padding: 0.5rem 0.9rem;
                 display: flex; flex-direction: column; gap: 0.4rem; min-height: 0; }
-    .msg { padding: 0.4rem 0.55rem; border-radius: 4px; font-size: 0.78rem;
+    .msg { padding: 0.4rem 0.55rem; border-radius: 4px; font-size: 0.82rem;
            white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
-    .msg.user { background: rgba(59, 130, 246, 0.12); border: 1px solid #1e3a8a; }
+    .msg.user { background: transparent; border: none; padding: 0.2rem 0.55rem 0; }
+    .msg.thinking { color: var(--dim); font-style: italic; opacity: 0.9;
+                    background: transparent; border: 1px dashed var(--line-bright); }
+    .msg.thinking .dots::after {
+      content: "...";
+      display: inline-block;
+      animation: thinking-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes thinking-pulse {
+      0%, 100% { opacity: 0.25; }
+      50%      { opacity: 1; }
+    }
     .msg.assistant { background: #131313; border: 1px solid var(--line-bright); }
+    body.design-mode .msg.assistant { background: #1c1f29; }
     .msg.tool-error { background: rgba(127, 29, 29, 0.18); border: 1px solid #5a1a1a;
-                      color: #fda4af; font-size: 0.72rem; }
+                      color: #fda4af; font-size: 0.74rem; }
     .msg.tool-ok { background: rgba(20, 83, 45, 0.18); border: 1px solid #1e3a1e;
-                   color: #86efac; font-size: 0.72rem; }
-    .msg .label { font-size: 0.6rem; color: var(--dim); margin-bottom: 0.2rem; text-transform: uppercase; letter-spacing: 0.1em; }
-    #chat-input-row { display: flex; gap: 0.3rem; padding: 0.5rem 0.7rem;
+                   color: #86efac; font-size: 0.74rem; }
+    .msg .label { font-size: 0.62rem; color: var(--dim); margin-bottom: 0.2rem;
+                  text-transform: uppercase; letter-spacing: 0.1em; }
+    .msg .usage { font-size: 0.62rem; color: var(--dim); margin-top: 0.3rem;
+                  font-variant-numeric: tabular-nums; }
+    #chat-input-row { display: flex; gap: 0.3rem; padding: 0.5rem 0.9rem;
                       border-top: 1px solid var(--line); }
-    #chat-input { flex: 1; resize: none; min-height: 2.4rem; max-height: 6rem; }
+    #chat-input { flex: 1; resize: none; min-height: 2.6rem; max-height: 8rem; }
 
-    #lib { position: absolute; right: 0.5rem; top: 2.6rem; width: 26rem; max-height: 60vh;
+    /* Library popover. */
+    #lib { position: absolute; right: 0.5rem; top: 2.6rem; width: 28rem; max-height: 60vh;
            background: var(--panel); border: 1px solid var(--line-bright); border-radius: 5px;
            padding: 0.5rem; overflow-y: auto; display: none; z-index: 30;
            box-shadow: 0 6px 24px rgba(0,0,0,0.5); }
@@ -245,238 +426,229 @@
       position: relative; padding: 0.45rem 0.55rem; border-bottom: 1px solid var(--line);
       display: flex; flex-direction: column; gap: 0.18rem;
     }
-    .lib-row:hover { background: #131313; }
-    .lib-row .name { font-size: 0.78rem; }
-    .lib-row .summary { font-size: 0.7rem; color: var(--dim);
+    .lib-row:hover { background: rgba(255,255,255,0.04); }
+    .lib-row .name { font-size: 0.82rem; }
+    .lib-row .summary { font-size: 0.72rem; color: var(--dim);
                         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    /* Hover-revealed action row, slides in from the right edge of the library row. */
     .lib-row .actions {
       position: absolute; top: 50%; right: 0.4rem; transform: translateY(-50%);
       display: flex; gap: 0.25rem;
       opacity: 0; pointer-events: none;
       transition: opacity 0.1s linear;
-      background: linear-gradient(90deg, rgba(19,19,19,0) 0%, #131313 30%);
+      background: linear-gradient(90deg, rgba(19,19,19,0) 0%, var(--panel) 30%);
       padding: 0.2rem 0 0.2rem 1.2rem;
     }
     .lib-row:hover .actions { opacity: 1; pointer-events: auto; }
-    .lib-row .actions button { padding: 0.18rem 0.5rem; font-size: 0.7rem; white-space: nowrap; }
+    .lib-row .actions button { padding: 0.2rem 0.55rem; font-size: 0.72rem; white-space: nowrap; }
     .lib-row .actions .pull-design { color: var(--accent); border-color: #1e3a8a; }
     .lib-row .actions .pull-live { color: #fca5a5; border-color: #7a1a1a; }
 
-    /* ---- modal (save dialog + delete confirm) ---- */
+    /* ---- modals ---- */
     .modal-back {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
       display: none; align-items: center; justify-content: center; z-index: 100;
     }
     .modal-back.open { display: flex; }
     .modal {
       background: var(--panel); border: 1px solid var(--line-bright); border-radius: 6px;
-      padding: 1rem 1.1rem; min-width: 22rem; max-width: 30rem;
+      padding: 1rem 1.1rem; min-width: 22rem; max-width: 38rem; width: min(38rem, 92vw);
       box-shadow: 0 12px 40px rgba(0,0,0,0.6);
     }
-    .modal h3 { margin: 0 0 0.6rem; font-size: 0.85rem; letter-spacing: 0.06em;
+    .modal h3 { margin: 0 0 0.6rem; font-size: 0.92rem; letter-spacing: 0.06em;
                 text-transform: uppercase; color: var(--text); }
     .modal .body { font-size: 0.8rem; color: var(--text); margin-bottom: 0.8rem; line-height: 1.45; }
-    .modal label { display: block; font-size: 0.72rem; color: var(--dim); margin-bottom: 0.3rem; }
+    .modal label { display: block; font-size: 0.74rem; color: var(--dim); margin-bottom: 0.3rem; }
     .modal input[type="text"] { width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; }
-    .modal .hint { font-size: 0.68rem; color: var(--dim); margin-top: 0.3rem; }
+    .modal .hint { font-size: 0.7rem; color: var(--dim); margin-top: 0.3rem; }
     .modal .actions { display: flex; justify-content: flex-end; gap: 0.4rem; margin-top: 0.9rem; }
-    .modal .err { color: var(--bad); font-size: 0.72rem; margin-top: 0.4rem; min-height: 1rem; }
+    .modal .err { color: var(--bad); font-size: 0.74rem; margin-top: 0.4rem; min-height: 1rem; }
 
-    /* In live mode, keep masters + params visible — only the chat block hides
-       (design-only feature). */
+    /* Code-viewer modal: roomy, scrollable, monospaced with line numbers. */
+    #code-modal .modal {
+      max-width: min(60rem, 94vw); width: min(60rem, 94vw);
+      max-height: 90vh; display: flex; flex-direction: column;
+    }
+    #code-modal .code-meta {
+      font-size: 0.74rem; color: var(--dim); margin-bottom: 0.5rem;
+      display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;
+    }
+    #code-modal .code-meta .name { color: var(--text); font-weight: 600; }
+    #code-pre {
+      background: #08090c; border: 1px solid var(--line-bright); border-radius: 4px;
+      margin: 0; padding: 0.6rem 0.8rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.78rem; line-height: 1.45; tab-size: 4;
+      overflow: auto; flex: 1 1 auto; min-height: 12rem;
+      white-space: pre;
+    }
+    #code-pre .ln {
+      display: inline-block; width: 2.5rem; text-align: right; padding-right: 0.7rem;
+      color: #555; user-select: none;
+    }
+    /* Python syntax-highlighting tokens. */
+    #code-pre .tok-kw     { color: #c084fc; }
+    #code-pre .tok-str    { color: #fde68a; }
+    #code-pre .tok-com    { color: #6b7280; font-style: italic; }
+    #code-pre .tok-num    { color: #fca5a5; }
+    #code-pre .tok-deco   { color: #fbbf24; }
+    #code-pre .tok-def    { color: #93c5fd; }
+    #code-pre .tok-cls    { color: #6ee7b7; }
+    #code-pre .tok-bi     { color: #67e8f9; }
+    #code-pre .tok-self   { color: #f9a8d4; font-style: italic; }
+    .msg.tool-ok.clickable { cursor: pointer; }
+    .msg.tool-ok.clickable:hover { background: rgba(20, 83, 45, 0.30); }
+
+    /* Playlist modal-specific. */
+    #pl-list { display: flex; flex-direction: column; gap: 0.3rem; max-height: 40vh;
+               overflow-y: auto; margin-bottom: 0.5rem; }
+    .pl-row {
+      display: grid; grid-template-columns: 1.4rem 1fr 5.5rem 5.5rem 1.6rem;
+      gap: 0.4rem; align-items: center;
+      padding: 0.35rem 0.45rem;
+      background: #0a0a0a; border: 1px solid var(--line-bright); border-radius: 3px;
+      font-size: 0.78rem;
+    }
+    .pl-row .idx { color: var(--dim); font-size: 0.7rem; }
+    .pl-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pl-row input[type="number"] { width: 5rem; padding: 0.18rem 0.35rem; font-size: 0.74rem; }
+    .pl-row .reorder { display: flex; gap: 0.15rem; }
+    .pl-row .reorder button { padding: 0.1rem 0.35rem; font-size: 0.7rem; }
+    .pl-row .del { padding: 0.1rem 0.35rem; font-size: 0.72rem; color: #fca5a5; }
+    .pl-add-row { display: flex; gap: 0.4rem; align-items: center; margin-top: 0.4rem;
+                  padding-top: 0.4rem; border-top: 1px solid var(--line); }
+    .pl-add-row select { flex: 1; }
+    .pl-status { font-size: 0.74rem; color: var(--dim); padding: 0.4rem 0;
+                 font-variant-numeric: tabular-nums; }
+
+    /* Toggle visibility based on mode. */
+    body.design-mode .live-only { display: none !important; }
     body.live-mode #chat { display: none; }
+
+    /* Token usage row in chat. */
+    .usage-line {
+      font-size: 0.62rem; color: var(--dim); padding: 0 0.55rem 0.3rem;
+      align-self: flex-end; font-variant-numeric: tabular-nums;
+      margin-top: -0.2rem;
+    }
   </style>
 </head>
 <body class="live-mode">
   <div id="app">
-    <header id="topbar">
-      <div class="group">
-        <strong style="color:#fca5a5;letter-spacing:0.05em">aaiLED</strong>
+    <header id="titlebar">
+      <div class="left">
         <span class="pill" id="ws-pill">connecting…</span>
         <span class="pill" id="fps-pill">--- fps</span>
-      </div>
-      <div class="group">
-        <div id="mode-toggle">
-          <button id="btn-design" data-mode="design">Design</button>
-          <button id="btn-live" data-mode="live" class="active">Live</button>
+        <span id="playlist-banner" class="pill" style="display:none;"></span>
+        <!-- LED engine tick rate. Snap values: 24/30/40/60/90 (slider index 0..4). -->
+        <div class="fps-ctrl" title="LED engine tick rate. Drives DDP to the LEDs. Higher = smoother LEDs, more Pi CPU.">
+          <span class="lbl">LED</span>
+          <input id="m-engfps" type="range" min="0" max="4" step="1" value="3">
+          <span class="val" id="v-engfps">60</span>
+        </div>
+        <!-- UI viz refresh rate. Snap values: 12/24/30/40/60 (slider index 0..4). -->
+        <div class="fps-ctrl" title="UI viz refresh rate. Caps /ws/frames + /ws/state. Lower = less Pi CPU when streaming over Tailscale.">
+          <span class="lbl">UI</span>
+          <input id="m-simfps" type="range" min="0" max="4" step="1" value="1">
+          <span class="val" id="v-simfps">24</span>
         </div>
       </div>
-      <div class="group" style="margin-left:auto;">
-        <button id="btn-blackout" class="ghost" title="Blackout the LIVE leg (sim still shows preview)">⚫ blackout</button>
-        <button id="btn-ddp" class="ghost" title="When on, ledctl drives the LEDs over DDP. Click to release: WLED reverts to its own preset/effect (Gledopto control) after ~2.5s.">Pi control</button>
-        <button id="btn-save-effect" title="Save the current preview layer to the library">💾 save effect</button>
+      <div class="center">
+        <div id="mode-toggle">
+          <button id="btn-design" data-mode="design">DESIGN</button>
+          <button id="btn-live" data-mode="live" class="active">LIVE</button>
+        </div>
+      </div>
+      <div class="right">
+        <button id="btn-ddp" class="ghost" title="When on, ledctl drives the LEDs over DDP. Click to release.">Pi control</button>
+        <button id="btn-save-effect" title="Save the current effect to the library">💾 save</button>
         <button id="btn-library">📚 library</button>
-        <a id="btn-audio" href="#" target="_blank" rel="noopener" class="ghost" style="display:inline-block; padding:0.3rem 0.7rem;">🎙 audio</a>
+        <button id="btn-playlist" title="Manage and start the playlist">▶ playlist</button>
+        <a id="btn-audio" href="#" target="_blank" rel="noopener" class="ghost"
+           style="display:inline-block; padding:0.3rem 0.7rem;">🎙 audio</a>
       </div>
       <div id="lib"></div>
     </header>
 
-    <!-- Save-effect modal -->
-    <div id="save-modal" class="modal-back" role="dialog" aria-labelledby="save-modal-title">
-      <div class="modal">
-        <h3 id="save-modal-title">Save current effect</h3>
-        <label for="save-name">Effect name (snake_case)</label>
-        <input type="text" id="save-name" placeholder="my_cool_effect" maxlength="40" autocomplete="off">
-        <div class="hint">Will be saved as <code>config/effects/&lt;name&gt;/</code>. Lowercase letters, digits, and underscores. Max 40 chars.</div>
-        <div class="err" id="save-err"></div>
-        <div class="actions">
-          <button id="save-cancel" class="ghost">cancel</button>
-          <button id="save-confirm" class="primary">save</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Delete-confirm modal -->
-    <div id="del-modal" class="modal-back" role="dialog" aria-labelledby="del-modal-title">
-      <div class="modal">
-        <h3 id="del-modal-title">Delete from library?</h3>
-        <div class="body">
-          Removing <strong id="del-name">…</strong> from the library deletes
-          <code>config/effects/&lt;name&gt;/</code> on disk. This can't be undone.
-        </div>
-        <div class="actions">
-          <button id="del-cancel" class="ghost">cancel</button>
-          <button id="del-confirm" class="danger">delete</button>
-        </div>
-      </div>
-    </div>
-
     <section id="col-viz">
-      <div class="col-header">
-        <span>Simulator</span>
-        <span class="grow"></span>
-        <span id="viz-mode-pill" class="pill">live</span>
-      </div>
       <div id="viz">
         <canvas id="canvas"></canvas>
         <div id="cal-banner">
           <span id="cal-text">calibration</span>
           <button id="cal-clear">✕</button>
         </div>
-        <div id="audio-hud" class="disconnected" title="live audio — low / mid / high / beat + bpm">
-          <div class="meter low">
-            <span class="lbl">low</span>
+        <div id="audio-hud" class="disconnected">
+          <div class="meter low"><span class="lbl">low</span>
             <div class="bar"><div class="fill" id="meter-low"></div></div>
-            <span class="num" id="num-low">0.00</span>
-          </div>
-          <div class="meter mid">
-            <span class="lbl">mid</span>
+            <span class="num" id="num-low">0.00</span></div>
+          <div class="meter mid"><span class="lbl">mid</span>
             <div class="bar"><div class="fill" id="meter-mid"></div></div>
-            <span class="num" id="num-mid">0.00</span>
-          </div>
-          <div class="meter high">
-            <span class="lbl">high</span>
+            <span class="num" id="num-mid">0.00</span></div>
+          <div class="meter high"><span class="lbl">high</span>
             <div class="bar"><div class="fill" id="meter-high"></div></div>
-            <span class="num" id="num-high">0.00</span>
-          </div>
-          <div class="meter beat">
-            <span class="lbl">beat</span>
+            <span class="num" id="num-high">0.00</span></div>
+          <div class="meter beat"><span class="lbl">beat</span>
             <div class="bar"><div class="fill" id="meter-beat"></div></div>
-            <span class="num" id="num-beat">0</span>
-          </div>
-          <div class="bpm-row">
-            <span>bpm</span>
-            <span class="v" id="audio-bpm">—</span>
-          </div>
+            <span class="num" id="num-beat">0</span></div>
+          <div class="bpm-row"><span>bpm</span><span class="v" id="audio-bpm">—</span></div>
         </div>
       </div>
     </section>
 
     <main id="main">
       <section id="col-comp">
-        <div class="col-header">
-          <span>Compositions</span>
+        <div class="col-header" id="comp-header">
+          <span id="comp-title">LIVE</span>
+          <button id="btn-pull" class="ghost live-only" title="Copy LIVE → DESIGN (hard cut)">⤓ pull live → design</button>
           <span class="grow"></span>
-          <button id="btn-promote" class="primary">▶ Promote ⤴</button>
-          <button id="btn-pull" class="ghost" title="Copy LIVE → PREVIEW (hard cut)">⤓ pull live</button>
+          <span class="pill" id="comp-summary"></span>
+          <button id="btn-promote" class="primary promote-center" style="display:none;"
+                  title="Crossfade the design preview into LIVE">▶ Promote → LIVE</button>
         </div>
-
-        <div class="deck" id="deck-preview">
-          <div class="deck-header">
-            <span class="name preview">PREVIEW</span>
-            <span class="grow"></span>
-            <span class="pill" id="preview-summary"></span>
-          </div>
-          <div class="layer-list" id="preview-layers"></div>
+        <div class="deck" id="deck">
+          <div class="layer-list" id="layer-list"></div>
           <div class="deck-actions">
-            <button id="preview-add-layer" class="ghost">+ layer</button>
-            <button id="preview-remove-layer" class="ghost danger">– remove</button>
-          </div>
-        </div>
-
-        <div class="deck" id="deck-live">
-          <div class="deck-header">
-            <span class="name live">LIVE</span>
-            <span class="grow"></span>
-            <span class="pill" id="live-summary"></span>
-          </div>
-          <div class="layer-list" id="live-layers"></div>
-          <div class="deck-actions">
-            <button id="live-add-layer" class="ghost">+ layer</button>
-            <button id="live-remove-layer" class="ghost danger">– remove</button>
+            <button id="add-layer">+ Add layer</button>
           </div>
         </div>
       </section>
 
       <section id="col-side">
-        <div class="col-header">
+        <div class="col-header live-only">
           <span>Masters</span>
-        </div>
-        <div class="masters-stack panel-section">
-          <div class="row">
-            <span>brightness</span>
-            <input id="m-bri" type="range" min="0" max="2" step="0.01">
-            <span class="value" id="v-bri">1.00</span>
-          </div>
-          <div class="row">
-            <span>speed</span>
-            <input id="m-spd" type="range" min="0" max="3" step="0.01">
-            <span class="value" id="v-spd">1.00</span>
-          </div>
-          <div class="row">
-            <span>audio react</span>
-            <input id="m-aud" type="range" min="0" max="3" step="0.01">
-            <span class="value" id="v-aud">1.00</span>
-          </div>
-          <div class="row">
-            <span>saturation</span>
-            <input id="m-sat" type="range" min="0" max="1" step="0.01">
-            <span class="value" id="v-sat">1.00</span>
-          </div>
-          <div class="row">
-            <span>crossfade</span>
-            <input id="m-cf" type="range" min="0" max="10" step="0.05">
-            <span class="value" id="v-cf">1.00</span>
-          </div>
-        </div>
-
-        <div class="col-header">
-          <span id="side-title">Selected layer</span>
           <span class="grow"></span>
-          <span id="side-layer-name" class="pill"></span>
+          <button id="btn-blackout" class="ghost" title="Blackout the LIVE leg">⚫ blackout</button>
+        </div>
+        <div class="masters-stack panel-section live-only">
+          <div class="row"><span>brightness</span>
+            <input id="m-bri" type="range" min="0" max="2" step="0.01">
+            <span class="value" id="v-bri">1.00</span></div>
+          <div class="row"><span>speed</span>
+            <input id="m-spd" type="range" min="0" max="3" step="0.01">
+            <span class="value" id="v-spd">1.00</span></div>
+          <div class="row"><span>audio react</span>
+            <input id="m-aud" type="range" min="0" max="3" step="0.01">
+            <span class="value" id="v-aud">1.00</span></div>
+          <div class="row"><span>saturation</span>
+            <input id="m-sat" type="range" min="0" max="1" step="0.01">
+            <span class="value" id="v-sat">1.00</span></div>
+          <div class="row"><span>crossfade</span>
+            <input id="m-cf" type="range" min="0" max="10" step="0.05">
+            <span class="value" id="v-cf">1.00</span></div>
         </div>
 
-        <div class="layer-meta-row" id="layer-meta-row">
-          <span>blend</span>
-          <select id="meta-blend">
-            <option value="normal">normal</option>
-            <option value="add">add</option>
-            <option value="screen">screen</option>
-            <option value="multiply">multiply</option>
-          </select>
-          <span>opacity</span>
-          <input type="range" id="meta-opacity" min="0" max="1" step="0.01">
-          <span class="value" id="meta-opacity-v">1.00</span>
-          <label><input type="checkbox" id="meta-enabled"> on</label>
-        </div>
-
-        <div class="panel-section">
-          <div class="params-form" id="params-form"></div>
+        <div class="layer-pane">
+          <div class="col-header">
+            <span id="side-title">Selected layer</span>
+            <span class="grow"></span>
+            <span id="side-layer-name" class="pill"></span>
+          </div>
+          <div class="panel-section" style="border-bottom:none;">
+            <div class="params-form" id="params-form"></div>
+          </div>
         </div>
 
         <div id="chat" class="panel-section">
-          <div class="col-header"><span>Chat (design)</span></div>
+          <div class="col-header"><span>Chat</span></div>
           <div id="chat-log"></div>
           <div id="chat-input-row">
             <textarea id="chat-input" placeholder="describe the effect you want…"></textarea>
@@ -485,6 +657,102 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <!-- Save-effect modal -->
+  <div id="save-modal" class="modal-back" role="dialog" aria-labelledby="save-modal-title">
+    <div class="modal">
+      <h3 id="save-modal-title">Save current effect</h3>
+      <label for="save-name">Effect name (snake_case)</label>
+      <input type="text" id="save-name" placeholder="my_cool_effect" maxlength="40" autocomplete="off">
+      <div class="hint">Saved as <code>config/effects/&lt;name&gt;/</code>. Lowercase letters, digits, underscores. Max 40 chars.</div>
+      <div class="err" id="save-err"></div>
+      <div class="actions">
+        <button id="save-cancel" class="ghost">cancel</button>
+        <button id="save-confirm" class="primary">save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rename-effect modal -->
+  <div id="rename-modal" class="modal-back" role="dialog" aria-labelledby="rename-modal-title">
+    <div class="modal">
+      <h3 id="rename-modal-title">Rename effect</h3>
+      <div class="body">Renaming <strong id="rename-old">…</strong></div>
+      <label for="rename-name">New name (snake_case)</label>
+      <input type="text" id="rename-name" placeholder="my_cool_effect" maxlength="40" autocomplete="off">
+      <div class="hint">Renames <code>config/effects/&lt;name&gt;/</code> on disk. Lowercase letters, digits, underscores. Max 40 chars.</div>
+      <div class="err" id="rename-err"></div>
+      <div class="actions">
+        <button id="rename-cancel" class="ghost">cancel</button>
+        <button id="rename-confirm" class="primary">rename</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete-confirm modal -->
+  <div id="del-modal" class="modal-back" role="dialog" aria-labelledby="del-modal-title">
+    <div class="modal">
+      <h3 id="del-modal-title">Delete from library?</h3>
+      <div class="body">
+        Removing <strong id="del-name">…</strong> from the library deletes
+        <code>config/effects/&lt;name&gt;/</code> on disk. This can't be undone.
+      </div>
+      <div class="actions">
+        <button id="del-cancel" class="ghost">cancel</button>
+        <button id="del-confirm" class="danger">delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Code-viewer modal: shows the Python source from a write_effect tool call -->
+  <div id="code-modal" class="modal-back" role="dialog" aria-labelledby="code-modal-title">
+    <div class="modal">
+      <h3 id="code-modal-title">Effect source</h3>
+      <div class="code-meta" id="code-meta"></div>
+      <pre id="code-pre"><code id="code-content"></code></pre>
+      <div class="actions">
+        <button id="code-copy" class="ghost">copy</button>
+        <button id="code-close" class="primary">close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Playlist modal -->
+  <div id="pl-modal" class="modal-back" role="dialog" aria-labelledby="pl-modal-title">
+    <div class="modal">
+      <h3 id="pl-modal-title">Playlist</h3>
+      <div class="pl-status" id="pl-status">stopped</div>
+      <div id="pl-list"></div>
+      <div class="pl-add-row">
+        <select id="pl-add-select"></select>
+        <input type="number" id="pl-add-seconds" min="5" max="3600" step="5" value="120" style="width:5rem;">
+        <button id="pl-add-btn" class="ghost">+ add</button>
+      </div>
+      <div class="err" id="pl-err"></div>
+      <div class="actions">
+        <button id="pl-close" class="ghost">close</button>
+        <button id="pl-stop" class="ghost">stop</button>
+        <button id="pl-start" class="primary">▶ start playlist</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Color wheel popover (one shared across all color params) -->
+  <div id="color-popover" class="color-popover">
+    <div class="wheel-wrap">
+      <canvas id="color-wheel" class="wheel" width="200" height="200"></canvas>
+      <div class="marker" id="color-marker"></div>
+    </div>
+    <div class="v-row">
+      <span>brightness</span>
+      <input type="range" id="color-v" min="0" max="1" step="0.01" value="1">
+    </div>
+    <div class="hex-row">
+      <span>#</span>
+      <input type="text" id="color-hex" maxlength="7" autocomplete="off">
+      <button id="color-close" class="ghost">done</button>
+    </div>
   </div>
 
   <script type="module" src="/lib/main-desktop.js"></script>

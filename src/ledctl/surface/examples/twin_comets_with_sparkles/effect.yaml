@@ -19,7 +19,7 @@ params:
     max: 0.5
     step: 0.01
     default: 0.1667
-  - key: speed
+  - key: comet_rate
     label: Comet speed (cycles/s)
     control: slider
     min: 0.05
@@ -52,7 +52,7 @@ param_values:
   leader_color: "#ff2020"
   follower_color: "#1040ff"
   lead_offset: 0.1667
-  speed: 0.4
+  comet_rate: 0.4
   sparkle_decay: 1.5
   head_size: 0.03
   audio_band: low

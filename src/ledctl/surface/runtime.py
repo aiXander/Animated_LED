@@ -484,7 +484,7 @@ class Runtime:
             audio = AudioView(
                 low=0.4 + 0.4 * float(np.sin(i * 0.7)),
                 mid=0.3, high=0.2,
-                beat=1 if i % 6 == 0 else 0,
+                beat=1.0 if i % 6 == 0 else 0.0,
                 beats_since_start=i // 6,
                 bpm=120.0,
                 connected=True,
@@ -601,8 +601,14 @@ class Runtime:
         dt: float,
         t_eff: float,
         audio: AudioView,
+        render_preview: bool = True,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Render LIVE + (when in design mode) PREVIEW; apply masters."""
+        """Render LIVE + (when in design mode AND there are viewers) PREVIEW.
+
+        `render_preview=False` short-circuits the design-mode preview pass —
+        used when there are no sim WebSocket clients connected, so the Pi
+        can spend its budget on the LIVE leg + DDP packets only.
+        """
         # ---- LIVE composition (with optional crossfade) ---- #
         if self._cf is not None:
             if self._cf.start_wall_t is None:
@@ -633,7 +639,7 @@ class Runtime:
             self._apply_calibration(self._live_buf, wall_t)
 
         # ---- SIM leg ---- #
-        if self.mode == "design":
+        if self.mode == "design" and render_preview:
             self._preview_tick += 1
             do_preview = (
                 not self.preview_half_rate

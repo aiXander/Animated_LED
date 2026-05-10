@@ -5,10 +5,11 @@ preview layer. On receipt we:
   1. parse args via WriteEffectArgs (pydantic),
   2. AST-scan + sandbox-compile the source,
   3. instantiate + run init() against the real topology,
-  4. fence-test 10 synthetic frames,
-  5. persist to `config/effects/<name>/`,
-  6. swap into the PREVIEW slot's selected layer (hard cut).
+  4. fence-test synthetic frames,
+  5. swap into the PREVIEW slot's selected layer (hard cut).
 
+LLM-authored effects are NOT auto-saved to the library — the library is a
+curated, manually-saved set. The operator clicks 💾 save effect to persist.
 Live promotion is a separate operator action.
 """
 
@@ -123,7 +124,7 @@ def apply_write_effect(
                 carry[key] = prev_values[key]
 
     try:
-        layer = runtime.install_layer(
+        runtime.install_layer(
             "preview",
             name=args.name,
             summary=args.summary,
@@ -140,16 +141,10 @@ def apply_write_effect(
             "details": str(e),
         }
 
-    try:
-        store.save(args=args, param_values=layer.params.values())
-    except (OSError, ValueError) as e:
-        return {
-            "ok": True,
-            "applied": "preview",
-            "name": args.name,
-            "params": param_schema,
-            "warnings": [f"persistence failed: {e}"],
-        }
+    # Note: LLM-authored effects are intentionally NOT persisted here.
+    # The library is a curated set; the operator must explicitly click 💾 save
+    # (POST /preview/save) to add an effect to it.
+    _ = store  # kept for signature compatibility / future use
     return {
         "ok": True,
         "applied": "preview",

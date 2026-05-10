@@ -78,6 +78,17 @@ class StripConfig(BaseModel):
 class SimTransportConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ws_path: str = "/ws/frames"
+    fps: int = Field(
+        24, ge=1, le=60,
+        description=(
+            "Simulator-viz frame-stream rate (Hz). The engine still ticks at "
+            "`project.target_fps` for the LED leg; this caps how often we "
+            "encode + push a frame to the /ws/frames stream and how often "
+            "/ws/state JSON snapshots fire. 24 Hz is plenty for visual judgment "
+            "and meaningfully lowers Pi CPU when streaming over Tailscale "
+            "(WireGuard encryption is per-packet)."
+        ),
+    )
 
 
 class TransportConfig(BaseModel):

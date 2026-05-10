@@ -8,7 +8,7 @@ params:
     label: Palette
     control: palette
     default: ocean
-  - key: speed
+  - key: ring_speed
     label: Ring speed
     control: slider
     min: 0.0
@@ -32,6 +32,6 @@ params:
     default: 0.3
 param_values:
   palette: ocean
-  speed: 0.4
+  ring_speed: 0.4
   audio_band: low
   brightness_floor: 0.3

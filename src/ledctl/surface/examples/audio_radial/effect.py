@@ -9,7 +9,7 @@ class AudioRadial(Effect):
 
     def render(self, ctx):
         p = ctx.params
-        speed = float(p.speed)
+        speed = float(p.ring_speed)
         floor = float(p.brightness_floor)
         # Pick palette per param. (Recompute LUT only on change to keep the
         # hot path allocation-free.)
