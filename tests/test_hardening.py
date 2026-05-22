@@ -94,10 +94,15 @@ def test_install_rejects_slow_init():
         )
 
 
-# ---- 3. Strict params ---- #
+# ---- 3. Params writes are rejected at lint time ---- #
 
 
-def test_strict_params_raises_on_write():
+def test_param_write_rejected_at_lint():
+    """`ctx.params.X = ...` is caught by the pre-render lint with a line
+    number and a hint pointing at the operator-ownership rule. This is
+    cheaper than letting it through to fence-test (where it would either
+    no-op or raise depending on strict_params) and gives the LLM a crisper
+    self-correction signal."""
     src = (
         "class Bad(Effect):\n"
         "    def render(self, ctx):\n"
@@ -105,36 +110,17 @@ def test_strict_params_raises_on_write():
         "        return self.out\n"
     )
     topo = _topo()
-    rt = Runtime(topo, MasterControls(), strict_params=True)
-    # Strict mode → fence-test render call raises TypeError, surfaced as
-    # EffectCompileError("render() crashed on synthetic frame …").
-    with pytest.raises(EffectCompileError, match="render"):
+    rt = Runtime(topo, MasterControls())
+    with pytest.raises(EffectCompileError) as exc:
         rt.install_layer(
             "preview", name="bad", summary="", source=src,
             param_schema=[
                 {"key": "color", "control": "color", "default": "#ff0000"},
             ],
         )
-
-
-def test_soft_params_silently_warns_on_write():
-    """v1 default: writes are no-op'd with a log warning, never crash."""
-    src = (
-        "class SloppyButOk(Effect):\n"
-        "    def render(self, ctx):\n"
-        "        ctx.params.color = '#000000'\n"   # ignored
-        "        col = hex_to_rgb(ctx.params.color)\n"
-        "        self.out[:] = col[None, :]\n"
-        "        return self.out\n"
-    )
-    topo = _topo()
-    rt = Runtime(topo, MasterControls(), strict_params=False)
-    rt.install_layer(
-        "preview", name="sloppy", summary="", source=src,
-        param_schema=[{"key": "color", "control": "color", "default": "#ff0000"}],
-    )
-    # render passes; the assignment was ignored.
-    assert rt.preview.layers[0].name == "sloppy"
+    msg = str(exc.value)
+    assert "line 3" in msg, msg
+    assert "operator-owned" in msg or "read-only" in msg, msg
 
 
 # ---- 4. 30-frame fence ---- #

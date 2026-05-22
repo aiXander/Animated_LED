@@ -45,6 +45,8 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 # are injected as module globals — ruff can't see those, so silence the
 # inevitable F821s and let the docstring/comment hyphens overrun line length.
 "src/ledctl/surface/examples/**/effect.py" = ["F821", "E501"]
+# Same sandbox-injection story for the LLM-facing reference effects bundle.
+"src/ledctl/surface/LLM_example_effects/**/effect.py" = ["F821", "E501"]
 # `surface/prompt.py` embeds example effect source strings for the LLM that
 # do the same thing.
 "src/ledctl/surface/prompt.py" = ["E501"]

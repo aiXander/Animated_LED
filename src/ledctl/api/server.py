@@ -69,6 +69,7 @@ from ..surface import (
     EffectStore,
     Runtime,
 )
+from ..surface.palettes import NAMED_STOPS, named_palette_names
 from ..topology import Topology
 from ..transports.ddp import DDPTransport
 from ..transports.simulator import SimulatorTransport
@@ -354,6 +355,11 @@ def create_app(
     app.state.config_path = config_path
     app.state.audio_bridge = audio_bridge
     app.state.playlist = playlist
+    # Monotonic counter bumped on every server-driven LLM-history wipe
+    # (preview layer select, library load, pull-live-to-preview, save,
+    # rename). Mirrored into _full_state_payload so connected /ws/state
+    # clients can clear their local chat log + sessionId in lockstep.
+    app.state.chat_epoch = 0
 
     from .agent import install_agent_routes
     install_agent_routes(app, cfg.agent)
@@ -503,6 +509,7 @@ def create_app(
             "live": snap["live"],
             "preview": snap["preview"],
             "playlist": playlist.state(),
+            "chat_epoch": int(getattr(app.state, "chat_epoch", 0)),
         }
 
     @app.get("/state")
@@ -535,6 +542,22 @@ def create_app(
                 }
                 for s in topo.strips
             ],
+        }
+
+    @app.get("/palettes")
+    async def get_palettes() -> dict:
+        """Named palettes available to LLM-authored effects.
+
+        Returned as `{name: [[pos, "#rrggbb"], ...]}` so the operator UI can
+        render gradient swatches for the palette-control dropdown without
+        re-baking LUTs in JS.
+        """
+        return {
+            "palettes": {
+                name: [[float(pos), hexstr] for pos, hexstr in stops]
+                for name, stops in NAMED_STOPS.items()
+            },
+            "names": named_palette_names(),
         }
 
     # ---- effects library ---- #
@@ -652,19 +675,27 @@ def create_app(
         return {"name": name, "starred": bool(body.starred)}
 
     def _wipe_agent_history() -> None:
-        """Clear the LLM's rolling conversation buffer.
+        """Full new-chat reset.
 
-        Called when an operator action replaces preview SOURCE outside the
-        agent's own write_effect path (library load, pull-live-to-preview,
-        save, etc.). Without this wipe, the LLM's prior tool_call payloads
-        in the deque reference source that's no longer in preview, which
-        confuses follow-up turns ("the prompt says X is loaded but my last
-        emit was Y"). Operator-visible `turns` (chat transcript) are
-        preserved; only the model-visible message buffer clears.
+        Called when an operator action changes what the LLM is supposed to
+        be working on outside the agent's own write_effect path:
+          - selecting a different preview layer
+          - loading a saved effect into preview
+          - pulling live → preview
+          - saving / renaming the current preview source
+
+        In every case the LLM's prior turns reference state that's no
+        longer current. We wipe the single chat session (messages + turns)
+        and bump `app.state.chat_epoch` so connected /ws/state clients
+        clear their local chat log in lockstep. The freshly-loaded
+        preview-layer source is visible to the LLM via the regenerated
+        system prompt's CURRENT PREVIEW LAYER block on the next
+        /agent/chat call.
         """
-        store_obj = getattr(app.state, "agent_sessions", None)
-        if store_obj is not None:
-            store_obj.reset_all_buffers()
+        sess = getattr(app.state, "agent_session", None)
+        if sess is not None:
+            sess.reset()
+        app.state.chat_epoch = int(getattr(app.state, "chat_epoch", 0)) + 1
 
     @app.post("/effects/{name}/load_preview")
     async def load_preview(name: str, body: LoadEffectRequest | None = None) -> dict:
@@ -765,10 +796,19 @@ def create_app(
 
     @app.post("/preview/select")
     async def select_preview(body: SelectLayerRequest) -> dict:
-        return {"selected": runtime.select_layer("preview", body.index)}
+        prev = runtime.composition("preview").selected
+        new_sel = runtime.select_layer("preview", body.index)
+        # Switching the focused preview layer changes which layer source is
+        # embedded in the LLM system prompt next turn. Treat it as a fresh
+        # chat — wipe history + bump the chat_epoch.
+        if new_sel != prev:
+            _wipe_agent_history()
+        return {"selected": new_sel}
 
     @app.post("/live/select")
     async def select_live(body: SelectLayerRequest) -> dict:
+        # LIVE selection has no effect on what the LLM sees (live is
+        # invisible to the LLM by design), so no chat wipe here.
         return {"selected": runtime.select_layer("live", body.index)}
 
     def _patch_layer_meta(slot: str, body: LayerMetaRequest) -> dict:

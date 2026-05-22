@@ -105,8 +105,8 @@ def test_agent_session_transcript(client: TestClient):
     )
     with patch("ledctl.agent.client.AgentClient.complete", return_value=fake):
         r = client.post("/agent/chat", json={"message": "hi"})
-    sid = r.json()["session_id"]
-    r2 = client.get(f"/agent/sessions/{sid}")
+    assert r.status_code == 200
+    r2 = client.get("/agent/session")
     assert r2.status_code == 200
     body = r2.json()
     assert len(body["turns"]) == 1

@@ -1,0 +1,9 @@
+entries:
+- name: center_color_comets
+  play_seconds: 5.0
+- name: audio_radial
+  play_seconds: 5.0
+- name: clockwise_flow
+  play_seconds: 5.0
+- name: circling_comet_hueshift_on_beat
+  play_seconds: 5.0

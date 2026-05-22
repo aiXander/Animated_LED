@@ -1,10 +1,13 @@
 """FastAPI routes for the language-driven control panel.
 
-  POST   /agent/chat              — send a message; returns assistant + tool result
-  GET    /agent/sessions/{id}     — full transcript for UI rehydration
-  DELETE /agent/sessions/{id}     — wipe a session
-  GET    /agent/config            — model id, history cap (read-only)
-  PATCH  /agent/config            — adjust default crossfade between turns
+  POST   /agent/chat     — send a message; returns assistant + tool result
+  GET    /agent/session  — full transcript for UI rehydration
+  DELETE /agent/session  — wipe the chat (turns + rolling buffer)
+  GET    /agent/config   — model id, history cap (read-only)
+  PATCH  /agent/config   — adjust default crossfade between turns
+
+Single-session model: only one chat session exists at any time. There is no
+session id and no multi-session lookup.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from typing import Any
 from fastapi import APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..agent import AgentClient, AgentTurn, ChatSession, MissingApiKey, SessionStore
+from ..agent import AgentClient, AgentTurn, ChatSession, MissingApiKey
 from ..config import AgentConfig
 from ..surface import (
     WRITE_EFFECT_TOOL_NAME,
@@ -34,7 +37,6 @@ log = logging.getLogger(__name__)
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     message: str = Field(..., min_length=1, max_length=4000)
-    session_id: str | None = None
     model: str | None = None
 
 
@@ -49,7 +51,7 @@ def _attach_agent_state(
     presets_dir: Path | None,  # legacy, ignored
 ) -> None:
     app.state.agent_cfg = cfg
-    app.state.agent_sessions = SessionStore(history_max=cfg.history_max_messages)
+    app.state.agent_session = ChatSession(history_max_turns=cfg.history_max_turns)
     app.state.agent_client = AgentClient(
         base_url=cfg.base_url,
         api_key_env=cfg.api_key_env,
@@ -69,7 +71,7 @@ def build_router(app: FastAPI) -> APIRouter:
             "provider": cfg.provider,
             "base_url": cfg.base_url,
             "model": cfg.model,
-            "history_max_messages": cfg.history_max_messages,
+            "history_max_turns": cfg.history_max_turns,
             "default_crossfade_seconds": cfg.default_crossfade_seconds,
             "rate_limit_per_minute": cfg.rate_limit_per_minute,
             "api_key_env": cfg.api_key_env,
@@ -89,32 +91,27 @@ def build_router(app: FastAPI) -> APIRouter:
             engine.runtime.crossfade_seconds = float(body.default_crossfade_seconds)
         return _config_payload()
 
-    @router.get("/sessions/{session_id}")
-    async def get_session(session_id: str) -> dict:
-        sess: ChatSession | None = app.state.agent_sessions.get(session_id)
-        if sess is None:
-            raise HTTPException(status_code=404, detail=f"unknown session: {session_id}")
+    @router.get("/session")
+    async def get_session() -> dict:
+        sess: ChatSession = app.state.agent_session
         return {
-            "id": sess.id,
             "created_at": sess.created_at,
-            "history_max_messages": sess.history_max,
+            "history_max_turns": sess.history_max_turns,
             "turns": [asdict(t) for t in sess.turns],
         }
 
-    @router.delete("/sessions/{session_id}")
-    async def delete_session(session_id: str) -> dict:
-        deleted = app.state.agent_sessions.delete(session_id)
-        if not deleted:
-            raise HTTPException(status_code=404, detail=f"unknown session: {session_id}")
-        return {"deleted": session_id}
+    @router.delete("/session")
+    async def delete_session() -> dict:
+        app.state.agent_session.reset()
+        app.state.chat_epoch = int(getattr(app.state, "chat_epoch", 0)) + 1
+        return {"ok": True}
 
     @router.post("/chat")
     async def chat(req: ChatRequest) -> dict:
         cfg: AgentConfig = app.state.agent_cfg
         if not cfg.enabled:
             raise HTTPException(status_code=503, detail="agent is disabled in config")
-        store: SessionStore = app.state.agent_sessions
-        sess = store.get_or_create(req.session_id)
+        sess: ChatSession = app.state.agent_session
         if not sess.check_rate_limit(cfg.rate_limit_per_minute):
             raise HTTPException(
                 status_code=429,
@@ -150,8 +147,6 @@ def build_router(app: FastAPI) -> APIRouter:
                 topology=topology,
                 runtime=runtime,
                 audio_state=audio_state,
-                masters=engine.masters,
-                crossfade_seconds=cfg.default_crossfade_seconds,
                 last_error=last_error,
             )
             try:
@@ -228,8 +223,8 @@ def build_router(app: FastAPI) -> APIRouter:
             }
             retries_used = attempt + 1
             log.warning(
-                "agent.retry: session=%s attempt=%d/%d error=%s",
-                sess.id, attempt + 1, max_attempts,
+                "agent.retry: attempt=%d/%d error=%s",
+                attempt + 1, max_attempts,
                 last_error.get("error"),
             )
 
@@ -246,7 +241,6 @@ def build_router(app: FastAPI) -> APIRouter:
         sess.turns.append(turn)
 
         return {
-            "session_id": sess.id,
             "model": result.model if result else "",
             "assistant_text": turn.assistant_text,
             "tool_call": turn.tool_call,

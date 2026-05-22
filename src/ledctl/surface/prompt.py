@@ -1,7 +1,7 @@
 """System prompt assembly for the `write_effect` agent.
 
-Regenerated fresh every turn so the LLM always sees the latest install summary,
-audio snapshot, master values, and currently-active effect source.
+Regenerated fresh every turn so the LLM always sees the latest install
+summary and the currently-selected preview-layer source.
 """
 
 from __future__ import annotations
@@ -15,18 +15,28 @@ from .palettes import named_palette_names
 
 if TYPE_CHECKING:
     from ..audio.state import AudioState
-    from ..masters import MasterControls
     from ..topology import Topology
     from .runtime import Runtime
+
+# Bundled reference effects shown verbatim to the LLM as gold-standard
+# examples. Anything dropped into this directory at
+# `<repo>/src/ledctl/surface/LLM_example_effects/<slug>/effect.py`
+# is loaded on every prompt build. Kept OUT of `config/effects/` so the
+# operator can't accidentally delete them from the library UI and break
+# the context.
+LLM_EXAMPLES_DIR = Path(__file__).parent / "LLM_example_effects"
 
 
 YOUR_JOB = """\
 YOUR JOB
 You are an LED effect author. The operator types short descriptions of what they want to see;
 you write a single Python `Effect` subclass that we hot-load into a render loop on a Raspberry
-Pi, plus a tiny set of operator-facing UI controls (sliders / colour pickers / dropdowns) so
-the operator can hand-tune the look without re-prompting you. Emit ONE `write_effect` tool
-call per turn — never a diff, always the COMPLETE effect.
+Pi, plus a tiny set of operator-facing UI controls (sliders / colour pickers / dropdowns)
+shown in the operator UI under a panel titled "Effect Knobs" so the operator can hand-tune
+the look without re-prompting you. When the operator says "add a slider / palette / colour
+to the Effect Knobs" (or "knobs", "effect controls", "params panel" — all aliases), they mean
+the `params` schema you declare in `write_effect`. Emit ONE `write_effect` tool call per turn
+— never a diff, always the COMPLETE effect.
 
 The operator UI has a layered scratchpad called the PREVIEW composition (Resolume-style): a
 stack of layers, each layer is one Effect (yours), with a blend mode and opacity. Your
@@ -143,87 +153,45 @@ SHAPE GOTCHAS — common cause of "all input arrays must have the same shape"
     common shape, then stack as usual.
 """
 
-EXAMPLE_BASIC = '''\
-# EXAMPLE 1 — pulse_mono.  The simplest effect: solid colour, breathes on bass.
-class PulseMono(Effect):
-    """Solid colour fills the rig; brightness pulses on audio.low."""
+def _load_example_effects() -> list[tuple[str, str]]:
+    """Read every `<slug>/effect.py` under LLM_examples_DIR (sorted).
 
-    def init(self, ctx):
-        self.amp = np.zeros(ctx.n, dtype=np.float32)   # scratch buffer
+    Returns a list of (slug, source) pairs. Soft-fail on missing dir or
+    unreadable files — the prompt still ships, just without examples.
+    """
+    out: list[tuple[str, str]] = []
+    if not LLM_EXAMPLES_DIR.is_dir():
+        return out
+    for sub in sorted(LLM_EXAMPLES_DIR.iterdir()):
+        if not sub.is_dir():
+            continue
+        py = sub / "effect.py"
+        if not py.is_file():
+            continue
+        try:
+            source = py.read_text()
+        except OSError:
+            continue
+        out.append((sub.name, source))
+    return out
 
-    def render(self, ctx):
-        p = ctx.params
-        col = hex_to_rgb(p.color)
-        amp = p.floor + (1.0 - p.floor) * float(ctx.audio.low)
-        self.out[:] = col[None, :]
-        self.out *= amp
-        return self.out
-'''
 
-EXAMPLE_ADVANCED = '''\
-# EXAMPLE 2 — twin_comets_with_sparkles.  Two stateful particles + side masks +
-# sparkle deposit + audio modulation — the user's "north star" prompt, written
-# the way the runtime expects it.
-class TwinCometsWithSparkles(Effect):
-    """Two comets sweep along the rig. Top is red; bottom is blue. Each leaves
-    sparkles in its colour that fade out behind it."""
+def _example_effects_block() -> str:
+    """Render the EXAMPLE EFFECTS section by loading from disk on every call.
 
-    def init(self, ctx):
-        self.x = ctx.frames.x                              # (N,) float32 in [0, 1]
-        self.top = ctx.frames.side_top.astype(bool)
-        self.bot = ctx.frames.side_bottom.astype(bool)
-        self.sparkle_age = np.full(ctx.n, np.inf, dtype=np.float32)
-        self.sparkle_rgb = np.zeros((ctx.n, 3), dtype=np.float32)
-        self.head_top = 0.0
-        self.head_bot = 0.0
-        self.last_top = -1
-        self.last_bot = -1
-        self._fade = np.empty(ctx.n, dtype=np.float32)
-        self._d = np.empty(ctx.n, dtype=np.float32)
-
-    def render(self, ctx):
-        p = ctx.params
-        dt = ctx.dt
-        self.head_top = (self.head_top + p.comet_rate * dt) % 1.0
-        self.head_bot = (self.head_top - p.lead_offset) % 1.0
-
-        amp = 0.6 + 0.4 * float(ctx.audio.bands[p.audio_band])
-
-        # sparkle decay (exp, half-life ~ p.sparkle_decay)
-        np.add(self.sparkle_age, dt, out=self.sparkle_age)
-        np.divide(self.sparkle_age, max(p.sparkle_decay, 1e-3), out=self._fade)
-        np.exp(np.negative(self._fade, out=self._fade), out=self._fade)
-        np.multiply(self.sparkle_rgb, self._fade[:, None], out=self.out)
-
-        self._stamp(self.head_top, hex_to_rgb(p.leader_color), self.top, amp)
-        self._stamp(self.head_bot, hex_to_rgb(p.follower_color), self.bot, amp)
-
-        self._deposit(self.head_top, hex_to_rgb(p.leader_color), self.top, "top")
-        self._deposit(self.head_bot, hex_to_rgb(p.follower_color), self.bot, "bot")
-
-        return self.out
-
-    def _stamp(self, head_x, color, mask, amp):
-        np.subtract(self.x, head_x, out=self._d)
-        np.abs(self._d, out=self._d)
-        np.minimum(self._d, 1.0 - self._d, out=self._d)
-        g = np.exp(-(self._d * self._d) * (1.0 / (2.0 * 0.03 * 0.03))) * amp
-        self.out[mask] += g[mask, None] * color
-
-    def _deposit(self, head_x, color, mask, side):
-        idxs = np.where(mask)[0]
-        if idxs.size == 0:
-            return
-        i = idxs[np.argmin(np.abs(self.x[idxs] - head_x))]
-        prev = self.last_top if side == "top" else self.last_bot
-        if i != prev:
-            self.sparkle_age[i] = 0.0
-            self.sparkle_rgb[i] = color
-            if side == "top":
-                self.last_top = int(i)
-            else:
-                self.last_bot = int(i)
-'''
+    Loaded at prompt-build time (not import time) so dropping a new
+    effect.py into LLM_example_effects/ takes effect on the next chat
+    turn without a server restart.
+    """
+    examples = _load_example_effects()
+    if not examples:
+        return "EXAMPLE EFFECTS — (none on disk; drop effects under src/ledctl/surface/LLM_example_effects/)"
+    lines = ["EXAMPLE EFFECTS — these are what good output looks like"]
+    for i, (slug, source) in enumerate(examples, start=1):
+        lines.append("")
+        lines.append(f"# EXAMPLE {i} — {slug}")
+        lines.append(source.rstrip())
+    return "\n".join(lines)
 
 
 def _summarise_install(topology: Topology) -> str:
@@ -255,39 +223,27 @@ def _coordinate_frames_block() -> str:
 
 
 def _audio_block(audio_state: AudioState | None) -> str:
-    if audio_state is None or not audio_state.enabled:
-        return (
-            "AUDIO INPUT\n"
-            "Audio-server is disconnected. ctx.audio.low/mid/high will be 0.0 and\n"
-            "ctx.audio.beat will be 0.0. Build effects that still look good silent\n"
-            "(e.g. drive brightness from a slider with audio mixed on top via\n"
-            "`amp = base + reactive * ctx.audio.low`)."
-        )
-    bands = (
-        (audio_state.low_lo, audio_state.low_hi),
-        (audio_state.mid_lo, audio_state.mid_hi),
-        (audio_state.high_lo, audio_state.high_hi),
-    )
     return (
         "AUDIO INPUT\n"
         "The audio-server (Realtime_PyAudio_FFT) captures from a mic, runs an FFT,\n"
         "auto-scales each band's energy to ~[0, 1] via a long-window peak follower,\n"
         "and publishes the result over OSC. EVERYTHING IS PRE-SMOOTHED AND SCALED —\n"
-        "use raw values; do not apply your own EMA/clamp/normalise.\n\n"
-        f"  ctx.audio.low      float in [0, 1]  ({bands[0][0]:.0f}–{bands[0][1]:.0f} Hz, kick/sub)\n"
-        f"  ctx.audio.mid      float in [0, 1]  ({bands[1][0]:.0f}–{bands[1][1]:.0f} Hz, vocals/snare)\n"
-        f"  ctx.audio.high     float in [0, 1]  ({bands[2][0]:.0f}–{bands[2][1]:.0f} Hz, hats/sibilance)\n"
+        "use raw values; do not apply your own EMA/clamp/normalise. Typical dynamic\n"
+        "range during music: 0.0 (silent) → ~1.0 (peak). Brief overshoots above 1.0\n"
+        "are possible on transients; clip/clamp at the OUTPUT, not on the inputs.\n\n"
+        "  ctx.audio.low      float ~[0, 1]  — kick/sub band\n"
+        "  ctx.audio.mid      float ~[0, 1]  — vocals/snare band\n"
+        "  ctx.audio.high     float ~[0, 1]  — hats/sibilance band\n"
         "  ctx.audio.bands    dict {'low','mid','high'} — convenient for select-param-driven band\n"
-        "  ctx.audio.beat     float in [0, 1] — 0.0 on most frames; on a fresh onset, equals the\n"
-        "                          master audio_reactivity (clamped to 1) so beat-driven flashes\n"
-        "                          scale linearly with the master. DEFAULT to this for ANY rhythmic /\n"
-        "                          discrete reactivity — kicks, hits, pulses, flashes, sparkle\n"
-        "                          deposits, particle spawns, colour swaps on the beat, anything that\n"
-        "                          should fire 'on the music'. Driven by an upstream onset detector\n"
-        "                          with much lower latency and far better precision than thresholding\n"
-        "                          a band yourself. Only fall back to ctx.audio.low/mid/high for\n"
-        "                          discrete triggers if the operator explicitly asks for amplitude-\n"
-        "                          following behaviour ('react to bass loudness', not 'on the kick').\n"
+        "  ctx.audio.beat     float in [0, 1] — 0.0 on most frames; non-zero on a fresh onset.\n"
+        "                          DEFAULT to this for ANY rhythmic / discrete reactivity — kicks,\n"
+        "                          hits, pulses, flashes, sparkle deposits, particle spawns, colour\n"
+        "                          swaps on the beat, anything that should fire 'on the music'.\n"
+        "                          Driven by an upstream onset detector with much lower latency and\n"
+        "                          far better precision than thresholding a band yourself. Only fall\n"
+        "                          back to ctx.audio.low/mid/high for discrete triggers if the\n"
+        "                          operator explicitly asks for amplitude-following behaviour\n"
+        "                          ('react to bass loudness', not 'on the kick').\n"
         "                          Use as a multiplier:\n"
         "                              flash = ctx.audio.beat * p.kick_amount\n"
         "                          OR as a rising-edge trigger:\n"
@@ -296,10 +252,9 @@ def _audio_block(audio_state: AudioState | None) -> str:
         "  ctx.audio.beats_since_start  int monotonic onset counter (NOT scaled by reactivity)\n"
         "  ctx.audio.bpm      float — current tempo. Falls back to 120.0 when disconnected.\n"
         "  ctx.audio.connected  bool — False = audio off; low/mid/high will be 0.0.\n\n"
-        f"LIVE READING (snapshot at request time):\n"
-        f"  device:    {audio_state.device_name or 'default'}\n"
-        f"  low:  {audio_state.low:.3f}    mid:  {audio_state.mid:.3f}    high: {audio_state.high:.3f}\n"
-        f"  bpm:       {audio_state.bpm if audio_state.bpm is not None else 120.0:.1f}"
+        "When silent or disconnected, ctx.audio.low/mid/high → 0.0 and ctx.audio.beat → 0. Build\n"
+        "effects that still look good silent (e.g. drive brightness from a slider with audio mixed\n"
+        "on top via `amp = base + reactive * ctx.audio.low`)."
     )
 
 
@@ -316,7 +271,13 @@ def _runtime_api_block() -> str:
         "  pulse(x, width=0.5)       cosine bump in [-width, +width], peak=1\n"
         "  tri(x)                    triangle wave on [0, 1], peak at 0.5\n"
         "  wrap_dist(a, b, period=1) shortest signed distance with wrap\n"
-        "  palette_lerp(stops, t)    multi-stop palette sample at t (scalar or array)\n"
+        "  palette_lerp(stops, t)    multi-stop palette sample at t (scalar or array).\n"
+        "                            `stops` is one of:\n"
+        "                              named_palette('fire')                          (baked LUT)\n"
+        "                              [(0.0, '#ff0000'), (1.0, '#00ff00')]           (pos, hex)\n"
+        "                              [(0.0, 1.0, 0.0, 0.0), (1.0, 0.0, 1.0, 0.0)]   (pos, r, g, b)\n"
+        "                              ['#ff0000', '#00ff00', '#0000ff']              (bare, even spacing)\n"
+        "                            DO NOT mix stop lengths in a single list.\n"
         "  named_palette(name)       (LUT_SIZE, 3) float32 LUT — names: "
         + ", ".join(named_palette_names()) + "\n"
         "  rng                       np.random.Generator, seeded by effect name\n"
@@ -329,6 +290,9 @@ def _runtime_api_block() -> str:
 def _param_schema_block() -> str:
     return (
         "PARAM SCHEMA — declare 0–8 controls for the operator UI\n"
+        "These render in the operator UI panel titled \"Effect Knobs\" (sitting directly under\n"
+        "the global \"Masters\" panel). When the operator asks to add/remove/rename something on\n"
+        "\"the Effect Knobs\" / \"the knobs\" / \"the params panel\", they mean this `params` list.\n"
         "Every param is a dict with `key` (snake_case), `label`, `control`, plus control-specific fields:\n"
         "  - slider:      {min, max, step?, default, unit?}    — float\n"
         "  - int_slider:  {min, max, step?, default}           — integer\n"
@@ -354,54 +318,46 @@ def _param_schema_block() -> str:
     )
 
 
-def _masters_block(masters: MasterControls | None) -> str:
-    if masters is None:
-        return ""
-    return (
-        "OPERATOR MASTERS (read-only; available via ctx.masters but NOT mutable)\n"
-        f"  brightness:        {masters.brightness:.2f}\n"
-        f"  speed:             {masters.speed:.2f}   (multiplies ctx.t advancement)\n"
-        f"  audio_reactivity:  {masters.audio_reactivity:.2f}   (already pre-applied to ctx.audio.*)\n"
-        f"  saturation:        {masters.saturation:.2f}\n"
-        "If a request can only be honoured by a master change ('make it brighter' while brightness=1.0;\n"
-        "'less reactive' while audio_reactivity is high) — TELL THE OPERATOR which slider to move\n"
-        "instead of writing a redundant effect. Otherwise design assuming the masters stay where they are."
-    )
-
-
 def _current_effects_block(runtime: Runtime | None) -> str:
-    """Render ONLY the PREVIEW composition — the LLM has no visibility into LIVE.
+    """Render the SELECTED preview layer — the LLM has no visibility into LIVE,
+    and we deliberately don't expose other preview layers either.
 
-    LIVE is operator-controlled exclusively (no read, no write). Showing live
-    source / param values would tempt the LLM to "preserve" what's playing
-    and confuse it about which layer it's authoring.
+    LIVE is operator-controlled exclusively (no read, no write). The other
+    preview layers are also operator-owned (add / remove / reorder). Showing
+    them would tempt the LLM to "preserve" what's around it instead of
+    authoring its own layer cleanly. So we hand it exactly one thing: the
+    layer it's replacing — name, param schema, current param_values, source.
     """
     if runtime is None:
         return ""
     snap = runtime.snapshot()
-    out = ["CURRENT PREVIEW COMPOSITION (your scratchpad — what you're authoring)"]
-    out.append(f"  crossfade on promote: {snap['crossfade_seconds']:.2f}s")
     preview = snap.get("preview") or {}
     layers = preview.get("layers") or []
-    sel = preview.get("selected", 0)
+    out = ["CURRENT PREVIEW LAYER (the SELECTED layer — your `write_effect` REPLACES it)"]
     if not layers:
         out.append("  preview composition is empty — your `write_effect` will create the first layer")
         return "\n".join(out)
-    out.append(f"  layers: {len(layers)}, selected: #{sel}")
-    for i, layer in enumerate(layers):
-        marker = "▶" if i == sel else " "
-        out.append(
-            f"  {marker} #{i}  {layer['name']}  "
-            f"[{layer['blend']} @ opacity={layer['opacity']:.2f}"
-            f"{' DISABLED' if not layer.get('enabled', True) else ''}]"
-        )
-        out.append(f"      summary: {layer['summary']}")
-        out.append(f"      param_values: {json.dumps(layer['param_values'])}")
-    sel_layer = layers[min(sel, len(layers) - 1)]
+    sel = preview.get("selected", 0)
+    sel_idx = min(sel, len(layers) - 1)
+    sel_layer = layers[sel_idx]
+    out.append(f"  name:    {sel_layer['name']}")
+    out.append(f"  summary: {sel_layer['summary']}")
     out.append(
-        "\n  SELECTED LAYER SOURCE (your `write_effect` will REPLACE this — "
-        "build on it or rewrite it as the user requested):"
+        "  Operator-tuned `param_values` for matching keys auto-carry into your next emit."
     )
+    out.append("\n  PARAM SCHEMA (what each knob means right now):")
+    schema = sel_layer.get("param_schema") or []
+    if schema:
+        for spec in schema:
+            # Drop None values — they're not informative and they make the
+            # schema noisier than the operator-visible param panel itself.
+            compact = {k: v for k, v in spec.items() if v is not None}
+            out.append(f"    {json.dumps(compact)}")
+    else:
+        out.append("    (none declared)")
+    out.append("\n  CURRENT PARAM VALUES:")
+    out.append(f"    {json.dumps(sel_layer['param_values'])}")
+    out.append("\n  SELECTED LAYER SOURCE (build on it or rewrite it as the user requested):")
     for line in sel_layer["source"].splitlines():
         out.append(f"    {line}")
     return "\n".join(out)
@@ -429,14 +385,25 @@ chatting). The argument shape:
     "name":    "snake_case_name",          // <= 40 chars, [a-z][a-z0-9_]
     "summary": "one sentence",              // shown to the operator in chat
     "code":    "<python source>",           // <= 8 KB; one Effect subclass
-    "params":  [ { "key": ..., "control": ..., ... }, ... ]   // <= 8 entries
+    "params":  [ { "key": ..., "control": ..., ... }, ... ],  // <= 8 entries
+    "blend":   "normal"|"add"|"screen"|"multiply",  // optional; omit to keep current
+    "opacity": 0.0..1.0                              // optional; omit to keep current
   }
 
 What changes vs. a chat reply:
-  - The effect goes into the PREVIEW slot (the operator sees it instantly in the simulator).
-  - DDP / live LEDs are unaffected until the operator clicks "Promote to live".
-  - Drag-tuned slider values for matching `key`s are carried forward into your next attempt
-    via `param_values` in CURRENT EFFECTS — design defaults around those when sensible.
+  - The effect goes into the SELECTED PREVIEW layer (the operator sees it instantly in the
+    simulator). DDP / live LEDs are unaffected until the operator clicks "Promote to live".
+  - Drag-tuned slider values for matching `key`s carry forward via `param_values` — design
+    defaults around the values listed in CURRENT PREVIEW COMPOSITION when sensible.
+  - `blend` + `opacity` similarly carry forward when omitted. Override them when authoring
+    a new look that REQUIRES specific compositing (e.g. additive sparkles → blend="add").
+  - Per-param `help` strings show up as hover tooltips in the operator UI — use them for
+    non-obvious knobs (one short sentence is plenty).
+
+Note: you author ONE layer at a time — the SELECTED one. The operator owns the layer stack
+(adding / removing / reordering / blending other layers) and the master output stage. If a
+request really needs multiple layers, do the best single-layer version and tell the operator
+what other layers would complete the look so they can stack them themselves.
 
 Be terse in your assistant text. The operator can SEE the lights; they don't need a recital.
 """
@@ -446,11 +413,14 @@ def build_system_prompt(
     *,
     topology: Topology,
     runtime: Runtime | None,
-    audio_state: AudioState | None,
-    masters: MasterControls | None,
-    crossfade_seconds: float | None = None,
-    presets_dir: Path | None = None,  # legacy; ignored
+    audio_state: AudioState | None = None,
     last_error: dict[str, Any] | None = None,
+    # Legacy kwargs — accepted for back-compat with older callers/tests.
+    # Ignored: master values, crossfade duration, and the legacy presets_dir
+    # are no longer surfaced to the LLM.
+    masters: Any = None,
+    crossfade_seconds: float | None = None,
+    presets_dir: Path | None = None,
 ) -> str:
     sections: list[str] = [
         YOUR_JOB,
@@ -463,11 +433,8 @@ def build_system_prompt(
         _param_schema_block(),
         PERFORMANCE_RULES,
         ANTI_PATTERNS,
-        "EXAMPLE EFFECTS — these are what good output looks like\n\n" + EXAMPLE_BASIC + "\n\n" + EXAMPLE_ADVANCED,
+        _example_effects_block(),
     ]
-    masters_block = _masters_block(masters)
-    if masters_block:
-        sections.append(masters_block)
     cur = _current_effects_block(runtime)
     if cur:
         sections.append(cur)

@@ -2,17 +2,16 @@
 
 Thin layer over OpenRouter:
   - `AgentClient` — OpenAI-compatible HTTP wrapper,
-  - `SessionStore` / `ChatSession` — rolling-buffer per-session state,
+  - `ChatSession` — single rolling-buffer chat state,
   - the actual `write_effect` tool + system prompt live in `ledctl.surface`.
 """
 
 from .client import AgentClient, MissingApiKey
-from .session import AgentTurn, ChatSession, SessionStore
+from .session import AgentTurn, ChatSession
 
 __all__ = [
     "AgentClient",
     "AgentTurn",
     "ChatSession",
     "MissingApiKey",
-    "SessionStore",
 ]

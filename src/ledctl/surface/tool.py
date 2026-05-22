@@ -20,7 +20,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .persistence import EffectStore
-from .runtime import Runtime
+from .runtime import BLEND_MODES, Runtime
 from .sandbox import EffectCompileError
 from .schema import WriteEffectArgs
 
@@ -37,7 +37,10 @@ def write_effect_tool_schema() -> dict[str, Any]:
                 "Replace the selected PREVIEW layer with a new Python Effect class plus "
                 "an operator-UI param schema. The operator promotes preview → live "
                 "separately, and tunes individual values via the UI sliders. "
-                "Always emit the COMPLETE effect — never a diff."
+                "Always emit the COMPLETE effect — never a diff. You may also "
+                "author the layer's `blend` mode and `opacity` to express intent "
+                "(e.g. a soft additive sparkle overlay). Omit them to carry the "
+                "operator's current settings forward."
             ),
             "parameters": {
                 "type": "object",
@@ -61,6 +64,24 @@ def write_effect_tool_schema() -> dict[str, Any]:
                             "module top level. ≤8 KB. No imports — runtime API is in scope."
                         ),
                     },
+                    "blend": {
+                        "type": "string",
+                        "enum": list(BLEND_MODES),
+                        "description": (
+                            "Optional. How this layer composites with the layers "
+                            "below it. Default = keep current. 'normal' = standard "
+                            "alpha; 'add' = additive (good for sparkles/lasers); "
+                            "'screen' = soft additive; 'multiply' = darken/tint."
+                        ),
+                    },
+                    "opacity": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "description": (
+                            "Optional. Layer opacity in [0, 1]. Default = keep current."
+                        ),
+                    },
                     "params": {
                         "type": "array",
                         "maxItems": 8,
@@ -71,7 +92,13 @@ def write_effect_tool_schema() -> dict[str, Any]:
                             "properties": {
                                 "key": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,40}$"},
                                 "label": {"type": "string"},
-                                "help": {"type": "string"},
+                                "help": {
+                                    "type": "string",
+                                    "description": (
+                                        "Short hover-tooltip shown to the operator. "
+                                        "Use this to explain non-obvious knobs."
+                                    ),
+                                },
                                 "control": {
                                     "type": "string",
                                     "enum": [
@@ -114,7 +141,11 @@ def apply_write_effect(
 
     # Auto-merge: pull operator's current tweaks for matching keys from the
     # currently-selected preview layer (the layer this write replaces).
+    # Same spirit for blend/opacity: if the LLM didn't explicitly author them,
+    # carry the operator's current settings forward.
     carry: dict[str, object] = {}
+    blend_to_use: str = "normal"
+    opacity_to_use: float = 1.0
     sel = runtime.preview.selected_layer()
     if sel is not None:
         prev_values = sel.params.values()
@@ -122,6 +153,12 @@ def apply_write_effect(
             key = spec["key"]
             if key in prev_values:
                 carry[key] = prev_values[key]
+        blend_to_use = sel.blend
+        opacity_to_use = float(sel.opacity)
+    if args.blend is not None:
+        blend_to_use = args.blend
+    if args.opacity is not None:
+        opacity_to_use = float(args.opacity)
 
     try:
         runtime.install_layer(
@@ -131,8 +168,8 @@ def apply_write_effect(
             source=args.code,
             param_schema=param_schema,
             param_values=carry,
-            blend="normal",
-            opacity=1.0,
+            blend=blend_to_use,
+            opacity=opacity_to_use,
         )
     except EffectCompileError as e:
         return {
@@ -150,4 +187,6 @@ def apply_write_effect(
         "applied": "preview",
         "name": args.name,
         "params": param_schema,
+        "blend": blend_to_use,
+        "opacity": opacity_to_use,
     }

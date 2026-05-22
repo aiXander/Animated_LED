@@ -22,7 +22,6 @@ import yaml
 
 from .surface.persistence import EffectStore
 from .surface.runtime import Runtime
-from .surface.sandbox import EffectCompileError
 
 log = logging.getLogger(__name__)
 
@@ -123,27 +122,37 @@ class Playlist:
     # ---- internal advance loop ---- #
 
     async def _loop(self) -> None:
+        # Playlists auto-loop forever — only stop() (or task cancel) exits.
+        # Per-iteration errors (bad effect source, transient install failure)
+        # MUST NOT terminate the task; we log, wait the slot, and advance.
         try:
-            while self.running and self.entries:
+            while self.running:
+                if not self.entries:
+                    # Empty playlist — idle politely until entries reappear
+                    # or stop() is called.
+                    await asyncio.sleep(1.0)
+                    continue
+                if self.current_index >= len(self.entries):
+                    self.current_index = 0
                 entry = self.entries[self.current_index]
-                self._load_into_live(entry.name)
+                try:
+                    self._load_into_live(entry.name)
+                except Exception:
+                    log.exception("playlist: load failed for %r; skipping to next", entry.name)
                 self.started_at = time.time()
-                # Sleep in 1 s slices so a stop()/replace_entries() has snappy reaction.
+                # Sleep in 1 s slices so stop()/replace_entries() has snappy reaction.
                 end_at = self.started_at + max(MIN_PLAY_SECONDS, float(entry.play_seconds))
                 while self.running and time.time() < end_at:
-                    await asyncio.sleep(min(1.0, end_at - time.time()))
+                    await asyncio.sleep(min(1.0, max(0.0, end_at - time.time())))
                 if not self.running:
                     break
                 # Advance — wrap to 0 to loop forever.
                 if self.entries:
                     self.current_index = (self.current_index + 1) % len(self.entries)
                 else:
-                    break
+                    self.current_index = 0
         except asyncio.CancelledError:
             raise
-        except Exception:
-            log.exception("playlist loop crashed")
-            self.running = False
 
     def _load_into_live(self, name: str) -> None:
         runtime = self._runtime
@@ -166,7 +175,7 @@ class Playlist:
                 blend="normal",
                 opacity=1.0,
             )
-        except (EffectCompileError, ValueError):
+        except Exception:
             log.exception("playlist: failed to install %r", name)
 
 

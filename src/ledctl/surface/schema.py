@@ -11,11 +11,19 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .palettes import named_palette_names
+
 ParamControl = Literal[
     "slider", "int_slider", "color", "select", "toggle", "palette"
 ]
 
+# Mirror of surface.runtime.BLEND_MODES. Inlined to avoid importing runtime
+# from schema (runtime depends on schema indirectly via tool.py).
+BLEND_MODES = ("normal", "add", "screen", "multiply")
+BlendMode = Literal["normal", "add", "screen", "multiply"]
+
 _KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
+_HEX_PATTERN = re.compile(r"^#?[0-9a-fA-F]{6}$|^#?[0-9a-fA-F]{3}$")
 
 
 def _check_key(key: str) -> str:
@@ -46,6 +54,19 @@ class SliderParam(ParamCommon):
     default: float
     unit: str | None = None
 
+    @model_validator(mode="after")
+    def _validate_range(self) -> SliderParam:
+        if self.min > self.max:
+            raise ValueError(
+                f"slider {self.key!r}: min ({self.min}) > max ({self.max})"
+            )
+        if not (self.min <= self.default <= self.max):
+            raise ValueError(
+                f"slider {self.key!r}: default {self.default} is outside "
+                f"[{self.min}, {self.max}]"
+            )
+        return self
+
 
 class IntSliderParam(ParamCommon):
     control: Literal["int_slider"]
@@ -54,16 +75,49 @@ class IntSliderParam(ParamCommon):
     step: int | None = 1
     default: int
 
+    @model_validator(mode="after")
+    def _validate_range(self) -> IntSliderParam:
+        if self.min > self.max:
+            raise ValueError(
+                f"int_slider {self.key!r}: min ({self.min}) > max ({self.max})"
+            )
+        if not (self.min <= self.default <= self.max):
+            raise ValueError(
+                f"int_slider {self.key!r}: default {self.default} is outside "
+                f"[{self.min}, {self.max}]"
+            )
+        return self
+
 
 class ColorParam(ParamCommon):
     control: Literal["color"]
     default: str  # hex
+
+    @model_validator(mode="after")
+    def _validate_hex(self) -> ColorParam:
+        if not _HEX_PATTERN.match(self.default):
+            raise ValueError(
+                f"color {self.key!r}: default {self.default!r} is not a valid "
+                f"#rrggbb / #rgb hex string"
+            )
+        return self
 
 
 class SelectParam(ParamCommon):
     control: Literal["select"]
     options: list[str]
     default: str
+
+    @model_validator(mode="after")
+    def _validate_default_in_options(self) -> SelectParam:
+        if not self.options:
+            raise ValueError(f"select {self.key!r}: options must be non-empty")
+        if self.default not in self.options:
+            raise ValueError(
+                f"select {self.key!r}: default {self.default!r} is not in "
+                f"options {self.options}"
+            )
+        return self
 
 
 class ToggleParam(ParamCommon):
@@ -74,6 +128,16 @@ class ToggleParam(ParamCommon):
 class PaletteParam(ParamCommon):
     control: Literal["palette"]
     default: str
+
+    @model_validator(mode="after")
+    def _validate_palette_name(self) -> PaletteParam:
+        known = named_palette_names()
+        if self.default not in known:
+            raise ValueError(
+                f"palette {self.key!r}: default {self.default!r} is not a "
+                f"known palette. Valid names: {known}"
+            )
+        return self
 
 
 ParamSpec = Annotated[
@@ -91,6 +155,12 @@ class WriteEffectArgs(BaseModel):
     summary: str = Field("", max_length=400)
     code: str = Field(..., min_length=1, max_length=8 * 1024)
     params: list[ParamSpec] = Field(default_factory=list, max_length=8)
+    # Optional intent from the LLM: how this layer sits in the composition.
+    # `None` = carry forward whatever the operator had on the prior layer
+    # (matches the param auto-merge spirit so operator tweaks survive a
+    # regeneration unless the LLM is explicitly re-authoring intent).
+    blend: BlendMode | None = None
+    opacity: float | None = Field(None, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _no_duplicate_keys(self) -> WriteEffectArgs:

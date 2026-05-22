@@ -241,14 +241,17 @@ class AgentConfig(BaseModel):
         "anthropic/claude-sonnet-4-6",
         description="OpenRouter model id (e.g. 'anthropic/claude-sonnet-4-6')",
     )
-    history_max_messages: int = Field(
-        20,
-        ge=2,
-        le=200,
+    history_max_turns: int = Field(
+        5,
+        ge=0,
+        le=50,
         description=(
-            "Rolling buffer size, excluding the system prompt. Each user turn "
-            "produces 3 messages (user / assistant tool-call / tool result), so "
-            "20 covers ~6 turns of context."
+            "How many prior conversation turns to keep in the rolling buffer. "
+            "A turn = one user message + the resulting assistant message + any "
+            "tool_call / tool_result pairs. Trimming by turn (not raw message "
+            "count) guarantees we never start mid-turn with an orphan tool "
+            "result. The system prompt is rebuilt fresh every turn and is "
+            "NOT counted here. 0 disables history entirely."
         ),
     )
     request_timeout_seconds: float = Field(

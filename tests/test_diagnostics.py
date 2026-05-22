@@ -84,9 +84,10 @@ def test_hint_for_attribute_on_frame_context():
             "preview", name="bad_ctx", summary="", source=src, param_schema=[],
         )
     msg = str(exc.value)
-    # The hint must point at the right idiom.
+    # Caught by the pre-render lint — message must point at the right idiom
+    # and the line number so the LLM can self-correct without a retry.
     assert "ctx.frames" in msg, msg
-    assert "AttributeError" in msg
+    assert "line 4" in msg, msg
 
 
 def test_hint_for_unknown_frame_name():
