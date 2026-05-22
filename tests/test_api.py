@@ -160,20 +160,61 @@ def test_preview_save_409_when_no_overwrite_and_exists(client: TestClient):
 
 
 def test_load_preview_wipes_agent_history(client: TestClient):
-    """Library pull replaces preview source — the LLM's rolling buffer must
-    be cleared so it doesn't reference stale source on the next turn."""
-    # Seed the rolling buffer manually (skip the LLM round-trip).
-    sessions = client.app.state.agent_sessions
-    sess = sessions.get_or_create(None)
+    """Library pull replaces preview source — the single chat session is
+    fully wiped (messages + turns) and the server bumps `chat_epoch` so the
+    UI knows to clear its local chat log."""
+    sess = client.app.state.agent_session
     sess.append_messages([
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "ok"},
     ])
+    sess.turns.append(object())  # placeholder; we just want to verify wipe
     assert len(sess.messages) == 2
+    assert len(sess.turns) == 1
 
+    epoch_before = client.app.state.chat_epoch
     r = client.post("/effects/twin_comets_with_sparkles/load_preview", json={})
     assert r.status_code == 200
     assert len(sess.messages) == 0
-    # Operator-visible transcript is untouched (we only wipe the model buffer).
-    # `turns` was empty in this test anyway, but assert it didn't blow up.
-    assert sess.turns == []
+    assert len(sess.turns) == 0
+    assert client.app.state.chat_epoch == epoch_before + 1
+
+
+def test_preview_select_wipes_agent_history(client: TestClient):
+    """Switching the focused preview layer also wipes the chat — the
+    selected layer's source is what the system prompt embeds, so prior
+    turns reference state that's no longer current."""
+    # Stack two layers via add_layer=True. After this call the appended
+    # layer is selected (index 1).
+    client.post("/effects/twin_comets_with_sparkles/load_preview",
+                json={"add_layer": True})
+    sess = client.app.state.agent_session
+    sess.append_messages([{"role": "user", "content": "hi"}])
+    epoch_before = client.app.state.chat_epoch
+
+    # Move focus back to index 0 — that's the trigger.
+    r = client.post("/preview/select", json={"index": 0})
+    assert r.status_code == 200
+    assert len(sess.messages) == 0
+    assert client.app.state.chat_epoch == epoch_before + 1
+
+    # Re-selecting the same index is a no-op — don't double-wipe.
+    sess.append_messages([{"role": "user", "content": "hi again"}])
+    epoch_mid = client.app.state.chat_epoch
+    r = client.post("/preview/select", json={"index": 0})
+    assert r.status_code == 200
+    assert client.app.state.chat_epoch == epoch_mid
+    assert len(sess.messages) == 1  # untouched
+
+
+def test_delete_session_wipes_and_bumps_epoch(client: TestClient):
+    """Explicit DELETE /agent/session is the "new chat" path: clears the
+    single session and bumps the epoch."""
+    sess = client.app.state.agent_session
+    sess.append_messages([{"role": "user", "content": "hi"}])
+    epoch_before = client.app.state.chat_epoch
+    r = client.delete("/agent/session")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert len(sess.messages) == 0
+    assert client.app.state.chat_epoch == epoch_before + 1

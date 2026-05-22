@@ -141,18 +141,25 @@ def wrap_dist(a, b, period=1.0):
 def palette_lerp(stops, t):
     """Sample a multi-stop palette at scalar/array t in [0, 1].
 
-    `stops` is a list of (pos, "#rrggbb") or (pos, (r, g, b)) tuples in any
-    order. Returns float32 of shape (..., 3).
+    Accepts any of:
+      - a baked LUT — ndarray of shape (M, 3) such as `named_palette(name)`.
+        Positions are assumed evenly spaced on [0, 1].
+      - [(pos, "#rrggbb"), ...]    or  [(pos, (r, g, b)), ...]  — (pos, colour) pairs.
+      - [(pos, r, g, b), ...]                                   — flat 4-tuples.
+      - ["#rrggbb", "#rrggbb", ...] or [(r, g, b), ...]         — bare colours,
+        positions distributed evenly on [0, 1].
+
+    Returns float32 of shape `t.shape + (3,)`.
     """
-    pts = sorted(stops, key=lambda s: float(s[0]))
-    xs = np.array([float(p[0]) for p in pts], dtype=np.float32)
-    cols = []
-    for _, c in pts:
-        if isinstance(c, str):
-            cols.append(hex_to_rgb(c))
-        else:
-            cols.append(np.asarray(c, dtype=np.float32))
-    cols_arr = np.stack(cols, axis=0)
+    # LUT fast path: (M, 3) ndarray. Catches `palette_lerp(named_palette('fire'), …)`.
+    if isinstance(stops, np.ndarray) and stops.ndim == 2 and stops.shape[1] == 3:
+        xs = np.linspace(0.0, 1.0, stops.shape[0], dtype=np.float32)
+        cols_arr = stops.astype(np.float32, copy=False)
+    else:
+        xs_list, cols = _parse_palette_stops(stops)
+        order = np.argsort(np.asarray(xs_list, dtype=np.float32))
+        xs = np.asarray(xs_list, dtype=np.float32)[order]
+        cols_arr = np.stack([cols[i] for i in order], axis=0)
     t = np.asarray(t, dtype=np.float32)
     flat = t.ravel()
     r = np.interp(flat, xs, cols_arr[:, 0])
@@ -160,3 +167,82 @@ def palette_lerp(stops, t):
     b = np.interp(flat, xs, cols_arr[:, 2])
     out = np.stack([r, g, b], axis=-1).astype(np.float32, copy=False)
     return out.reshape(t.shape + (3,))
+
+
+_NUMERIC = (int, float, np.floating, np.integer)
+
+
+def _to_rgb_triplet(c) -> np.ndarray:
+    """Normalise '#rrggbb', (r, g, b), [r, g, b], or ndarray-of-3 to (3,) float32."""
+    if isinstance(c, str):
+        return hex_to_rgb(c)
+    arr = np.asarray(c, dtype=np.float32)
+    if arr.shape != (3,):
+        raise ValueError(
+            f"palette_lerp: colour must be '#rrggbb' or a 3-element (r, g, b); "
+            f"got shape {arr.shape}"
+        )
+    return arr
+
+
+def _parse_palette_stops(stops):
+    """Return (xs_list, [rgb (3,) f32, ...]) from a flexible stops sequence.
+
+    Raises ValueError with an LLM-actionable message on any malformed input —
+    the fence-test then surfaces that under LAST EFFECT ERROR.
+    """
+    try:
+        seq = list(stops)
+    except TypeError as e:
+        raise ValueError(
+            f"palette_lerp: `stops` must be a sequence or (M, 3) ndarray; "
+            f"got {type(stops).__name__}"
+        ) from e
+    if len(seq) < 1:
+        raise ValueError("palette_lerp: `stops` is empty — give at least 1 colour.")
+
+    first = seq[0]
+    # Bare hex list: ['#ff0000', '#00ff00', ...] — distribute evenly.
+    if isinstance(first, str):
+        cols = [_to_rgb_triplet(c) for c in seq]
+        xs = list(np.linspace(0.0, 1.0, max(len(cols), 2), dtype=np.float32)[: len(cols)])
+        return xs, cols
+    if not isinstance(first, (list, tuple, np.ndarray)):
+        raise ValueError(
+            f"palette_lerp: stop {first!r} (type {type(first).__name__}) not understood — "
+            "use '#rrggbb', (r, g, b), (pos, colour), or (pos, r, g, b)."
+        )
+    first_len = len(first)
+    # Bare (r, g, b) list — all numeric, length 3, no per-stop position.
+    if first_len == 3 and all(isinstance(v, _NUMERIC) for v in first):
+        cols = [_to_rgb_triplet(c) for c in seq]
+        xs = list(np.linspace(0.0, 1.0, max(len(cols), 2), dtype=np.float32)[: len(cols)])
+        return xs, cols
+    # (pos, colour) tuples — standard 2-tuple form.
+    if first_len == 2:
+        xs, cols = [], []
+        for s in seq:
+            if len(s) != 2:
+                raise ValueError(
+                    f"palette_lerp: mixed stop lengths — expected (pos, colour) 2-tuples, "
+                    f"got {s!r}."
+                )
+            xs.append(float(s[0]))
+            cols.append(_to_rgb_triplet(s[1]))
+        return xs, cols
+    # (pos, r, g, b) flat 4-tuples — common LLM shorthand.
+    if first_len == 4 and all(isinstance(v, _NUMERIC) for v in first):
+        xs, cols = [], []
+        for s in seq:
+            if len(s) != 4:
+                raise ValueError(
+                    f"palette_lerp: mixed stop lengths — expected (pos, r, g, b) 4-tuples, "
+                    f"got {s!r}."
+                )
+            xs.append(float(s[0]))
+            cols.append(_to_rgb_triplet(tuple(s[1:])))
+        return xs, cols
+    raise ValueError(
+        f"palette_lerp: stop {first!r} has length {first_len}; expected one of: "
+        "'#rrggbb', (r, g, b), (pos, colour), or (pos, r, g, b)."
+    )

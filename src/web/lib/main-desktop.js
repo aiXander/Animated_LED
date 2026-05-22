@@ -13,9 +13,33 @@ import { $, setText } from "./util.js";
 
 // --- state ---
 let state = null;
-let sessionId = null;
 let libraryEffects = [];
+let palettes = {};          // name -> [[pos, "#rrggbb"], ...]
+let paletteNames = [];      // sorted list of names (matches server)
 const chatLog = $("chat-log");
+// Tracks the server's chat_epoch (bumped on every server-driven chat wipe:
+// preview layer select, library load into preview, pull-live-to-preview,
+// save/rename of the preview source, and explicit /agent/session DELETE).
+// When the local copy diverges from the just-arrived state we clear the
+// local chat log to stay in sync with the wiped server session.
+let lastChatEpoch = null;
+
+async function loadPalettes() {
+  try {
+    const r = await fetch("/palettes");
+    const data = await r.json();
+    palettes = data.palettes || {};
+    paletteNames = data.names || Object.keys(palettes).sort();
+  } catch (_) { palettes = {}; paletteNames = []; }
+}
+
+function paletteGradientCss(name) {
+  const stops = palettes[name];
+  if (!stops || !stops.length) return "linear-gradient(90deg, #222, #444)";
+  return "linear-gradient(90deg, "
+    + stops.map(([pos, hex]) => `${hex} ${(pos * 100).toFixed(1)}%`).join(", ")
+    + ")";
+}
 
 // --- WS state stream ---
 function connectStateStream() {
@@ -866,6 +890,16 @@ function syncParamValues(form, values) {
       if (swatch) swatch.textContent = String(v);
       continue;
     }
+    const paletteBtn = row.querySelector(".palette-btn");
+    if (paletteBtn) {
+      const name = String(v || "");
+      paletteBtn.dataset.palette = name;
+      const sw = paletteBtn.querySelector(".palette-swatch");
+      if (sw) sw.style.background = paletteGradientCss(name);
+      const ne = paletteBtn.querySelector(".palette-name");
+      if (ne) ne.textContent = name || "—";
+      continue;
+    }
     if (!input || document.activeElement === input) continue;
     if (input.type === "checkbox") input.checked = !!v;
     else input.value = v;
@@ -937,7 +971,7 @@ function makeParamRow(spec, currentValue, onChange) {
     row.appendChild(document.createElement("span"));
     return row;
   }
-  if (spec.control === "select" || spec.control === "palette") {
+  if (spec.control === "select") {
     const ctrl = document.createElement("select");
     for (const opt of (spec.options || [])) {
       const o = document.createElement("option");
@@ -945,18 +979,43 @@ function makeParamRow(spec, currentValue, onChange) {
       if (opt === val) o.selected = true;
       ctrl.appendChild(o);
     }
-    if (spec.control === "palette" && (spec.options || []).length === 0) {
-      // Fallback when prompt didn't enumerate; render plain text input.
-      const t = document.createElement("input");
-      t.type = "text"; t.value = String(val || "");
-      t.addEventListener("change", () => onChange(t.value));
-      row.appendChild(t);
-      row.appendChild(document.createElement("span"));
-      return row;
-    }
     ctrl.value = String(val);
     ctrl.addEventListener("change", () => onChange(ctrl.value));
     row.appendChild(ctrl);
+    row.appendChild(document.createElement("span"));
+    return row;
+  }
+  if (spec.control === "palette") {
+    // Custom dropdown: button shows current palette swatch + name, click
+    // opens a popover listing every available palette as a gradient row.
+    const names = paletteNames.length ? paletteNames : Object.keys(palettes);
+    let current = String(val || "");
+    if (!names.includes(current)) {
+      current = names.includes(spec.default) ? String(spec.default) : (names[0] || "");
+    }
+    const btn = document.createElement("div");
+    btn.className = "palette-btn";
+    btn.tabIndex = 0;
+    const swatch = document.createElement("div");
+    swatch.className = "palette-swatch";
+    swatch.style.background = paletteGradientCss(current);
+    const nameEl = document.createElement("span");
+    nameEl.className = "palette-name";
+    nameEl.textContent = current || "—";
+    btn.appendChild(swatch);
+    btn.appendChild(nameEl);
+    btn.dataset.palette = current;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openPalettePopover(btn, current, (picked) => {
+        current = picked;
+        btn.dataset.palette = picked;
+        swatch.style.background = paletteGradientCss(picked);
+        nameEl.textContent = picked;
+        onChange(picked);
+      });
+    });
+    row.appendChild(btn);
     row.appendChild(document.createElement("span"));
     return row;
   }
@@ -1103,6 +1162,58 @@ function closeColorPopover() {
 }
 $("color-close").addEventListener("click", closeColorPopover);
 
+// --- palette dropdown popover ---
+const palettePop = $("palette-popover");
+let activePaletteTarget = null;
+
+function openPalettePopover(anchor, currentName, onPick) {
+  closeColorPopover();
+  closePalettePopover();
+  activePaletteTarget = anchor;
+  const list = palettePop.querySelector(".palette-list");
+  list.innerHTML = "";
+  const names = paletteNames.length ? paletteNames : Object.keys(palettes);
+  for (const name of names) {
+    const item = document.createElement("div");
+    item.className = "palette-item" + (name === currentName ? " selected" : "");
+    const sw = document.createElement("div");
+    sw.className = "palette-swatch";
+    sw.style.background = paletteGradientCss(name);
+    const label = document.createElement("span");
+    label.className = "palette-item-name";
+    label.textContent = name;
+    item.appendChild(sw);
+    item.appendChild(label);
+    item.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onPick(name);
+      closePalettePopover();
+    });
+    list.appendChild(item);
+  }
+  const rect = anchor.getBoundingClientRect();
+  const popW = 240, popH = Math.min(360, 36 + names.length * 30);
+  let left = rect.left;
+  let top = rect.bottom + 6;
+  if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8;
+  if (top + popH > window.innerHeight - 8) top = Math.max(8, rect.top - popH - 6);
+  palettePop.style.left = left + "px";
+  palettePop.style.top = top + "px";
+  palettePop.classList.add("open");
+}
+
+function closePalettePopover() {
+  palettePop.classList.remove("open");
+  activePaletteTarget = null;
+}
+
+document.addEventListener("click", (e) => {
+  if (!palettePop.classList.contains("open")) return;
+  if (palettePop.contains(e.target)) return;
+  if (activePaletteTarget && activePaletteTarget.contains(e.target)) return;
+  closePalettePopover();
+});
+
 document.addEventListener("click", (e) => {
   if (!colorPop.classList.contains("open")) return;
   if (colorPop.contains(e.target)) return;
@@ -1155,6 +1266,20 @@ $("chat-input").addEventListener("keydown", (e) => {
     e.preventDefault(); sendChat();
   }
 });
+$("btn-new-chat").addEventListener("click", newChat);
+
+async function newChat() {
+  // Wipe the chat: clear local UI + ask the server to reset its single
+  // session (messages + turns). The server bumps chat_epoch on success,
+  // so other connected /ws/state clients stay in sync automatically.
+  if (chatBusy) return;
+  chatLog.innerHTML = "";
+  $("chat-input").value = "";
+  try {
+    await fetch("/agent/session", { method: "DELETE" });
+  } catch (_) { /* best-effort; local reset is what the operator sees */ }
+  $("chat-input").focus();
+}
 
 // Hard cap on a chat round-trip. If the LLM hasn't responded in this many
 // ms, abort the fetch and re-enable the send button so the operator can
@@ -1196,7 +1321,7 @@ async function sendChat() {
     const r = await fetch("/agent/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, session_id: sessionId }),
+      body: JSON.stringify({ message }),
       signal: ctrl.signal,
     });
     if (!r.ok) {
@@ -1204,7 +1329,6 @@ async function sendChat() {
       return;
     }
     const body = await r.json();
-    sessionId = body.session_id;
     if (body.assistant_text) appendMsg("assistant", body.assistant_text, body.usage);
     if (body.tool_call) {
       const tr = body.tool_result || {};
@@ -1546,6 +1670,17 @@ function applyDdp(ddp) {
 // --- per-tick state apply ---
 function applyState() {
   if (!state) return;
+  if (typeof state.chat_epoch === "number") {
+    if (lastChatEpoch === null) {
+      // First state arrival — adopt the server's value without firing a wipe.
+      lastChatEpoch = state.chat_epoch;
+    } else if (state.chat_epoch !== lastChatEpoch) {
+      lastChatEpoch = state.chat_epoch;
+      // Server-driven new chat — clear the local chat log to sync. The
+      // server has already wiped its single session; nothing to delete.
+      chatLog.innerHTML = "";
+    }
+  }
   setText($("fps-pill"), `${state.fps?.toFixed?.(0) ?? "?"} fps`);
   updateAudioHud(state.audio);
   document.body.classList.toggle("design-mode", state.mode === "design");
@@ -1599,6 +1734,9 @@ function applyState() {
 }
 
 connectStateStream();
-fetch("/state").then((r) => r.json()).then((s) => {
+Promise.all([
+  loadPalettes(),
+  fetch("/state").then((r) => r.json()),
+]).then(([_, s]) => {
   state = s; applyState(); maybeRestoreMode();
 });

@@ -385,6 +385,47 @@
     }
     .color-popover .hex-row input { flex: 1; font-size: 0.78rem; }
 
+    /* Palette dropdown button + popover */
+    .palette-btn {
+      display: flex; align-items: center; gap: 0.4rem;
+      padding: 0.18rem 0.35rem; border: 1px solid var(--line-bright);
+      border-radius: 3px; cursor: pointer; background: var(--panel-2, #161616);
+      min-width: 8rem; max-width: 14rem;
+    }
+    .palette-btn:hover { border-color: var(--accent); }
+    .palette-btn .palette-swatch {
+      width: 48px; height: 14px; border-radius: 2px; flex-shrink: 0;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.4);
+    }
+    .palette-btn .palette-name {
+      font-size: 0.74rem; color: var(--text);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .palette-popover {
+      position: absolute; z-index: 200;
+      background: var(--panel); border: 1px solid var(--line-bright); border-radius: 6px;
+      padding: 0.3rem; box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+      display: none; user-select: none;
+      width: 240px; max-height: 360px; overflow-y: auto;
+    }
+    .palette-popover.open { display: block; }
+    .palette-list { display: flex; flex-direction: column; gap: 0.15rem; }
+    .palette-item {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.25rem 0.4rem; border-radius: 3px; cursor: pointer;
+      border: 1px solid transparent;
+    }
+    .palette-item:hover { background: rgba(255,255,255,0.06); border-color: var(--line-bright); }
+    .palette-item.selected { background: rgba(255,255,255,0.04); border-color: var(--accent); }
+    .palette-item .palette-swatch {
+      width: 84px; height: 16px; border-radius: 2px; flex-shrink: 0;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.4);
+    }
+    .palette-item-name {
+      font-size: 0.78rem; color: var(--text);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
     #chat { display: flex; flex-direction: column; flex: 1 1 0; min-height: 12rem; }
     #chat-log { flex: 1; overflow-y: auto; padding: 0.5rem 0.9rem;
                 display: flex; flex-direction: column; gap: 0.4rem; min-height: 0; }
@@ -638,7 +679,7 @@
 
         <div class="layer-pane">
           <div class="col-header">
-            <span id="side-title">Selected layer</span>
+            <span id="side-title">Effect Knobs</span>
             <span class="grow"></span>
             <span id="side-layer-name" class="pill"></span>
           </div>
@@ -648,7 +689,14 @@
         </div>
 
         <div id="chat" class="panel-section">
-          <div class="col-header"><span>Chat</span></div>
+          <div class="col-header">
+            <span>Chat</span>
+            <span class="grow"></span>
+            <button id="btn-new-chat" class="ghost"
+                    title="Wipe LLM history. Next message sees only the current effect + your prompt.">
+              + new chat
+            </button>
+          </div>
           <div id="chat-log"></div>
           <div id="chat-input-row">
             <textarea id="chat-input" placeholder="describe the effect you want…"></textarea>
@@ -736,6 +784,11 @@
         <button id="pl-start" class="primary">▶ start playlist</button>
       </div>
     </div>
+  </div>
+
+  <!-- Palette dropdown popover (one shared across all palette params) -->
+  <div id="palette-popover" class="palette-popover">
+    <div class="palette-list"></div>
   </div>
 
   <!-- Color wheel popover (one shared across all color params) -->

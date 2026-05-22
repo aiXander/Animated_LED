@@ -1,17 +1,25 @@
-"""Per-conversation rolling-buffer state.
+"""Single rolling-buffer chat state.
 
-Each session keeps the last `history_max` messages (excluding the system
-prompt — system prompt is rebuilt fresh every turn). One user turn produces
-three messages: user / assistant (with optional tool_calls) / tool, so a
-20-message cap covers ~6 turns.
+There is exactly ONE chat session in this app at any time — no
+multi-tenant, no session ids, no dictionary lookup. The session keeps the
+last `history_max_turns` turns of conversation. A "turn" is everything
+anchored to one user message: the user message itself, the assistant
+reply, any tool calls + tool results, and any retry pairs.
 
-In-memory only — restart wipes them.
+Trimming by turn (rather than raw message count) guarantees the buffer
+never starts mid-turn — no orphan tool-result with no preceding
+assistant tool_call, which OpenAI/OpenRouter rejects.
+
+In-memory only — restart wipes it. Operator actions that change which
+layer the LLM is authoring (preview layer select, library load, pull
+live→preview, save/rename of the preview source) call `reset()` to wipe
+both `messages` and `turns`, so the next `/agent/chat` call starts from
+a clean slate with just the regenerated system prompt + new user msg.
 """
 
 from __future__ import annotations
 
 import time
-import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,23 +39,48 @@ class AgentTurn:
 
 @dataclass
 class ChatSession:
-    id: str
     created_at: float = field(default_factory=time.time)
     messages: deque[dict[str, Any]] = field(default_factory=deque)
     turns: list[AgentTurn] = field(default_factory=list)
-    history_max: int = 20
+    history_max_turns: int = 5
     _rate_window: deque[float] = field(default_factory=deque)
 
     def append_messages(self, msgs: list[dict[str, Any]]) -> None:
         for m in msgs:
             self.messages.append(m)
-        while len(self.messages) > self.history_max:
-            self.messages.popleft()
-        self._heal_dangling_tool_messages()
+        self._trim_to_last_turns()
 
-    def _heal_dangling_tool_messages(self) -> None:
-        while self.messages and self.messages[0].get("role") == "tool":
+    def _trim_to_last_turns(self) -> None:
+        """Keep at most `history_max_turns` user-anchored turns in the buffer.
+
+        Walks from the end backwards, counting `role == "user"` markers; any
+        messages before the (N+1)-th user marker get dropped. Trimming by
+        turn keeps tool_call / tool_result pairs together — required so the
+        OpenAI message format stays valid (every `tool` message must follow
+        an `assistant` message that issued its tool_call).
+        """
+        if self.history_max_turns <= 0:
+            self.messages.clear()
+            return
+        seen_users = 0
+        keep_from = 0
+        msgs = list(self.messages)
+        for i in range(len(msgs) - 1, -1, -1):
+            if msgs[i].get("role") == "user":
+                seen_users += 1
+                if seen_users == self.history_max_turns:
+                    keep_from = i
+                    break
+        else:
+            return
+        for _ in range(keep_from):
             self.messages.popleft()
+
+    def reset(self) -> None:
+        """Full new-chat wipe: drop messages, transcript, and rate-window."""
+        self.messages.clear()
+        self.turns.clear()
+        self._rate_window.clear()
 
     def check_rate_limit(self, per_minute: int, now: float | None = None) -> bool:
         if per_minute <= 0:
@@ -60,27 +93,3 @@ class ChatSession:
             return False
         self._rate_window.append(t)
         return True
-
-
-class SessionStore:
-    def __init__(self, history_max: int = 20):
-        self.history_max = int(history_max)
-        self._sessions: dict[str, ChatSession] = {}
-
-    def get_or_create(self, session_id: str | None) -> ChatSession:
-        if session_id and session_id in self._sessions:
-            return self._sessions[session_id]
-        sid = session_id or uuid.uuid4().hex
-        sess = ChatSession(id=sid, history_max=self.history_max)
-        self._sessions[sid] = sess
-        return sess
-
-    def get(self, session_id: str) -> ChatSession | None:
-        return self._sessions.get(session_id)
-
-    def delete(self, session_id: str) -> bool:
-        return self._sessions.pop(session_id, None) is not None
-
-    def reset_all_buffers(self) -> None:
-        for sess in self._sessions.values():
-            sess.messages.clear()

@@ -21,8 +21,14 @@ import types
 from typing import Any
 
 from .base import Effect
+from .frames import FRAME_DESCRIPTIONS
 
 MAX_SOURCE_BYTES = 8 * 1024
+
+# Frame names live at `ctx.frames.<name>` — never `ctx.<name>`. Catching the
+# typo before fence-test means the LLM gets a clean line-numbered error and
+# can self-correct without burning a retry round-trip.
+_FRAME_NAMES: frozenset[str] = frozenset(FRAME_DESCRIPTIONS.keys())
 
 
 _SAFE_BUILTIN_NAMES = (
@@ -84,6 +90,8 @@ def compile_effect(
     except SyntaxError as e:
         raise EffectCompileError(f"syntax error: {e}") from e
 
+    lint_errors: list[str] = []
+
     for node in ast.walk(tree):
         if isinstance(node, _FORBIDDEN_NODES):
             raise EffectCompileError(
@@ -102,6 +110,67 @@ def compile_effect(
                 raise EffectCompileError(
                     f"dunder attribute access disallowed: .{attr}"
                 )
+
+        # `ctx.<frame_name>` — should be `ctx.frames.<frame_name>`.
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "ctx"
+            and node.attr in _FRAME_NAMES
+        ):
+            lint_errors.append(
+                f"line {node.lineno}: `ctx.{node.attr}` — per-LED frames live "
+                f"at `ctx.frames.{node.attr}`, not `ctx.{node.attr}`. "
+                f"Use `ctx.frames.{node.attr}` (or cache it once in init as "
+                f"`self.{node.attr} = ctx.frames.{node.attr}`)."
+            )
+
+        # `ctx.params[...]` subscript — ParamView is attribute-only.
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "ctx"
+            and node.value.attr == "params"
+        ):
+            lint_errors.append(
+                f"line {node.lineno}: `ctx.params[...]` — params are attribute-"
+                f"access only. Use `ctx.params.<key>` (e.g. `ctx.params.speed`)."
+            )
+
+        # `ctx.params.X = ...` — params are operator-owned, read-only.
+        if isinstance(node, (ast.Assign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for tgt in targets:
+                if (
+                    isinstance(tgt, ast.Attribute)
+                    and isinstance(tgt.value, ast.Attribute)
+                    and isinstance(tgt.value.value, ast.Name)
+                    and tgt.value.value.id == "ctx"
+                    and tgt.value.attr == "params"
+                ):
+                    lint_errors.append(
+                        f"line {node.lineno}: assignment to `ctx.params.{tgt.attr}` "
+                        f"— params are operator-owned (read-only). Compute the "
+                        f"derived value into a local variable instead."
+                    )
+
+        # `print(...)` — not in restricted builtins; will crash at runtime.
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+        ):
+            lint_errors.append(
+                f"line {node.lineno}: `print(...)` is not available in the "
+                f"sandbox. Use `log.warning(...)` / `log.info(...)` instead."
+            )
+
+    if lint_errors:
+        raise EffectCompileError(
+            "source lint failed — fix these and re-emit:\n  - "
+            + "\n  - ".join(lint_errors)
+        )
 
     try:
         code = compile(tree, f"<llm:{name}>", "exec")

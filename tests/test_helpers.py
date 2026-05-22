@@ -100,6 +100,29 @@ def test_palette_lerp_array_t():
     np.testing.assert_allclose(out[2], [1.0, 1.0, 1.0])
 
 
+def test_palette_lerp_flat_4tuple_stops():
+    # (pos, r, g, b) form — common LLM shorthand. Used to raise
+    # "too many values to unpack (expected 2)"; now parsed natively.
+    stops = [(0.0, 1.0, 0.0, 0.0), (1.0, 0.0, 0.0, 1.0)]
+    out = palette_lerp(stops, np.array([0.0, 0.5, 1.0]))
+    np.testing.assert_allclose(out[0], [1.0, 0.0, 0.0])
+    np.testing.assert_allclose(out[1], [0.5, 0.0, 0.5], atol=1e-5)
+    np.testing.assert_allclose(out[2], [0.0, 0.0, 1.0])
+
+
+def test_palette_lerp_bare_hex_list_stops():
+    # No positions — distributed evenly.
+    out = palette_lerp(["#ff0000", "#00ff00", "#0000ff"], np.array([0.0, 0.5, 1.0]))
+    np.testing.assert_allclose(out[0], [1.0, 0.0, 0.0])
+    np.testing.assert_allclose(out[1], [0.0, 1.0, 0.0])
+    np.testing.assert_allclose(out[2], [0.0, 0.0, 1.0])
+
+
+def test_palette_lerp_bad_stops_raises_clear_message():
+    with pytest.raises(ValueError, match="palette_lerp"):
+        palette_lerp([(0.0, "#ff0000", "extra")], 0.5)
+
+
 def test_hex_to_rgb_3_digit():
     np.testing.assert_allclose(hex_to_rgb("#f00"), [1.0, 0.0, 0.0])
 

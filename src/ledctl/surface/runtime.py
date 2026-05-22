@@ -213,6 +213,12 @@ class Runtime:
         # when the operator switches modes or after a write_effect swap).
         self.preview_half_rate: bool = True
         self._preview_tick: int = -1
+        # Accumulate dt across skipped half-rate frames so stateful effects
+        # (`self.head += vel * ctx.dt`, sparkle ages, decay) see the true
+        # elapsed time on the frames they DO render. Without this, preview
+        # integrates at 0.5× speed and effects appear to jump 2× faster the
+        # moment they're promoted to live (which always renders full-rate).
+        self._preview_dt_accum: float = 0.0
         self._cf: CrossfadeState | None = None
         # Render scratch buffers — one accumulator per leg + one for crossfade.
         self._live_buf = np.zeros((self.n, 3), dtype=np.float32)
@@ -639,6 +645,17 @@ class Runtime:
             self._apply_calibration(self._live_buf, wall_t)
 
         # ---- SIM leg ---- #
+        # Accumulate dt on every design-mode tick — independent of sim throttling
+        # (render_preview gate) and the half-rate gate below. Both gates skip
+        # render calls without skipping wall time, so the preview render must
+        # see the *summed* elapsed dt to integrate stateful effects correctly.
+        # In live mode the preview composition is effectively paused, so reset
+        # the accumulator (otherwise re-entering design after a long live stint
+        # would teleport stateful effects forward by that idle duration).
+        if self.mode == "design":
+            self._preview_dt_accum += dt
+        else:
+            self._preview_dt_accum = 0.0
         if self.mode == "design" and render_preview:
             self._preview_tick += 1
             do_preview = (
@@ -646,7 +663,9 @@ class Runtime:
                 or (self._preview_tick & 1) == 0
             )
             if do_preview:
-                self._render_composition(self.preview, wall_t, dt, t_eff, audio,
+                preview_dt = self._preview_dt_accum
+                self._preview_dt_accum = 0.0
+                self._render_composition(self.preview, wall_t, preview_dt, t_eff, audio,
                                          out=self._preview_buf)
                 if self.blackout:
                     self._preview_buf.fill(0.0)
@@ -919,6 +938,18 @@ def _diagnostic_hint(exc: Exception) -> str:
             "  - hsv_to_rgb(per_led_h, scalar_s, scalar_v) is supported and broadcasts;\n"
             "  - np.stack / np.concatenate on arrays of different ndim — broadcast first;\n"
             "  - per-LED ops mixing (N,) and scalar — usually fine; mixing (N,) and (3,) is not."
+        )
+    if name == "ValueError" and "unpack" in msg:
+        # Almost always palette_lerp getting wrong-shaped stops, or a manual
+        # `a, b = something_with_3_items` in the LLM code.
+        return (
+            "Hint: 'too many/not enough values to unpack' is usually palette_lerp "
+            "stops in the wrong shape. Use ONE of:\n"
+            "  - named_palette('fire')                                   # baked LUT\n"
+            "  - [(0.0, '#ff0000'), (1.0, '#00ff00')]                    # (pos, hex)\n"
+            "  - [(0.0, 1.0, 0.0, 0.0), (1.0, 0.0, 1.0, 0.0)]            # (pos, r, g, b)\n"
+            "  - ['#ff0000', '#00ff00', '#0000ff']                       # bare hex, even spacing\n"
+            "Don't mix lengths within a single stops list."
         )
     if name == "TypeError" and "params are read-only" in msg:
         return (

@@ -232,7 +232,11 @@ class ParamStore:
         for spec in self._schema:
             key = spec["key"]
             self._by_key[key] = spec
-            self._values[key] = spec.get("default")
+            default = spec.get("default")
+            try:
+                self._values[key] = self._coerce(key, default) if default is not None else default
+            except Exception:
+                self._values[key] = default
 
     @property
     def schema(self) -> list[dict]:
@@ -297,6 +301,14 @@ class ParamStore:
         if ctrl == "toggle":
             return bool(raw)
         if ctrl == "palette":
-            return str(raw)
+            from .palettes import named_palette_names
+            v = str(raw).strip()
+            valid = named_palette_names()
+            if v not in valid:
+                fallback = spec.get("default")
+                v = str(fallback) if fallback and str(fallback) in valid else (
+                    valid[0] if valid else ""
+                )
+            return v
         # Unknown control type: pass through.
         return raw

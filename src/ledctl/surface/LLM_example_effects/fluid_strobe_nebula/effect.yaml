@@ -1,0 +1,18 @@
+name: fluid_strobe_nebula
+summary: Liquid light patterns that flow and surge with the bass, strobing on every
+  beat.
+source: agent
+created_at: 1779487625.890335
+updated_at: 1779487625.890335
+params:
+- key: flow_speed
+  label: Flow Speed
+  help: Speed of the plasma-like fluid motion.
+  control: slider
+  min: 0.1
+  max: 5.0
+  step: 0.1
+  default: 1.5
+  unit: null
+param_values:
+  flow_speed: 2.4
