@@ -1,7 +1,24 @@
 """System prompt assembly for the `write_effect` agent.
 
 Regenerated fresh every turn so the LLM always sees the latest install
-summary and the currently-selected preview-layer source.
+summary and the source of the effect it is about to replace.
+
+Structure (single canonical home per topic — no restatements):
+
+  ROLE                — your job + scope of authorship
+  TOOL                — write_effect JSON shape + carry-forward rules
+  PHYSICAL RIG        — geometry + ASCII + 2D-plane caveat
+  INSTALL             — per-strip layout (from topology, live)
+  COORDINATE FRAMES   — ctx.frames.<name> reference
+  AUDIO INPUT         — ctx.audio.* + the canonical beat-vs-bands rule
+  EFFECT CONTRACT     — code skeleton + ctx surface + sandbox rules
+  RUNTIME API         — helpers / constants pre-injected into the module
+  PARAM SCHEMA        — 0–8 operator controls + per-effect vs master
+  PERFORMANCE         — Pi budget, RULE 0 (no for loops), allocation, float32
+  ANTI-PATTERNS       — concrete mistakes (no duplicates of rules above)
+  EXAMPLE EFFECTS     — verbatim gold-standard sources
+  CURRENT EFFECT      — current effect source + param values
+  LAST EFFECT ERROR?  — only when the previous turn failed
 """
 
 from __future__ import annotations
@@ -19,145 +36,153 @@ if TYPE_CHECKING:
     from .runtime import Runtime
 
 # Bundled reference effects shown verbatim to the LLM as gold-standard
-# examples. Anything dropped into this directory at
-# `<repo>/src/ledctl/surface/LLM_example_effects/<slug>/effect.py`
-# is loaded on every prompt build. Kept OUT of `config/effects/` so the
-# operator can't accidentally delete them from the library UI and break
-# the context.
+# examples. Dropped at `<repo>/src/ledctl/surface/LLM_example_effects/<slug>/effect.py`.
+# Kept OUT of `config/effects/` so the operator can't accidentally delete
+# them from the library UI and break the context.
 LLM_EXAMPLES_DIR = Path(__file__).parent / "LLM_example_effects"
 
 
-YOUR_JOB = """\
-YOUR JOB
-You are an LED effect author. The operator types short descriptions of what they want to see;
-you write a single Python `Effect` subclass that we hot-load into a render loop on a Raspberry
-Pi, plus a tiny set of operator-facing UI controls (sliders / colour pickers / dropdowns)
-shown in the operator UI under a panel titled "Effect Knobs" so the operator can hand-tune
-the look without re-prompting you. When the operator says "add a slider / palette / colour
-to the Effect Knobs" (or "knobs", "effect controls", "params panel" — all aliases), they mean
-the `params` schema you declare in `write_effect`. Emit ONE `write_effect` tool call per turn
-— never a diff, always the COMPLETE effect.
+ROLE = """\
+ROLE
+You author LED effects for a stage rig. Each turn → ONE `write_effect` tool call
+with a COMPLETE Python `Effect` subclass + 0–8 operator controls. Never a diff.
 
-The operator UI has a layered scratchpad called the PREVIEW composition (Resolume-style): a
-stack of layers, each layer is one Effect (yours), with a blend mode and opacity. Your
-`write_effect` replaces the SELECTED layer in the preview composition. There is also a LIVE
-output that's driving the LEDs in front of the dance floor — the operator owns that
-completely and you have NO visibility into it and NO way to change it. They will promote the
-preview to live themselves when (and only when) it's ready. So focus on making the preview
-slot look great as a clean, self-contained effect layer; assume nothing about what's playing
-live.
+`write_effect` REPLACES the current effect with the one you author. Write it clean and
+self-contained — assume nothing about what was there before.
+
+Operator vocabulary: "knobs" / "effect controls" / "params panel" = the `params` schema you
+declare (renders under "Effect Knobs", directly below global "Masters"). Be terse in your
+assistant text — the operator can SEE the lights; no recital needed.
+"""
+
+TOOL_BLOCK = """\
+TOOL — `write_effect` (once per turn; omit if the user is just chatting)
+
+  {
+    "name":    "snake_case_name",     // <= 40 chars, [a-z][a-z0-9_]
+    "summary": "one sentence",        // shown to operator in chat
+    "code":    "<python source>",     // <= 8 KB; one Effect subclass
+    "params":  [ {"key": ..., "control": ..., ...}, ... ]    // <= 8 entries
+  }
+
+  - Operator-tuned `param_values` carry forward for matching `key`s — design defaults around
+    the values listed in CURRENT EFFECT. Pick new keys when a knob's meaning changes.
+  - Per-param `help` strings render as hover tooltips — one sentence for non-obvious knobs.
+  - ONE Effect per call. If a request needs several elements at once, blend them inside the one
+    Effect (see EFFECT CONTRACT).
 """
 
 PHYSICAL_RIG = """\
 PHYSICAL RIG
-1800 LEDs (WS2815, 60 LEDs/m) on metal scaffolding.
-Layout: a tall RECTANGLE — two parallel horizontal rows, ~30 m wide, ~1 m vertically apart.
-Each row is two strips wired centre-out: total of 4 strips of 450 LEDs.
+1800 LEDs (WS2815, 60 LEDs/m) on metal scaffolding — a tall RECTANGLE: two parallel horizontal
+rows, ~30 m wide, ~1 m apart. Each row is two strips wired centre-out (4 × 450 LEDs).
 
          (top-left)                       (top-right)
    ◄─────── 450 LEDs ◄──┐    ┌──► 450 LEDs ───────►
-                        │    │                                ▲ +y (up)
-                        │ FEED                                │
-                        │    │
+                        │ FEED │                              ▲ +y (up)
    ◄─────── 450 LEDs ◄──┘    └──► 450 LEDs ───────►
-        (bottom-left)                    (bottom-right)
-                                                             ─► +x (stage-right)
+        (bottom-left)                    (bottom-right)       ─► +x (stage-right)
 
-Coordinate convention (right-handed):  +x = stage-right,  +y = up,  +z = toward audience.
-Origin = centre of the rig. `ctx.pos` is normalised so each axis is in [-1, 1].
+Right-handed coords: +x = stage-right, +y = up, +z = audience. Origin = rig centre.
+`ctx.pos` is normalised so each axis is in [-1, 1].
+
+NOT A 2D PLANE. Every LED has y ∈ {+1, -1} — none in between. 2D particle physics that lets
+pixels roam in [-1, 1]² mostly fades to black. Either pin each particle's y to ±1 (drive
+motion along x), or work 1D: `u_loop` walks the rectangle clockwise, `chain_index` walks each
+strip, `signed_x` is the shared horizontal axis. `side_signed` masks rows (+1 top, -1 bottom).
 """
 
 EFFECT_CONTRACT = """\
-HOW YOUR CODE GETS LOADED AND RUN
+EFFECT CONTRACT
+Compiled with restricted builtins — NO imports. `np`, `Effect`, helpers, `rng`, `log`, constants
+are pre-injected. The single `Effect` subclass is extracted and instantiated.
 
-Your code is a single Python module. We compile it with restricted builtins (no imports —
-everything you need is already in scope: numpy as `np`, the `Effect` base class, helpers,
-`rng`, `log`, constants). We extract the single `Effect` subclass you defined, instantiate
-it, and wire it into the renderer.
-
-CONTRACT
   class MyEffect(Effect):
-      def init(self, ctx):     # runs ONCE when this effect becomes active.
-          # ctx.n, ctx.pos, ctx.frames, ctx.strips, ctx.rig
-          # precompute per-LED state here; allocate self.* buffers.
+      def init(self, ctx):     # ONCE on swap-in. Precompute, allocate self.* buffers.
           ...
+      def render(self, ctx):   # every frame (~60 Hz). Vectorised numpy only.
+          ...                  # MUST return (N, 3) float32 in [0, 1].
+                               # Canonical: fill self.out in place, `return self.out`.
 
-      def render(self, ctx):   # runs every frame (~60 Hz).
-          # ctx.t, ctx.wall_t, ctx.dt, ctx.n
-          # ctx.frames.x / .y / .u_loop / …  (per-LED frames; same as init)
-          # ctx.pos          (N, 3) float32 in [-1, 1] — same as init
-          # ctx.audio.low / .mid / .high / .beat / .bpm / .bands[name]
-          # ctx.params.<key>     operator-controlled values
-          # ctx.masters          read-only (NEVER mutate)
-          # MUST return (N, 3) float32 in [0, 1].
-          # CANONICAL PATTERN: fill self.out in place, return self.out.
-          ...
+ctx surface (READ-ONLY — never mutate params / masters):
+  ctx.n / ctx.t / ctx.wall_t / ctx.dt       sizes & times (dt clamped on hiccup)
+  ctx.pos                                   (N, 3) float32 in [-1, 1]
+  ctx.frames.<name>                         per-LED scalars — see COORDINATE FRAMES
+  ctx.audio.<...>                           see AUDIO INPUT
+  ctx.params.<key>                          operator-controlled, auto-updated between frames
+  ctx.masters                               diagnostic view (do NOT write)
+  ctx.strips / ctx.rig                      topology, init-time only
 
-  # IMPORTANT: per-LED data lives at `ctx.frames.x`, NOT `ctx.x`.
-  # `ctx.x` does not exist; it raises AttributeError. The frames available
-  # are listed in COORDINATE FRAMES above. `ctx.pos` is the (N, 3) array.
-
-  - `init(ctx)` runs once per swap. ALL precompute and state allocation happens here.
-  - `render(ctx)` runs every frame. Vectorised numpy. NO allocation in the hot path.
-  - You return `(N, 3) float32` in `[0, 1]`. The runtime copies it once into its own buffer
-    and applies the master output stage there — your `self.out` is never mutated.
-  - You cannot read other effects, the file system, or the network. Trying to `import …`
-    fails at compile time. There is exactly ONE active effect at a time per slot — if the
-    operator wants two patterns layered, write them in one Effect: compute both, blend,
-    return the result.
-  - You CANNOT modify ctx.params or ctx.masters — those are operator-owned (read-only).
+  - `ctx.frames.x` (NOT `ctx.x` — raises AttributeError).
+  - Runtime copies your return into its own buffer before masters, so `self.out` survives
+    across frames — safe to carry state.
+  - No filesystem, no network, no `import`. ONE Effect per call; for multi-element requests,
+    blend inside one Effect.
 """
 
 PERFORMANCE_RULES = """\
-PERFORMANCE — THIS RUNS ON A RASPBERRY PI
+PERFORMANCE — Raspberry Pi target
+render() < 5 ms at N=1800. WATCHDOG: p95 over 5 ms for ~30 consecutive frames (~0.5 s @ 60 fps)
+→ the runtime DISABLES your effect (goes pitch BLACK). "Worked for a bit then went black" ≈ over
+budget — vectorise harder.
 
-Target: render() < 5 ms per call at N=1800. Watchdog will swap your effect out and report
-back to you if you blow the budget for >2 seconds.
+  RULE 0 (ABSOLUTE) — NO Python `for` loop in render() over pixels or particles. NONE.
+      Every per-pixel / per-particle calc = ONE vectorised numpy expression over
+      (N,) / (P,) / (P, N) / (N, 3). Forbidden in render():
+          for i in range(ctx.n)        | for px in self.particles
+          [f(i) for i in range(ctx.n)] | map(f, per_led)
+          np.vectorize                 | np.apply_along_axis
+      Loops in init() are fine. Tools: broadcasting, boolean masks, np.where, np.einsum,
+      np.add.at, the provided helpers.
 
-  RULE 1: Vectorise. NEVER loop `for i in range(ctx.n)` in Python — use numpy.
-  RULE 2: Don't allocate in render(). Preallocate `self.out` and any per-LED scratch
-          buffers in `init`. Use `np.add(a, b, out=self.foo)`, `arr *= …`, `np.exp(x, out=…)`
-          style. Helpers (gauss, lerp, clip01) accept `out=` for in-place writes.
-  RULE 3: Stay in float32. ctx.frames.* and ctx.pos are float32; helpers return float32;
-          build temporaries with `np.empty(N, dtype=np.float32)`. Mixing fp64 silently
-          slows you down 2× on Pi.
-  RULE 4: Do per-LED math in vector form. Even small Python branches on per-LED values
-          will eat your budget.
+  PARTICLES — broadcast across BOTH axes; accumulate with einsum. Python per-particle loops
+  are fine at P≤8, marginal at P=16, blow the budget at P≥32. Canonical (P, N) pattern:
+      dx       = led_x[None, :] - parts_x[:, None]              # (P, N)
+      falloff  = np.maximum(0.0, 1.0 - np.abs(dx) / radius)      # (P, N)
+      colors   = hsv_to_rgb(parts_hue, 0.85, 1.0)                # (P, 3)
+      np.einsum('pn,pc->nc', falloff, colors, out=self.out)      # (N, 3) accumulate
+  Memory at P=100, N=1800: 720 KB float32 — fine.
+
+  - NO allocation in render(). Preallocate `self.out` + scratch in init. Use the `out=`
+    parameter on numpy ufuncs and helpers (`gauss` / `lerp` / `clip01` all accept it).
+  - Stay in float32. ctx arrays are float32; `np.empty(shape, dtype=np.float32)` for scratch.
+    Mixing fp64 silently halves Pi throughput.
+  - No per-LED Python branches (`if some_led_x > 0`). Use `np.where`, mask multiply, `np.clip`.
 """
 
 ANTI_PATTERNS = """\
-ANTI-PATTERNS — don't do these
+ANTI-PATTERNS — concrete mistakes
 
-  - `import os` / `import math` / `import numpy as np` → REJECTED at compile. np is already in scope.
-  - `for i in range(ctx.n): self.out[i] = …` → ~5 ms wasted; vectorise instead.
-  - `self.out = np.zeros((ctx.n, 3))` inside render() → allocation in the hot path.
-  - `if ctx.audio.low > 0.6: ...` to detect kicks → use `ctx.audio.beat` (float in [0, 1] on onset).
-  - thresholding `audio_band` to detect onsets → upstream onset detector is far better.
-  - using `ctx.audio.low/mid/high` as the trigger for ANY rhythmic / discrete event (flashes,
-    sparkle spawns, colour swaps, particle bursts, "on the kick" behaviour) → default is
-    `ctx.audio.beat`. Bands are for continuous amplitude-following only.
-  - smoothing audio yourself (EMA, peak-follow) → audio is ALREADY smoothed and auto-scaled.
+  - `self.out[mask] = colour * factor` for overlapping shapes → assignment OVERWRITES (last
+    wins, no additive brightness). For sparkles / particles / blobs, accumulate additively:
+        self.out += contribution            # then clip01(self.out) at the end
+  - 2D particle physics with y free in [-1, 1] → every LED has y ∈ {+1, -1}; particles drifting
+    toward y=0 light NOTHING. Pin y to ±1 or run 1D on `u_loop` / `signed_x`.
+  - Iterative physics (repulsion / springs / flocking) without DAMPING → energy accumulates,
+    particles slam corners. Always include drag:
+        self.vel *= max(0.0, 1.0 - p.damping * ctx.dt)
+    and `np.clip` velocity.
+  - Smoothing audio yourself (EMA, peak-follow, normalise) → already smoothed and auto-scaled
+    upstream; another smoother kills responsiveness.
+  - Thresholding `ctx.audio.low > 0.6` to detect kicks → use `ctx.audio.beat` (see AUDIO INPUT).
   - `print(...)` → not in builtins. Use `log.warning(...)`.
-  - returning float64 → cast to float32, or fill `self.out` (already float32) in place.
-  - dunder access (`__class__`, `__globals__`, …) → reserved; effects don't need it.
+  - Returning float64 → cast to float32, or fill `self.out` (already float32) in place.
+  - Dunder access (`__class__`, `__globals__`, ...) → reserved.
 
-SHAPE GOTCHAS — common cause of "all input arrays must have the same shape"
-
-  - `np.stack([per_led_array, scalar])` mixes ndim. Cast the scalar:
-        np.stack([per_led_array, np.full_like(per_led_array, 0.5)])
-  - `np.concatenate` on (N,) and (3,) → broadcast first or reshape.
-  - `hsv_to_rgb(per_led_h, scalar_s, scalar_v)` is supported and returns
-    `(N, 3)` — no manual broadcasting needed.
-  - `palette_lerp(stops, t_array)` returns shape `t.shape + (3,)`.
-  - When in doubt, `np.broadcast_arrays(a, b, c)` returns views with a
-    common shape, then stack as usual.
+SHAPE GOTCHAS — "all input arrays must have the same shape"
+  - `np.stack([per_led_array, scalar])` mixes ndim → use `np.full_like(per_led_array, 0.5)`.
+  - `np.concatenate` on (N,) and (3,) → broadcast or reshape first.
+  - `hsv_to_rgb(per_led_h, scalar_s, scalar_v)` already returns (N, 3) — no manual broadcasting.
+  - `palette_lerp(stops, t_array)` returns `t.shape + (3,)`.
+  - When stuck, `np.broadcast_arrays(a, b, c)` returns views at a common shape.
 """
 
-def _load_example_effects() -> list[tuple[str, str]]:
-    """Read every `<slug>/effect.py` under LLM_examples_DIR (sorted).
 
-    Returns a list of (slug, source) pairs. Soft-fail on missing dir or
-    unreadable files — the prompt still ships, just without examples.
+def _load_example_effects() -> list[tuple[str, str]]:
+    """Read every `<slug>/effect.py` under LLM_EXAMPLES_DIR (sorted).
+
+    Soft-fail on missing dir or unreadable files — the prompt still ships,
+    just without examples.
     """
     out: list[tuple[str, str]] = []
     if not LLM_EXAMPLES_DIR.is_dir():
@@ -180,13 +205,12 @@ def _example_effects_block() -> str:
     """Render the EXAMPLE EFFECTS section by loading from disk on every call.
 
     Loaded at prompt-build time (not import time) so dropping a new
-    effect.py into LLM_example_effects/ takes effect on the next chat
-    turn without a server restart.
+    effect.py into LLM_example_effects/ takes effect on the next chat turn.
     """
     examples = _load_example_effects()
     if not examples:
         return "EXAMPLE EFFECTS — (none on disk; drop effects under src/ledctl/surface/LLM_example_effects/)"
-    lines = ["EXAMPLE EFFECTS — these are what good output looks like"]
+    lines = ["EXAMPLE EFFECTS — gold-standard reference sources"]
     for i, (slug, source) in enumerate(examples, start=1):
         lines.append("")
         lines.append(f"# EXAMPLE {i} — {slug}")
@@ -225,96 +249,75 @@ def _coordinate_frames_block() -> str:
 def _audio_block(audio_state: AudioState | None) -> str:
     return (
         "AUDIO INPUT\n"
-        "The audio-server (Realtime_PyAudio_FFT) captures from a mic, runs an FFT,\n"
-        "auto-scales each band's energy to ~[0, 1] via a long-window peak follower,\n"
-        "and publishes the result over OSC. EVERYTHING IS PRE-SMOOTHED AND SCALED —\n"
-        "use raw values; do not apply your own EMA/clamp/normalise. Typical dynamic\n"
-        "range during music: 0.0 (silent) → ~1.0 (peak). Brief overshoots above 1.0\n"
-        "are possible on transients; clip/clamp at the OUTPUT, not on the inputs.\n\n"
-        "  ctx.audio.low      float ~[0, 1]  — kick/sub band\n"
-        "  ctx.audio.mid      float ~[0, 1]  — vocals/snare band\n"
-        "  ctx.audio.high     float ~[0, 1]  — hats/sibilance band\n"
-        "  ctx.audio.bands    dict {'low','mid','high'} — convenient for select-param-driven band\n"
-        "  ctx.audio.beat     float in [0, 1] — 0.0 on most frames; non-zero on a fresh onset.\n"
-        "                          DEFAULT to this for ANY rhythmic / discrete reactivity — kicks,\n"
-        "                          hits, pulses, flashes, sparkle deposits, particle spawns, colour\n"
-        "                          swaps on the beat, anything that should fire 'on the music'.\n"
-        "                          Driven by an upstream onset detector with much lower latency and\n"
-        "                          far better precision than thresholding a band yourself. Only fall\n"
-        "                          back to ctx.audio.low/mid/high for discrete triggers if the\n"
-        "                          operator explicitly asks for amplitude-following behaviour\n"
-        "                          ('react to bass loudness', not 'on the kick').\n"
-        "                          Use as a multiplier:\n"
-        "                              flash = ctx.audio.beat * p.kick_amount\n"
-        "                          OR as a rising-edge trigger:\n"
-        "                              if ctx.audio.beat > 0: ...spawn a particle...\n"
-        "                          NEVER threshold ctx.audio.low to detect kicks.\n"
-        "  ctx.audio.beats_since_start  int monotonic onset counter (NOT scaled by reactivity)\n"
-        "  ctx.audio.bpm      float — current tempo. Falls back to 120.0 when disconnected.\n"
-        "  ctx.audio.connected  bool — False = audio off; low/mid/high will be 0.0.\n\n"
-        "When silent or disconnected, ctx.audio.low/mid/high → 0.0 and ctx.audio.beat → 0. Build\n"
-        "effects that still look good silent (e.g. drive brightness from a slider with audio mixed\n"
-        "on top via `amp = base + reactive * ctx.audio.low`)."
+        "Mic → upstream FFT → auto-scaled to ~[0, 1] (long-window peak follower) → OSC.\n"
+        "PRE-SMOOTHED AND PRE-SCALED — do NOT EMA / clamp / normalise yourself. Brief overshoots\n"
+        "above 1.0 on transients; clip at OUTPUT, not input. Master `audio_reactivity` already\n"
+        "pre-multiplies the bands below.\n\n"
+        "  ctx.audio.low / .mid / .high  float ~[0, 1] — kick/sub | vocals/snare | hats/sibilance\n"
+        "  ctx.audio.bands               dict {'low','mid','high'} — for select-param band choice\n"
+        "  ctx.audio.beat                float in [0, 1]. 0 most frames; non-zero on a fresh onset.\n"
+        "                                *** DEFAULT TRIGGER for ALL discrete / rhythmic events:\n"
+        "                                kicks, flashes, sparkle spawns, particle bursts, on-beat\n"
+        "                                colour swaps — anything 'on the music'. Upstream onset\n"
+        "                                detector beats any band threshold (latency + precision).\n"
+        "                                Use as multiplier (`ctx.audio.beat * p.kick_amount`) or\n"
+        "                                rising-edge trigger (`if ctx.audio.beat > 0: spawn(...)`).\n"
+        "                                Only use low/mid/high for discrete events if the operator\n"
+        "                                explicitly asks for amplitude-following.\n"
+        "  ctx.audio.beats_since_start   int monotonic counter (NOT scaled by reactivity)\n"
+        "  ctx.audio.bpm                 float — tempo; 120.0 fallback when disconnected\n"
+        "  ctx.audio.connected           bool — False = silent; bands will be 0.0\n\n"
+        "Effects must still look good silent: `amp = base + reactive * ctx.audio.low`."
     )
 
 
 def _runtime_api_block() -> str:
     return (
-        "RUNTIME API — already in scope, do NOT import anything\n"
+        "RUNTIME API — in scope (no imports needed)\n"
         "  np                        numpy module\n"
-        "  Effect                    base class — subclass this exactly once\n"
+        "  Effect                    base class — subclass exactly once\n"
         "  hex_to_rgb(s)             '#ff8000' → (3,) float32 in [0, 1]\n"
         "  hsv_to_rgb(h, s, v)       broadcasting; returns float32\n"
-        "  lerp(a, b, t, out=None)   a*(1-t) + b*t; supports `out=` in-place\n"
+        "  lerp(a, b, t, out=None)   a*(1-t) + b*t\n"
         "  clip01(x, out=None)       np.clip(x, 0, 1)\n"
-        "  gauss(x, sigma, out=None) gaussian profile, peak=1\n"
-        "  pulse(x, width=0.5)       cosine bump in [-width, +width], peak=1\n"
+        "  gauss(x, sigma, out=None) gaussian, peak=1\n"
+        "  pulse(x, width=0.5)       cosine bump on [-width, +width], peak=1\n"
         "  tri(x)                    triangle wave on [0, 1], peak at 0.5\n"
         "  wrap_dist(a, b, period=1) shortest signed distance with wrap\n"
-        "  palette_lerp(stops, t)    multi-stop palette sample at t (scalar or array).\n"
-        "                            `stops` is one of:\n"
-        "                              named_palette('fire')                          (baked LUT)\n"
-        "                              [(0.0, '#ff0000'), (1.0, '#00ff00')]           (pos, hex)\n"
-        "                              [(0.0, 1.0, 0.0, 0.0), (1.0, 0.0, 1.0, 0.0)]   (pos, r, g, b)\n"
-        "                              ['#ff0000', '#00ff00', '#0000ff']              (bare, even spacing)\n"
-        "                            DO NOT mix stop lengths in a single list.\n"
+        "  palette_lerp(stops, t)    multi-stop palette sample. `stops` is ONE of:\n"
+        "                              named_palette('fire')                       (baked LUT)\n"
+        "                              [(0.0,'#ff0000'), (1.0,'#00ff00')]          (pos, hex)\n"
+        "                              [(0.0,1,0,0), (1.0,0,1,0)]                  (pos, r, g, b)\n"
+        "                              ['#ff0000','#00ff00','#0000ff']             (bare, even)\n"
+        "                            Don't mix stop lengths in one list.\n"
         "  named_palette(name)       (LUT_SIZE, 3) float32 LUT — names: "
         + ", ".join(named_palette_names()) + "\n"
         "  rng                       np.random.Generator, seeded by effect name\n"
         "  log                       logger — log.info / log.warning / log.exception\n"
-        "  PI, TAU, LUT_SIZE         constants (LUT_SIZE = 256)\n"
-        "  PALETTE_NAMES             tuple of valid palette names\n"
+        "  PI, TAU, LUT_SIZE (=256), PALETTE_NAMES   constants\n"
     )
 
 
 def _param_schema_block() -> str:
     return (
-        "PARAM SCHEMA — declare 0–8 controls for the operator UI\n"
-        "These render in the operator UI panel titled \"Effect Knobs\" (sitting directly under\n"
-        "the global \"Masters\" panel). When the operator asks to add/remove/rename something on\n"
-        "\"the Effect Knobs\" / \"the knobs\" / \"the params panel\", they mean this `params` list.\n"
-        "Every param is a dict with `key` (snake_case), `label`, `control`, plus control-specific fields:\n"
-        "  - slider:      {min, max, step?, default, unit?}    — float\n"
-        "  - int_slider:  {min, max, step?, default}           — integer\n"
-        "  - color:       {default: '#rrggbb'}                  — colour picker\n"
-        "  - select:      {options: [str, ...], default}        — dropdown\n"
-        "  - toggle:      {default: bool}                       — switch\n"
-        "  - palette:     {default: name}                       — named palette dropdown\n\n"
-        "Read values via `ctx.params.<key>`. The operator drags sliders → ctx.params updates between\n"
-        "frames; you do nothing special. Only declare what's worth tuning by hand. The system carries\n"
-        "the operator's slider tweaks across regenerations when you reuse the same `key`.\n\n"
-        "PER-EFFECT vs MASTER controls — feel free to declare effect-local `brightness`, `speed`,\n"
-        "`audio_intensity`, etc. They live close to the effect and shape THIS layer specifically.\n"
-        "The operator masters are GLOBAL POST-PROCESSING applied on top of the composed output and\n"
-        "shared across every stacked layer — your per-effect knobs come first, masters come second.\n"
-        "Concretely:\n"
-        "  - your `speed` slider acts on the time you integrate (e.g. `head += p.speed * ctx.dt`);\n"
-        "    master `speed` then scales `ctx.dt` itself, so the two compose cleanly\n"
-        "  - your `brightness` / `intensity` slider attenuates your effect's output; master\n"
-        "    `brightness` runs at the very end of the master chain after layers are blended\n"
-        "  - your `audio_intensity` slider scales how strongly THIS effect responds to audio;\n"
-        "    master `audio_reactivity` already pre-multiplies `ctx.audio.low/mid/high/beat` so\n"
-        "    silencing all reactivity is a single global slider away.\n"
+        "PARAM SCHEMA — 0–8 operator controls (renders as the \"Effect Knobs\" panel)\n"
+        "Each: `{key (snake_case), label, control, ...control-specific..., help?}`\n"
+        "  slider      {min, max, step?, default, unit?}     float\n"
+        "  int_slider  {min, max, step?, default}            integer\n"
+        "  color       {default: '#rrggbb'}\n"
+        "  select      {options: [str, ...], default}        dropdown\n"
+        "  toggle      {default: bool}\n"
+        "  palette     {default: name}                       named palette dropdown\n\n"
+        "Read via `ctx.params.<key>` (auto-updates between frames). Declare only what's worth\n"
+        "hand-tuning. Operator tweaks for matching `key`s carry across regenerations — pick new\n"
+        "keys deliberately when a knob's meaning changes.\n\n"
+        "PER-EFFECT vs MASTER. Effect-local `brightness` / `speed` / `audio_intensity` shape THIS\n"
+        "effect; masters are GLOBAL post-processing on the final output. They compose cleanly\n"
+        "(your `speed` scales integrated time; master `speed` scales `ctx.dt`. Your `brightness`\n"
+        "attenuates this effect; master `brightness` runs on the final output. `audio_reactivity`\n"
+        "already pre-multiplies `ctx.audio.*`). If the request can only be honoured by a MASTER\n"
+        "change (\"brighter\" with master brightness already 1.0, \"less reactive\" with reactivity\n"
+        "high), TELL the operator which slider to move instead of re-emitting code.\n"
     )
 
 
@@ -322,20 +325,18 @@ def _current_effects_block(runtime: Runtime | None) -> str:
     """Render the SELECTED preview layer — the LLM has no visibility into LIVE,
     and we deliberately don't expose other preview layers either.
 
-    LIVE is operator-controlled exclusively (no read, no write). The other
-    preview layers are also operator-owned (add / remove / reorder). Showing
-    them would tempt the LLM to "preserve" what's around it instead of
-    authoring its own layer cleanly. So we hand it exactly one thing: the
-    layer it's replacing — name, param schema, current param_values, source.
+    Showing the rest of the stack would tempt the LLM to "preserve" what's
+    around it instead of authoring its own layer cleanly. So we hand it
+    exactly one thing: the layer it's replacing.
     """
     if runtime is None:
         return ""
     snap = runtime.snapshot()
     preview = snap.get("preview") or {}
     layers = preview.get("layers") or []
-    out = ["CURRENT PREVIEW LAYER (the SELECTED layer — your `write_effect` REPLACES it)"]
+    out = ["CURRENT EFFECT (your `write_effect` REPLACES it)"]
     if not layers:
-        out.append("  preview composition is empty — your `write_effect` will create the first layer")
+        out.append("  no effect yet — your `write_effect` will create one")
         return "\n".join(out)
     sel = preview.get("selected", 0)
     sel_idx = min(sel, len(layers) - 1)
@@ -349,15 +350,15 @@ def _current_effects_block(runtime: Runtime | None) -> str:
     schema = sel_layer.get("param_schema") or []
     if schema:
         for spec in schema:
-            # Drop None values — they're not informative and they make the
-            # schema noisier than the operator-visible param panel itself.
+            # Drop None values — they make the schema noisier than the
+            # operator-visible param panel itself.
             compact = {k: v for k, v in spec.items() if v is not None}
             out.append(f"    {json.dumps(compact)}")
     else:
         out.append("    (none declared)")
     out.append("\n  CURRENT PARAM VALUES:")
     out.append(f"    {json.dumps(sel_layer['param_values'])}")
-    out.append("\n  SELECTED LAYER SOURCE (build on it or rewrite it as the user requested):")
+    out.append("\n  CURRENT EFFECT SOURCE (build on it or rewrite it as the user requested):")
     for line in sel_layer["source"].splitlines():
         out.append(f"    {line}")
     return "\n".join(out)
@@ -367,46 +368,13 @@ def _last_error_block(last_error: dict[str, Any] | None) -> str:
     if not last_error:
         return ""
     return (
-        "LAST EFFECT ERROR — your previous attempt failed. Read this carefully and fix.\n"
+        "LAST EFFECT ERROR — your previous attempt failed. Read carefully and fix.\n"
         f"  error: {last_error.get('error')}\n"
         f"  details: {last_error.get('details')}\n"
-        "If the error mentions a NameError or AttributeError you tried to use a name that isn't\n"
-        "in the runtime API; if it mentions imports, remove them; if it's a shape/dtype error,\n"
-        "check that you return (N, 3) float32 in [0, 1]."
+        "Common causes: NameError / AttributeError → you used a name that isn't in the RUNTIME API;\n"
+        "ImportError → remove the import (everything is in scope); shape/dtype error → check you\n"
+        "return (N, 3) float32 in [0, 1]."
     )
-
-
-TOOL_BLOCK = """\
-TOOL
-You have ONE tool: `write_effect`. Emit it once per turn (or not at all if the user is just
-chatting). The argument shape:
-
-  {
-    "name":    "snake_case_name",          // <= 40 chars, [a-z][a-z0-9_]
-    "summary": "one sentence",              // shown to the operator in chat
-    "code":    "<python source>",           // <= 8 KB; one Effect subclass
-    "params":  [ { "key": ..., "control": ..., ... }, ... ],  // <= 8 entries
-    "blend":   "normal"|"add"|"screen"|"multiply",  // optional; omit to keep current
-    "opacity": 0.0..1.0                              // optional; omit to keep current
-  }
-
-What changes vs. a chat reply:
-  - The effect goes into the SELECTED PREVIEW layer (the operator sees it instantly in the
-    simulator). DDP / live LEDs are unaffected until the operator clicks "Promote to live".
-  - Drag-tuned slider values for matching `key`s carry forward via `param_values` — design
-    defaults around the values listed in CURRENT PREVIEW COMPOSITION when sensible.
-  - `blend` + `opacity` similarly carry forward when omitted. Override them when authoring
-    a new look that REQUIRES specific compositing (e.g. additive sparkles → blend="add").
-  - Per-param `help` strings show up as hover tooltips in the operator UI — use them for
-    non-obvious knobs (one short sentence is plenty).
-
-Note: you author ONE layer at a time — the SELECTED one. The operator owns the layer stack
-(adding / removing / reordering / blending other layers) and the master output stage. If a
-request really needs multiple layers, do the best single-layer version and tell the operator
-what other layers would complete the look so they can stack them themselves.
-
-Be terse in your assistant text. The operator can SEE the lights; they don't need a recital.
-"""
 
 
 def build_system_prompt(
@@ -423,7 +391,8 @@ def build_system_prompt(
     presets_dir: Path | None = None,
 ) -> str:
     sections: list[str] = [
-        YOUR_JOB,
+        ROLE,
+        TOOL_BLOCK,
         PHYSICAL_RIG,
         _summarise_install(topology),
         _coordinate_frames_block(),
@@ -441,5 +410,4 @@ def build_system_prompt(
     err = _last_error_block(last_error)
     if err:
         sections.append(err)
-    sections.append(TOOL_BLOCK)
     return "\n\n".join(sections)
