@@ -274,6 +274,18 @@ Effect Knobs panel for the selected layer. In **design mode** the LED leg ships 
 encoding while the sim leg shows PREVIEW; `transport/pause` blocks only the LED leg, `sim/pause`
 only the sim leg.
 
+**Two front-ends, one API.** The desktop console (`web/index.html` + `web/lib/main-desktop.js`)
+is the wide two-column layout. Phones get a dedicated portrait UI at **`/m`**
+(`web/index-mobile.html` + `web/lib/main-mobile.js`): sticky header (status / DESIGN-LIVE
+segmented toggle / overflow menu), LED sim strip with a compact audio HUD, a context action bar
+(Promote/Pull in design, LIVE status in live), and a **bottom tab bar** (Layers · Knobs · Chat ·
+Output) over bottom-sheets for menu/library/playlist/colour/palette. `GET /` 307-redirects
+phone-class User-Agents to `/m` (iPad excluded; `?view=desktop` forces desktop, `?view=mobile`
+forces mobile); the PWA manifest `start_url` is `/m`. Both front-ends share the view-agnostic
+modules `web/lib/{viz,state,util}.js` and hit the identical HTTP/WS API — **keep the two `main-*.js`
+in behavioural sync** (debounce windows, optimistic deck updates, chat-epoch wipe) when changing
+either. `web/audio-meter.js` is an unused legacy orphan.
+
 ## Persistence & examples — two distinct directories
 
 - `src/ledctl/surface/examples/` — bundled **library seed**: `pulse_mono`, `audio_radial`,
