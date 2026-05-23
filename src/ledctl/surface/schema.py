@@ -17,11 +17,6 @@ ParamControl = Literal[
     "slider", "int_slider", "color", "select", "toggle", "palette"
 ]
 
-# Mirror of surface.runtime.BLEND_MODES. Inlined to avoid importing runtime
-# from schema (runtime depends on schema indirectly via tool.py).
-BLEND_MODES = ("normal", "add", "screen", "multiply")
-BlendMode = Literal["normal", "add", "screen", "multiply"]
-
 _KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 _HEX_PATTERN = re.compile(r"^#?[0-9a-fA-F]{6}$|^#?[0-9a-fA-F]{3}$")
 
@@ -155,12 +150,6 @@ class WriteEffectArgs(BaseModel):
     summary: str = Field("", max_length=400)
     code: str = Field(..., min_length=1, max_length=8 * 1024)
     params: list[ParamSpec] = Field(default_factory=list, max_length=8)
-    # Optional intent from the LLM: how this layer sits in the composition.
-    # `None` = carry forward whatever the operator had on the prior layer
-    # (matches the param auto-merge spirit so operator tweaks survive a
-    # regeneration unless the LLM is explicitly re-authoring intent).
-    blend: BlendMode | None = None
-    opacity: float | None = Field(None, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _no_duplicate_keys(self) -> WriteEffectArgs:

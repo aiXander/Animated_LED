@@ -239,6 +239,11 @@
       transform: translate(-50%, -50%);
       padding: 0.3rem 0.95rem; letter-spacing: 0.06em;
     }
+    /* Promote → LIVE wears the same red as the selected LIVE tab so the
+       destination (going live) is unmistakable. Pull into Design keeps the
+       blue .primary look matching the DESIGN toggle. */
+    #btn-promote { background: #7a1a1a; border-color: #a13030; color: #fee2e2; }
+    #btn-promote:hover:not(:disabled) { background: #9a2222; }
 
     .deck { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
     .layer-list { flex: 1; overflow-y: auto; padding: 0.4rem 0.5rem; min-height: 0; }
@@ -639,7 +644,7 @@
       <section id="col-comp">
         <div class="col-header" id="comp-header">
           <span id="comp-title">LIVE</span>
-          <button id="btn-pull" class="ghost live-only" title="Copy LIVE → DESIGN (hard cut)">⤓ pull live → design</button>
+          <button id="btn-pull" class="primary promote-center live-only" title="Copy LIVE → DESIGN (hard cut)">⤓ Pull into Design</button>
           <span class="grow"></span>
           <span class="pill" id="comp-summary"></span>
           <button id="btn-promote" class="primary promote-center" style="display:none;"
@@ -667,7 +672,7 @@
             <input id="m-spd" type="range" min="0" max="3" step="0.01">
             <span class="value" id="v-spd">1.00</span></div>
           <div class="row"><span>audio react</span>
-            <input id="m-aud" type="range" min="0" max="3" step="0.01">
+            <input id="m-aud" type="range" min="0" max="2" step="0.01">
             <span class="value" id="v-aud">1.00</span></div>
           <div class="row"><span>saturation</span>
             <input id="m-sat" type="range" min="0" max="1" step="0.01">

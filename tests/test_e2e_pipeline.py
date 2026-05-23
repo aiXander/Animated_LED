@@ -97,8 +97,8 @@ def test_full_pipeline_broken_then_fixed_then_promoted(tmp_path: Path):
     assert "compile_failed" in prompt or "tool_argument_validation_failed" in prompt
     # The prompt should also expose the runtime API so the LLM knows what's in scope.
     assert "RUNTIME API" in prompt
-    # And the current preview source so the LLM can see what it's replacing.
-    assert "SELECTED LAYER SOURCE" in prompt
+    # And the current effect source so the LLM can see what it's replacing.
+    assert "CURRENT EFFECT SOURCE" in prompt
 
     # ---- TURN 3: LLM emits a corrected version (uses real helpers) ---- #
     # NOTE: param keys are deliberately distinct from pulse_mono's so the
@@ -210,6 +210,39 @@ def test_param_carry_forward_across_regeneration(tmp_path: Path):
     assert abs(float(new_layer.params.get("floor")) - 0.85) < 1e-6
 
 
+def test_blend_opacity_carry_forward_across_regeneration(tmp_path: Path):
+    """blend / opacity are operator-owned and hidden from the LLM: a
+    regenerated effect inherits whatever the current effect already had."""
+    rt, store = _bootstrap(tmp_path)
+
+    sel = rt.preview.selected_layer()
+    assert sel is not None
+    sel.blend = "add"
+    sel.opacity = 0.3
+
+    args = {
+        "name": "plain",
+        "summary": "",
+        "code": (
+            "class Plain(Effect):\n"
+            "    def render(self, ctx):\n"
+            "        self.out[:] = 0.5\n"
+            "        return self.out\n"
+        ),
+        "params": [],
+    }
+    result = apply_write_effect(args, runtime=rt, store=store)
+    assert result["ok"] is True
+    new_layer = rt.preview.selected_layer()
+    assert new_layer is not None
+    # Current compositing settings carried over verbatim.
+    assert new_layer.blend == "add"
+    assert abs(float(new_layer.opacity) - 0.3) < 1e-6
+    # ...and they're not echoed back into the LLM-visible tool result.
+    assert "blend" not in result
+    assert "opacity" not in result
+
+
 def test_write_effect_tool_schema_well_formed():
     schema = write_effect_tool_schema()
     assert schema["type"] == "function"
@@ -218,3 +251,7 @@ def test_write_effect_tool_schema_well_formed():
     assert "name" in params["properties"]
     assert "code" in params["properties"]
     assert "params" in params["properties"]
+    # blend / opacity are operator-owned and deliberately hidden from the LLM:
+    # a new effect inherits whatever the current effect already had.
+    assert "blend" not in params["properties"]
+    assert "opacity" not in params["properties"]

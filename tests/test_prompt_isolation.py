@@ -1,8 +1,10 @@
-"""Pin the contract: the LLM sees PREVIEW only — never LIVE.
+"""Pin the contract: the LLM sees only the one effect it is replacing.
 
-Live is the operator's domain. Leaking live source / params / layer count
-into the system prompt would tempt the LLM to "preserve" what's playing
-and clobber the operator's promote-time decisions.
+The runtime keeps a second, operator-owned composition that drives the real
+LEDs; the LLM has no visibility into it. Leaking that source / params / layer
+count into the system prompt would tempt the LLM to "preserve" what's playing
+and clobber the operator's decisions. The prompt itself never uses the
+operator-facing vocabulary (preview / live / layers / blend / opacity).
 """
 
 from __future__ import annotations
@@ -73,7 +75,7 @@ def test_prompt_does_not_leak_live_source():
     assert "preview_draft" in prompt
 
 
-def test_prompt_advertises_preview_only_role():
+def test_prompt_shows_current_effect_section():
     rt = _build_runtime_with_distinct_live_and_preview()
     prompt = build_system_prompt(
         topology=rt.topology,
@@ -83,9 +85,13 @@ def test_prompt_advertises_preview_only_role():
         crossfade_seconds=rt.crossfade_seconds,
     )
     # Header for the section showing the LLM what it's working on.
-    assert "CURRENT PREVIEW COMPOSITION" in prompt
-    # The "no read, no write" stance must be stated.
-    assert "NO visibility into it" in prompt or "no visibility" in prompt.lower()
+    assert "CURRENT EFFECT" in prompt
+    # The effect being replaced is named.
+    assert "preview_draft" in prompt
+    # Operator-facing compositing knobs are not surfaced to the LLM. ("blend"
+    # survives only as a verb — "blend them inside one Effect" — so we pin the
+    # unambiguous one here; the tool-schema test pins the knob removal.)
+    assert "opacity" not in prompt.lower()
 
 
 def test_empty_preview_still_renders_cleanly():
@@ -104,6 +110,6 @@ def test_empty_preview_still_renders_cleanly():
         masters=rt.masters,
         crossfade_seconds=rt.crossfade_seconds,
     )
-    assert "preview composition is empty" in prompt
+    assert "no effect yet" in prompt
     assert "TOTALLY_UNIQUE_LIVE_SENTINEL" not in prompt
     assert "live_only" not in prompt

@@ -18,6 +18,10 @@ import { setText } from "./util.js";
 // is a HUD, not a to-scale model) and derive strip thickness from the
 // per-row vertical share so each strip visually fills its half of the rig.
 const LED_WIDTH_SCALE = 1.0;
+// Strip thickness as a fraction of each row's vertical share. The strips are
+// physically 1D lines, so keep this slim — anything fat reads as a band with
+// width. ~0.53 is a third thinner than the old 0.8.
+const STRIP_THICKNESS_FRAC = 0.53;
 const HOVER_DOT = 8;
 // Margins as a fraction of the canvas extent — keeps a tiny breathing
 // gap at either end of the rig regardless of viewport width.
@@ -76,8 +80,21 @@ export function bindViz({
 
   function reproject() {
     if (!leds.length) { projected = null; return; }
+    const dpr = canvasDpr;
+    // Strip thickness derives from the per-row vertical share (kept slim — the
+    // strips are 1D lines). Computed before projection so we can reserve room
+    // for it in the vertical padding and avoid clipping the outermost rows.
+    const rows = _approxRowCount();
+    const perRowPx = canvasH / Math.max(1, rows);
+    const thickCss = Math.max(2, Math.floor(perRowPx * STRIP_THICKNESS_FRAC));
+    const thickDev = Math.max(1, Math.round(thickCss * dpr));
+    const halfThickDev = (thickDev / 2) | 0;
+
     const ww = canvasW * (1 - 2 * HORIZONTAL_MARGIN_FRAC);
-    const hh = canvasH * (1 - 2 * VERTICAL_MARGIN_FRAC);
+    // Pad vertically by the margin AND half the strip thickness so the top and
+    // bottom rows sit fully inside the canvas with a small breathing gap.
+    const vPad = canvasH * VERTICAL_MARGIN_FRAC + thickCss / 2;
+    const hh = Math.max(1, canvasH - 2 * vPad);
     const dx = bboxMax[0] - bboxMin[0] || 1;
     const dy = bboxMax[1] - bboxMin[1] || 1;
     // Stretch axes independently — the sim is a HUD, not a faithful map.
@@ -93,15 +110,6 @@ export function bindViz({
       projected[i * 2 + 1] = cy - (leds[i].position[1] - oy) * sy;
     }
     ledRects = new Int32Array(leds.length * 4);
-    const dpr = canvasDpr;
-    // Strip thickness = 80% of a per-row vertical share. With 2 rows in our
-    // rig: each row gets canvasH/2; strips fill ~80% of that, leaving a thin
-    // visual gap between top and bottom rows.
-    const rows = _approxRowCount();
-    const perRowPx = canvasH / Math.max(1, rows);
-    const thickCss = Math.max(2, Math.floor(perRowPx * 0.8));
-    const thickDev = Math.max(1, Math.round(thickCss * dpr));
-    const halfThickDev = (thickDev / 2) | 0;
     strips.forEach((strip) => {
       const off = strip.pixel_offset;
       const n = strip.pixel_count;
