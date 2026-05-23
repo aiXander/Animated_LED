@@ -42,6 +42,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -49,8 +50,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..audio import AudioBridge
@@ -381,9 +382,33 @@ def create_app(
 
     # ---- static ---- #
 
+    # Phones get the dedicated portrait UI at /m. A request to / from a mobile
+    # UA is redirected there unless the operator explicitly forces desktop
+    # (?view=desktop). The desktop UI is otherwise byte-for-byte unchanged.
+    _MOBILE_UA_RE = re.compile(
+        r"Android|iPhone|iPod|Mobile|Windows Phone|webOS|BlackBerry", re.IGNORECASE
+    )
+
+    def _wants_mobile(request: Request) -> bool:
+        view = request.query_params.get("view")
+        if view == "desktop":
+            return False
+        if view == "mobile":
+            return True
+        ua = request.headers.get("user-agent", "")
+        # iPad reports a desktop-class UA in recent iPadOS; the wide layout is
+        # fine on a tablet, so only redirect phone-class agents.
+        return bool(_MOBILE_UA_RE.search(ua)) and "iPad" not in ua
+
     @app.get("/")
-    async def index() -> FileResponse:
+    async def index(request: Request):
+        if _wants_mobile(request):
+            return RedirectResponse(url="/m", status_code=307)
         return FileResponse(WEB_DIR / "index.html", headers=_NO_CACHE_HEADERS)
+
+    @app.get("/m")
+    async def index_mobile() -> FileResponse:
+        return FileResponse(WEB_DIR / "index-mobile.html", headers=_NO_CACHE_HEADERS)
 
     @app.get("/audio-meter.js")
     async def audio_meter_js() -> FileResponse:

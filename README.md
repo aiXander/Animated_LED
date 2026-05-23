@@ -7,6 +7,11 @@
 # SSH into the Pi from Mac:
 ssh xander@XanderPi.local
 
+Local TADAAM url:
+http://192.168.0.50:8000/?password=kaailed
+http://192.168.0.50:8080/?password=kaailed
+
+
 | ledctl operator UI  |    http://xanderpi.local:8000     https://xanderpi.tail182af2.ts.net:8443
 | WLED UI             |    http://xanderpi.local:8080     https://xanderpi.tail182af2.ts.net 
 | Audio-server FFT UI |    http://xanderpi.local:8766     https://xanderpi.tail182af2.ts.net:10000
