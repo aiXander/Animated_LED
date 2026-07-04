@@ -1,0 +1,38 @@
+[Unit]
+# Remote-resilience watchdog for the headless festival Pi.
+#
+# Continuously verifies public-internet reachability. While offline it re-nudges
+# NetworkManager onto the venue WiFi (TADAAM); if the internet stays down for 10
+# minutes straight it reboots the Pi. See deploy/net-watchdog.sh for the logic
+# and the tunables (CHECK_INTERVAL / FAIL_LIMIT / GRACE / WIFI_CONN).
+#
+# Runs as root: it needs to drive `systemctl reboot` and `nmcli con up`.
+#
+# Install:
+#   sudo cp deploy/net-watchdog.sh /usr/local/bin/net-watchdog.sh
+#   sudo chmod +x /usr/local/bin/net-watchdog.sh
+#   sudo cp deploy/net-watchdog.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now net-watchdog.service
+#   journalctl -u net-watchdog -f          # watch it
+#
+# Temporarily silence it (e.g. bench work with no uplink):
+#   sudo systemctl stop net-watchdog.service
+
+Description=Internet watchdog — reconnect TADAAM and reboot the Pi if offline too long
+After=NetworkManager.service network.target
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+# Copied to a stable system path so the unit doesn't depend on the repo being
+# mounted/owned a particular way. Re-copy after editing deploy/net-watchdog.sh.
+ExecStart=/usr/local/bin/net-watchdog.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=net-watchdog
+
+[Install]
+WantedBy=multi-user.target
