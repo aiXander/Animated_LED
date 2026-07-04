@@ -39,7 +39,11 @@ ssh xander@xanderpi
 
 
 TODO:
-- give the Pi a static ip on TADAAM (or some other way to reach it through a stable url)
+- [x] give the Pi a static ip on TADAAM — pinned to 192.168.0.200/24 on the
+      TADAAM_DR7MGHR NetworkManager profile (ipv4.method manual).
+- [x] remote-resilience: always reconnect to TADAAM at boot + reboot after 10 min
+      offline — NM autoconnect (priority 100, infinite retries) + the
+      `net-watchdog` service. See "Remote resilience" in reach_the_pi.md.
 
 
 
