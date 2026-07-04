@@ -173,3 +173,53 @@ Then `sudo systemctl restart dhcpcd`.
 - **Captive-portal / DNS rewriting on the Pi** — way too much plumbing for "type one URL."
 - **Hardening mDNS for Android** — broken on Android Chrome by design; can't fix from our side.
 - **Shorter password / 4-digit PIN** — `kaailed` is already short; typing pain is dominated by the IP + port, not the password. QR sidesteps both.
+
+---
+
+## 6. Remote resilience (unattended, headless)
+
+The Pi ships to a venue where nobody can touch it. Two failure modes to survive
+without a human: (a) it never gets onto TADAAM at boot, and (b) it silently loses
+the internet mid-show (so the operator UI over Funnel and the LLM effect-authoring
+both die and there's no way in to fix it).
+
+### a) Always reconnect to TADAAM at boot + retry — NetworkManager
+
+`TADAAM_DR7MGHR` autoconnects with a higher priority (100) than the phone hotspot
+(10), so it wins whenever it's present, and retries **forever** instead of giving
+up after NM's default 4 tries:
+
+```bash
+sudo nmcli con mod TADAAM_DR7MGHR \
+  connection.autoconnect yes \
+  connection.autoconnect-priority 100 \
+  connection.autoconnect-retries 0        # 0 = infinite; -1 = NM default (4)
+```
+
+`ipv4` is already pinned manual to `192.168.0.200/24` so the URL/IP never wanders.
+
+### b) Reboot after 10 min offline — `net-watchdog` service
+
+`deploy/net-watchdog.sh` + `deploy/net-watchdog.service`: a root systemd service
+that probes public internet (anycast resolvers, not the LAN gateway — TADAAM has
+client isolation) every 30 s. While offline it re-nudges NM onto TADAAM; if the
+internet stays down for **10 min straight** it `systemctl reboot`s the Pi, which
+re-runs the whole bring-up. The countdown uses monotonic uptime, so an NTP step
+when the network returns can't skew it; a fresh boot resets the counter, so there's
+no reboot loop while genuinely offline beyond the one 10-min cycle.
+
+Install:
+
+```bash
+sudo cp deploy/net-watchdog.sh /usr/local/bin/net-watchdog.sh
+sudo chmod +x /usr/local/bin/net-watchdog.sh
+sudo cp deploy/net-watchdog.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now net-watchdog.service
+journalctl -u net-watchdog -f            # watch the countdown / restore logs
+```
+
+Tunables live in the unit as `Environment=` overrides — `CHECK_INTERVAL`,
+`FAIL_LIMIT` (default 600 s), `GRACE` (ignore the first 120 s after boot),
+`WIFI_CONN`. Bench work with no uplink: `sudo systemctl stop net-watchdog` so it
+doesn't reboot the Pi out from under you.
