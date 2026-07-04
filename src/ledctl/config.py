@@ -241,6 +241,15 @@ class AgentConfig(BaseModel):
         "anthropic/claude-sonnet-4-6",
         description="OpenRouter model id (e.g. 'anthropic/claude-sonnet-4-6')",
     )
+    reasoning_effort: Literal["none", "low", "medium", "high"] | None = Field(
+        None,
+        description=(
+            "OpenRouter unified reasoning effort for thinking models "
+            "(sent as `reasoning: {effort: ...}`). 'none' disables thinking "
+            "entirely (sent as `reasoning: {enabled: false}`) — big latency "
+            "win on models like minimax-m3. None/null = provider default."
+        ),
+    )
     history_max_turns: int = Field(
         5,
         ge=0,
