@@ -109,7 +109,11 @@ audio_server:
   autostart: true
   # Absolute path required: systemd doesn't inherit the user shell PATH,
   # so a bare "audio-server" silently fails to resolve under ledctl.service.
-  command: ["/home/xander/.local/bin/audio-server"]
+  # --no-fft: boot with the FFT worker off (we only consume L/M/H + beat over
+  # OSC, so the FFT/spectrum path is dead weight). Forced off every boot even if
+  # someone toggled it on in the UI (which persists to the audio server's
+  # configs/main.yaml). The operator can still flip it back on live from the UI.
+  command: ["/home/xander/.local/bin/audio-server", "--no-fft"]
   # Resolved relative to this YAML file's directory: from <repo>/config/ this
   # points at <repo>/../Realtime_PyAudio_FFT, the sibling clone of the
   # audio-feature server. Launching the subprocess with that as cwd means
