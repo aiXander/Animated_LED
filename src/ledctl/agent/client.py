@@ -84,9 +84,11 @@ class AgentClient:
                 len(system_prompt),
             )
         extra_body: dict[str, Any] = {}
-        if self.reasoning_effort:
-            # OpenRouter unified reasoning param (thinking models only;
-            # ignored by providers that don't support it).
+        if self.reasoning_effort == "none":
+            # Disable thinking entirely (OpenRouter unified param; ignored
+            # by providers that don't support it).
+            extra_body["reasoning"] = {"enabled": False}
+        elif self.reasoning_effort:
             extra_body["reasoning"] = {"effort": self.reasoning_effort}
         try:
             resp = client.chat.completions.create(

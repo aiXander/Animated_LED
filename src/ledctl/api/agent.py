@@ -219,9 +219,22 @@ def build_router(app: FastAPI) -> APIRouter:
             if attempt + 1 >= max_attempts:
                 break
             # Otherwise: surface the failure to the LLM for the next attempt.
+            # If the retry reproduced the exact same error, repeating the same
+            # feedback predictably produces the same output — escalate instead.
+            new_details = (attempt_primary_result or {}).get("details")
+            if last_error is not None and new_details == last_error.get("_raw_details"):
+                new_details = (
+                    "YOUR PREVIOUS FIX DID NOT WORK — this is the EXACT same error "
+                    "as your last attempt. You re-emitted the same failing call. "
+                    "Find the failing line quoted below and change THAT specific "
+                    "call — do not resubmit the same code.\n\n"
+                    f"{new_details}"
+                )
             last_error = {
                 "error": (attempt_primary_result or {}).get("error"),
-                "details": (attempt_primary_result or {}).get("details"),
+                "details": new_details,
+                # Raw (un-escalated) details, kept for exact-repeat comparison.
+                "_raw_details": (attempt_primary_result or {}).get("details"),
             }
             retries_used = attempt + 1
             log.warning(
