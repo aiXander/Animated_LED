@@ -852,7 +852,7 @@ $("del-confirm").addEventListener("click", async () => {
 });
 
 // ---------------- chat ----------------
-const CHAT_TIMEOUT_MS = 20000;
+const CHAT_TIMEOUT_MS = 90000; // keep in sync with main-desktop.js
 let chatBusy = false;
 $("chat-send").addEventListener("click", sendChat);
 $("chat-input").addEventListener("keydown", (e) => {

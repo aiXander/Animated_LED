@@ -1,0 +1,39 @@
+name: beat_breath
+summary: The whole rig inhales on every beat and exhales exponentially, with a slow
+  autonomous breath in silence.
+params:
+- key: color
+  label: Colour
+  control: color
+  default: '#4fd8ff'
+- key: release
+  label: Exhale time
+  control: slider
+  min: 0.05
+  max: 2.0
+  step: 0.05
+  default: 0.35
+  unit: s
+- key: idle_breath
+  label: Idle breath depth
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.5
+  help: How deep the autonomous breath goes when no beats arrive.
+- key: breath_rate
+  label: Idle breath rate
+  control: slider
+  min: 0.02
+  max: 0.5
+  step: 0.01
+  default: 0.08
+  unit: Hz
+- key: floor
+  label: Brightness floor
+  control: slider
+  min: 0.0
+  max: 0.5
+  step: 0.01
+  default: 0.05

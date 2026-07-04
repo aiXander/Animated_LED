@@ -21,7 +21,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import logging
+import re
 import time
+import traceback
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -272,8 +274,11 @@ class Runtime:
         try:
             instance.init(init_ctx)
         except Exception as e:
+            hint = _diagnostic_hint(e)
             raise EffectCompileError(
-                f"init() failed: {type(e).__name__}: {e}"
+                f"init() failed: {type(e).__name__}: {e}\n"
+                f"{hint}\n"
+                f"---\n{_format_llm_traceback(source)}"
             ) from e
         init_ms = (time.perf_counter() - t0) * 1000.0
         if init_ms > self.INIT_BUDGET_MS:
@@ -502,20 +507,12 @@ class Runtime:
                 # Surface the traceback so the LLM sees which line failed —
                 # generic NumPy errors like "all input arrays must have the
                 # same shape" are useless without a line number.
-                import traceback
-                tb = traceback.format_exc()
-                tb_lines = [
-                    line for line in tb.splitlines()
-                    if "<llm:" in line or "EffectError" in line
-                    or line.strip().startswith("File ")
-                ]
-                tb_short = "\n".join(tb_lines) if tb_lines else tb
                 hint = _diagnostic_hint(e)
                 raise EffectCompileError(
                     f"render() crashed on synthetic frame {i}: "
                     f"{type(e).__name__}: {e}\n"
                     f"{hint}\n"
-                    f"---\n{tb_short}"
+                    f"---\n{_format_llm_traceback(layer.source)}"
                 ) from e
             if not isinstance(rgb, np.ndarray):
                 raise EffectCompileError(
@@ -957,6 +954,21 @@ def _diagnostic_hint(exc: Exception) -> str:
             "Read them with `ctx.params.<key>`; if you need a derived value, compute "
             "it into a local."
         )
+    if name == "TypeError" and "unexpected keyword argument" in msg:
+        return (
+            "Hint: that function does not accept that keyword argument — do not "
+            "invent kwargs; use the exact signatures from RUNTIME API. All the "
+            "array helpers (hsv_to_rgb, palette_lerp, lerp, clip01, gauss, pulse, "
+            "tri, wrap_dist) accept `out=`; other functions may not. When unsure, "
+            "drop the kwarg and assign the return value instead:\n"
+            "    self.out[:] = some_fn(...)"
+        )
+    if name == "TypeError" and re.search(r"takes .* positional argument", msg):
+        return (
+            "Hint: wrong number of positional arguments — use the exact "
+            "signatures from RUNTIME API in the system prompt; don't guess "
+            "extra parameters."
+        )
     if name == "KeyError":
         return (
             "Hint: KeyError usually means a frame name typo or a param key that's "
@@ -969,3 +981,37 @@ def _diagnostic_hint(exc: Exception) -> str:
         "  - audio bands at `ctx.audio.low/.mid/.high`;\n"
         "  - return must be (N, 3) float32 in [0, 1] — fill `self.out` in place."
     )
+
+
+_LLM_TB_LINE = re.compile(r'File "<llm:[^"]*", line (\d+)')
+
+
+def _format_llm_traceback(source: str) -> str:
+    """Condense the in-flight exception's traceback to the frames that matter
+    and quote the offending line from the effect's own source. The LLM fixes
+    by substitution, not by reasoning about line numbers — quoting the exact
+    failing statement converts retries far better than a bare `line 35`."""
+    tb = traceback.format_exc()
+    src_lines = source.splitlines()
+    kept: list[str] = []
+    culprit: tuple[int, str] | None = None
+    for line in tb.splitlines():
+        if (
+            "<llm:" in line
+            or "EffectError" in line
+            or line.strip().startswith("File ")
+        ):
+            kept.append(line)
+            m = _LLM_TB_LINE.search(line)
+            if m:
+                lineno = int(m.group(1))
+                if 1 <= lineno <= len(src_lines):
+                    culprit = (lineno, src_lines[lineno - 1].strip())
+    text = "\n".join(kept) if kept else tb
+    if culprit is not None:
+        text += (
+            f"\nTHE FAILING LINE IN YOUR CODE (line {culprit[0]}):\n"
+            f"    {culprit[1]}\n"
+            f"Change this line."
+        )
+    return text

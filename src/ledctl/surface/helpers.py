@@ -35,15 +35,16 @@ def hex_to_rgb(hex_str: str) -> np.ndarray:
     return np.array([r, g, b], dtype=np.float32)
 
 
-def hsv_to_rgb(h, s, v):
+def hsv_to_rgb(h, s, v, out=None):
     """HSV → RGB. Scalars and arrays broadcast against each other; returns
     float32. Input shape `(...,)` → output `(..., 3)`. Scalar inputs return
-    a `(3,)` array.
+    a `(3,)` array. If `out` is given, the result is written into it in place.
 
     Examples:
         hsv_to_rgb(0.33, 1.0, 1.0)               # → (3,) green
         hsv_to_rgb(np.array([0, 0.33, 0.66]), 1.0, 1.0)  # → (3, 3) RGB triples
         hsv_to_rgb(ctx.frames.x, 1.0, 1.0)       # → (N, 3) per-LED rainbow
+        hsv_to_rgb(hue, 1.0, 1.0, out=self.out)  # → allocation-free per-LED fill
     """
     # Broadcast h, s, v to a common shape FIRST. Without this, `q = v * (1-s*f)`
     # has h's shape while `p = v * (1-s)` has s/v's shape — and `np.stack` of a
@@ -66,19 +67,22 @@ def hsv_to_rgb(h, s, v):
     g_choices = np.stack([t, v, v, q, p, p], axis=-1)
     b_choices = np.stack([p, p, t, v, v, q], axis=-1)
     if h6.ndim == 0:
-        return np.array(
+        rgb = np.array(
             [r_choices[i_mod], g_choices[i_mod], b_choices[i_mod]],
             dtype=np.float32,
         )
-    out = np.stack(
-        [
-            np.take_along_axis(r_choices, i_mod[..., None], axis=-1)[..., 0],
-            np.take_along_axis(g_choices, i_mod[..., None], axis=-1)[..., 0],
-            np.take_along_axis(b_choices, i_mod[..., None], axis=-1)[..., 0],
-        ],
-        axis=-1,
-    )
-    return out.astype(np.float32, copy=False)
+        if out is None:
+            return rgb
+        np.copyto(out, rgb)
+        return out
+    if out is None:
+        out = np.empty(h6.shape + (3,), dtype=np.float32)
+    # Write channel-by-channel into `out` — no final stack allocation, and a
+    # caller-provided `out` (e.g. self.out) is filled in place.
+    out[..., 0] = np.take_along_axis(r_choices, i_mod[..., None], axis=-1)[..., 0]
+    out[..., 1] = np.take_along_axis(g_choices, i_mod[..., None], axis=-1)[..., 0]
+    out[..., 2] = np.take_along_axis(b_choices, i_mod[..., None], axis=-1)[..., 0]
+    return out
 
 
 def lerp(a, b, t, out=None):
@@ -110,22 +114,29 @@ def gauss(x, sigma, out=None):
     return out
 
 
-def pulse(x, width=0.5):
+def pulse(x, width=0.5, out=None):
     """Cosine bump on [-width, +width], peak=1, else 0. Smooth shoulders."""
     x = np.asarray(x, dtype=np.float32)
     w = max(float(width), 1e-6)
     inside = np.abs(x) <= w
-    out = np.where(inside, 0.5 * (1.0 + np.cos(np.pi * x / w)), 0.0)
-    return out.astype(np.float32, copy=False)
+    res = np.where(inside, 0.5 * (1.0 + np.cos(np.pi * x / w)), 0.0)
+    if out is None:
+        return res.astype(np.float32, copy=False)
+    np.copyto(out, res)
+    return out
 
 
-def tri(x):
+def tri(x, out=None):
     """Triangle wave with period 1, range [0, 1]. Peak at x=0.5."""
     x = np.mod(np.asarray(x, dtype=np.float32), 1.0)
-    return (1.0 - 2.0 * np.abs(x - 0.5)).astype(np.float32, copy=False)
+    res = (1.0 - 2.0 * np.abs(x - 0.5)).astype(np.float32, copy=False)
+    if out is None:
+        return res
+    np.copyto(out, res)
+    return out
 
 
-def wrap_dist(a, b, period=1.0):
+def wrap_dist(a, b, period=1.0, out=None):
     """Shortest signed distance from a to b on a circular axis of length `period`.
 
     Returns a value in [-period/2, +period/2]. Useful when comparing positions
@@ -135,10 +146,13 @@ def wrap_dist(a, b, period=1.0):
     a_arr = np.asarray(a, dtype=np.float32)
     b_arr = np.asarray(b, dtype=np.float32)
     d = np.mod(b_arr - a_arr + 0.5 * p, p) - 0.5 * p
-    return d.astype(np.float32, copy=False)
+    if out is None:
+        return d.astype(np.float32, copy=False)
+    np.copyto(out, d)
+    return out
 
 
-def palette_lerp(stops, t):
+def palette_lerp(stops, t, out=None):
     """Sample a multi-stop palette at scalar/array t in [0, 1].
 
     Accepts any of:
@@ -149,7 +163,8 @@ def palette_lerp(stops, t):
       - ["#rrggbb", "#rrggbb", ...] or [(r, g, b), ...]         — bare colours,
         positions distributed evenly on [0, 1].
 
-    Returns float32 of shape `t.shape + (3,)`.
+    Returns float32 of shape `t.shape + (3,)`. If `out` is given, the result
+    is written into it in place.
     """
     # LUT fast path: (M, 3) ndarray. Catches `palette_lerp(named_palette('fire'), …)`.
     if isinstance(stops, np.ndarray) and stops.ndim == 2 and stops.shape[1] == 3:
@@ -165,8 +180,12 @@ def palette_lerp(stops, t):
     r = np.interp(flat, xs, cols_arr[:, 0])
     g = np.interp(flat, xs, cols_arr[:, 1])
     b = np.interp(flat, xs, cols_arr[:, 2])
-    out = np.stack([r, g, b], axis=-1).astype(np.float32, copy=False)
-    return out.reshape(t.shape + (3,))
+    res = np.stack([r, g, b], axis=-1).astype(np.float32, copy=False)
+    res = res.reshape(t.shape + (3,))
+    if out is None:
+        return res
+    np.copyto(out, res)
+    return out
 
 
 _NUMERIC = (int, float, np.floating, np.integer)

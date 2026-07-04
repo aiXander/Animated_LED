@@ -113,9 +113,10 @@ agent:
   enabled: true
   provider: openrouter
   base_url: https://openrouter.ai/api/v1
-  model: google/gemini-3.1-flash-lite-preview
+  model: minimax/minimax-m3
+  reasoning_effort: none  # disables thinking on minimax-m3 (~3x faster); low/medium/high re-enables
   history_max_turns: 5
-  request_timeout_seconds: 20.0
+  request_timeout_seconds: 60.0
   rate_limit_per_minute: 10
   default_crossfade_seconds: 5.0
   api_key_env: OPENROUTER_API_KEY

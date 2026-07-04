@@ -16,7 +16,7 @@ Structure (single canonical home per topic — no restatements):
   PARAM SCHEMA        — 0–8 operator controls + per-effect vs master
   PERFORMANCE         — Pi budget, RULE 0 (no for loops), allocation, float32
   ANTI-PATTERNS       — concrete mistakes (no duplicates of rules above)
-  EXAMPLE EFFECTS     — verbatim gold-standard sources
+  EXAMPLE EFFECTS     — complete gold-standard write_effect payloads
   CURRENT EFFECT      — current effect source + param values
   LAST EFFECT ERROR?  — only when the previous turn failed
 """
@@ -27,6 +27,8 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 from .frames import FRAME_DESCRIPTIONS
 from .palettes import named_palette_names
 
@@ -35,10 +37,12 @@ if TYPE_CHECKING:
     from ..topology import Topology
     from .runtime import Runtime
 
-# Bundled reference effects shown verbatim to the LLM as gold-standard
-# examples. Dropped at `<repo>/src/ledctl/surface/LLM_example_effects/<slug>/effect.py`.
-# Kept OUT of `config/effects/` so the operator can't accidentally delete
-# them from the library UI and break the context.
+# Bundled reference effects shown to the LLM as gold-standard COMPLETE
+# write_effect payloads: `<slug>/effect.py` (code) + `<slug>/effect.yaml`
+# (name / summary / params sidecar, persistence format). Dropped at
+# `<repo>/src/ledctl/surface/LLM_example_effects/<slug>/`. Kept OUT of
+# `config/effects/` so the operator can't accidentally delete them from
+# the library UI and break the context.
 LLM_EXAMPLES_DIR = Path(__file__).parent / "LLM_example_effects"
 
 
@@ -144,7 +148,9 @@ budget — vectorise harder.
   Memory at P=100, N=1800: 720 KB float32 — fine.
 
   - NO allocation in render(). Preallocate `self.out` + scratch in init. Use the `out=`
-    parameter on numpy ufuncs and helpers (`gauss` / `lerp` / `clip01` all accept it).
+    parameter on numpy ufuncs and on the array helpers — hsv_to_rgb, palette_lerp, lerp,
+    clip01, gauss, pulse, tri, wrap_dist ALL accept `out=` (hex_to_rgb does not).
+    Canonical colour fill: `hsv_to_rgb(hue, 1.0, 1.0, out=self.out)`.
   - Stay in float32. ctx arrays are float32; `np.empty(shape, dtype=np.float32)` for scratch.
     Mixing fp64 silently halves Pi throughput.
   - No per-LED Python branches (`if some_led_x > 0`). Use `np.where`, mask multiply, `np.clip`.
@@ -178,13 +184,15 @@ SHAPE GOTCHAS — "all input arrays must have the same shape"
 """
 
 
-def _load_example_effects() -> list[tuple[str, str]]:
-    """Read every `<slug>/effect.py` under LLM_EXAMPLES_DIR (sorted).
+def _load_example_effects() -> list[dict[str, Any]]:
+    """Read every example under LLM_EXAMPLES_DIR (sorted): `effect.py` is the
+    code; the `effect.yaml` sidecar supplies name / summary / params so each
+    example renders as a COMPLETE write_effect payload.
 
-    Soft-fail on missing dir or unreadable files — the prompt still ships,
-    just without examples.
+    Soft-fail on missing dir, unreadable files, or a bad sidecar — the prompt
+    still ships, degraded rather than broken.
     """
-    out: list[tuple[str, str]] = []
+    out: list[dict[str, Any]] = []
     if not LLM_EXAMPLES_DIR.is_dir():
         return out
     for sub in sorted(LLM_EXAMPLES_DIR.iterdir()):
@@ -197,24 +205,55 @@ def _load_example_effects() -> list[tuple[str, str]]:
             source = py.read_text()
         except OSError:
             continue
-        out.append((sub.name, source))
+        meta: dict[str, Any] = {}
+        sidecar = sub / "effect.yaml"
+        if sidecar.is_file():
+            try:
+                loaded = yaml.safe_load(sidecar.read_text())
+                if isinstance(loaded, dict):
+                    meta = loaded
+            except (OSError, yaml.YAMLError):
+                pass
+        out.append(
+            {
+                "name": meta.get("name") or sub.name,
+                "summary": meta.get("summary") or "",
+                "params": meta.get("params") or [],
+                "code": source,
+            }
+        )
     return out
 
 
 def _example_effects_block() -> str:
     """Render the EXAMPLE EFFECTS section by loading from disk on every call.
 
-    Loaded at prompt-build time (not import time) so dropping a new
-    effect.py into LLM_example_effects/ takes effect on the next chat turn.
+    Loaded at prompt-build time (not import time) so dropping a new example
+    dir into LLM_example_effects/ takes effect on the next chat turn.
     """
     examples = _load_example_effects()
     if not examples:
         return "EXAMPLE EFFECTS — (none on disk; drop effects under src/ledctl/surface/LLM_example_effects/)"
-    lines = ["EXAMPLE EFFECTS — gold-standard reference sources"]
-    for i, (slug, source) in enumerate(examples, start=1):
+    lines = [
+        "EXAMPLE EFFECTS — gold-standard COMPLETE `write_effect` payloads.",
+        "Mirror this shape every time: name + summary + params + code. Note the range of",
+        "archetypes (orbiting comet, stateful sparkles, plasma field, noise flicker, beat",
+        "envelope) — start from the one closest to the request instead of forcing everything",
+        "into a particle/comet mould.",
+    ]
+    for i, ex in enumerate(examples, start=1):
         lines.append("")
-        lines.append(f"# EXAMPLE {i} — {slug}")
-        lines.append(source.rstrip())
+        lines.append(f"# EXAMPLE {i} — {ex['name']}")
+        lines.append(f"summary: {ex['summary']}")
+        lines.append("params:")
+        if ex["params"]:
+            for spec in ex["params"]:
+                compact = {k: v for k, v in spec.items() if v is not None}
+                lines.append(f"  {json.dumps(compact)}")
+        else:
+            lines.append("  []")
+        lines.append("code:")
+        lines.append(ex["code"].rstrip())
     return "\n".join(lines)
 
 
@@ -276,15 +315,15 @@ def _runtime_api_block() -> str:
         "RUNTIME API — in scope (no imports needed)\n"
         "  np                        numpy module\n"
         "  Effect                    base class — subclass exactly once\n"
-        "  hex_to_rgb(s)             '#ff8000' → (3,) float32 in [0, 1]\n"
-        "  hsv_to_rgb(h, s, v)       broadcasting; returns float32\n"
+        "  hex_to_rgb(s)             '#ff8000' → (3,) float32 in [0, 1] (no out=)\n"
+        "  hsv_to_rgb(h, s, v, out=None)   broadcasting; (...,) → (..., 3) float32\n"
         "  lerp(a, b, t, out=None)   a*(1-t) + b*t\n"
         "  clip01(x, out=None)       np.clip(x, 0, 1)\n"
         "  gauss(x, sigma, out=None) gaussian, peak=1\n"
-        "  pulse(x, width=0.5)       cosine bump on [-width, +width], peak=1\n"
-        "  tri(x)                    triangle wave on [0, 1], peak at 0.5\n"
-        "  wrap_dist(a, b, period=1) shortest signed distance with wrap\n"
-        "  palette_lerp(stops, t)    multi-stop palette sample. `stops` is ONE of:\n"
+        "  pulse(x, width=0.5, out=None)   cosine bump on [-width, +width], peak=1\n"
+        "  tri(x, out=None)          triangle wave on [0, 1], peak at 0.5\n"
+        "  wrap_dist(a, b, period=1, out=None)  shortest signed distance with wrap\n"
+        "  palette_lerp(stops, t, out=None)  multi-stop palette sample. `stops` is ONE of:\n"
         "                              named_palette('fire')                       (baked LUT)\n"
         "                              [(0.0,'#ff0000'), (1.0,'#00ff00')]          (pos, hex)\n"
         "                              [(0.0,1,0,0), (1.0,0,1,0)]                  (pos, r, g, b)\n"
