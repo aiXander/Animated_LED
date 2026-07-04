@@ -49,8 +49,11 @@ YAML. With no key, `/agent/chat` returns a clear 503 and the render loop is unaf
 
 **One tool, one call per turn, always the complete effect — never a diff.** The whole agent
 layer (`agent/`) is a thin OpenRouter wrapper, *not* a multi-tool loop. Model is set in YAML
-(`agent.model`, currently `minimax/minimax-m3`; `agent.reasoning_effort: low` is sent as
-OpenRouter's unified `reasoning: {effort}` param — set it to `null` for non-thinking models).
+(`agent.model`, currently `minimax/minimax-m3`; `agent.reasoning_effort` maps to OpenRouter's
+unified reasoning param — `none` sends `{enabled: false}` (thinking off; the current setting,
+~3× faster on minimax-m3), `low/medium/high` send `{effort: ...}`, `null` omits the param
+entirely (provider default). Chat fetches abort client-side at `CHAT_TIMEOUT_MS` (90 s) in
+both `main-*.js` — keep it above `agent.request_timeout_seconds` × the retry budget).
 
 ```
 write_effect({ name, summary, code, params })
@@ -164,8 +167,9 @@ returning `self.out` and trusting state survives across frames is safe.
 `np`, `Effect`, `hex_to_rgb`, `hsv_to_rgb`, `lerp`, `clip01`, `gauss`, `pulse`, `tri`,
 `wrap_dist`, `palette_lerp(stops, t)`, `named_palette(name)`, `rng` (seeded by SHA-256 of the
 effect name → deterministic across reloads), `log` (use instead of `print`, which isn't a
-builtin), and constants `PI`, `TAU`, `LUT_SIZE` (=256), `PALETTE_NAMES`. Most math helpers
-accept an `out=` for allocation-free writes.
+builtin), and constants `PI`, `TAU`, `LUT_SIZE` (=256), `PALETTE_NAMES`. Every array-returning
+helper (`hsv_to_rgb`, `palette_lerp`, `lerp`, `clip01`, `gauss`, `pulse`, `tri`, `wrap_dist`)
+accepts an `out=` for allocation-free writes; `hex_to_rgb` does not (cached scalar).
 
 **Sandbox** (`sandbox.py`): no `import`, `eval`, `exec`, `open`, `getattr/setattr`, `globals`,
 `print`; AST rejects every dunder attribute except `__name__`; source ≤8 KB; exactly one

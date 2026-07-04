@@ -148,7 +148,9 @@ budget — vectorise harder.
   Memory at P=100, N=1800: 720 KB float32 — fine.
 
   - NO allocation in render(). Preallocate `self.out` + scratch in init. Use the `out=`
-    parameter on numpy ufuncs and helpers (`gauss` / `lerp` / `clip01` all accept it).
+    parameter on numpy ufuncs and on the array helpers — hsv_to_rgb, palette_lerp, lerp,
+    clip01, gauss, pulse, tri, wrap_dist ALL accept `out=` (hex_to_rgb does not).
+    Canonical colour fill: `hsv_to_rgb(hue, 1.0, 1.0, out=self.out)`.
   - Stay in float32. ctx arrays are float32; `np.empty(shape, dtype=np.float32)` for scratch.
     Mixing fp64 silently halves Pi throughput.
   - No per-LED Python branches (`if some_led_x > 0`). Use `np.where`, mask multiply, `np.clip`.
@@ -313,15 +315,15 @@ def _runtime_api_block() -> str:
         "RUNTIME API — in scope (no imports needed)\n"
         "  np                        numpy module\n"
         "  Effect                    base class — subclass exactly once\n"
-        "  hex_to_rgb(s)             '#ff8000' → (3,) float32 in [0, 1]\n"
-        "  hsv_to_rgb(h, s, v)       broadcasting; returns float32\n"
+        "  hex_to_rgb(s)             '#ff8000' → (3,) float32 in [0, 1] (no out=)\n"
+        "  hsv_to_rgb(h, s, v, out=None)   broadcasting; (...,) → (..., 3) float32\n"
         "  lerp(a, b, t, out=None)   a*(1-t) + b*t\n"
         "  clip01(x, out=None)       np.clip(x, 0, 1)\n"
         "  gauss(x, sigma, out=None) gaussian, peak=1\n"
-        "  pulse(x, width=0.5)       cosine bump on [-width, +width], peak=1\n"
-        "  tri(x)                    triangle wave on [0, 1], peak at 0.5\n"
-        "  wrap_dist(a, b, period=1) shortest signed distance with wrap\n"
-        "  palette_lerp(stops, t)    multi-stop palette sample. `stops` is ONE of:\n"
+        "  pulse(x, width=0.5, out=None)   cosine bump on [-width, +width], peak=1\n"
+        "  tri(x, out=None)          triangle wave on [0, 1], peak at 0.5\n"
+        "  wrap_dist(a, b, period=1, out=None)  shortest signed distance with wrap\n"
+        "  palette_lerp(stops, t, out=None)  multi-stop palette sample. `stops` is ONE of:\n"
         "                              named_palette('fire')                       (baked LUT)\n"
         "                              [(0.0,'#ff0000'), (1.0,'#00ff00')]          (pos, hex)\n"
         "                              [(0.0,1,0,0), (1.0,0,1,0)]                  (pos, r, g, b)\n"

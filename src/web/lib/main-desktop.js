@@ -1281,11 +1281,10 @@ async function newChat() {
   $("chat-input").focus();
 }
 
-// Hard cap on a chat round-trip. If the LLM hasn't responded in this many
-// ms, abort the fetch and re-enable the send button so the operator can
-// retry. Default OpenRouter calls usually complete in 4–10 s; >20 s means
-// something's wrong (rate limit, network, model stalled).
-const CHAT_TIMEOUT_MS = 20000;
+// Hard cap on a chat round-trip. Must comfortably exceed the backend's
+// per-LLM-call timeout (agent.request_timeout_seconds, 60 s) times the
+// auto-retry budget — a slow model plus one retry is normal, not a stall.
+const CHAT_TIMEOUT_MS = 90000;
 
 let chatBusy = false;
 
