@@ -49,7 +49,8 @@ YAML. With no key, `/agent/chat` returns a clear 503 and the render loop is unaf
 
 **One tool, one call per turn, always the complete effect — never a diff.** The whole agent
 layer (`agent/`) is a thin OpenRouter wrapper, *not* a multi-tool loop. Model is set in YAML
-(`agent.model`, currently `google/gemini-3.1-flash-lite-preview`).
+(`agent.model`, currently `minimax/minimax-m3`; `agent.reasoning_effort: low` is sent as
+OpenRouter's unified `reasoning: {effort}` param — set it to `null` for non-thinking models).
 
 ```
 write_effect({ name, summary, code, params })
@@ -108,10 +109,14 @@ ANTI-PATTERNS → EXAMPLE EFFECTS → CURRENT PREVIEW LAYER → [LAST EFFECT ERR
 - **CURRENT PREVIEW LAYER** shows *only the selected preview layer's* source + param schema +
   current values. Other preview layers and all of LIVE are deliberately hidden — showing them
   tempts the LLM to "preserve" surrounding state instead of authoring its own layer cleanly.
-- **EXAMPLE EFFECTS** are loaded verbatim from `src/ledctl/surface/LLM_example_effects/*/effect.py`
-  on every build (drop a new `effect.py` there → it shows up next turn). These are **separate**
-  from the `surface/examples/` library seed (below) and live outside `config/effects/` so the
-  operator can't delete them from the library UI and break the prompt.
+- **EXAMPLE EFFECTS** are rendered as **complete `write_effect` payloads** (name + summary +
+  params + code) from `src/ledctl/surface/LLM_example_effects/<slug>/{effect.py, effect.yaml}`
+  on every build — the yaml sidecar (persistence format) supplies name/summary/params (drop a
+  new pair there → it shows up next turn). Five archetypes deliberately span distinct families:
+  orbiting comet (`rainbow_comet`), stateful sparkles (`twin_comets_with_sparkles`), plasma
+  field (`fluid_strobe_nebula`), noise-flicker wash (`fire_wash`), beat envelope (`beat_breath`).
+  These are **separate** from the `surface/examples/` library seed (below) and live outside
+  `config/effects/` so the operator can't delete them from the library UI and break the prompt.
 
 **Token-budget reminder.** The prose blocks (`PHYSICAL_RIG`, `EFFECT_CONTRACT`,
 `PERFORMANCE_RULES`, `ANTI_PATTERNS`), the example effects, and per-field `help` strings are
@@ -379,6 +384,23 @@ spawns audio-server), `wled-proxy` (`:8080` → WLED UI), audio-server subproces
 LAN; via tailnet `xanderpi.tail182af2.ts.net` ports 8443 / 443 / 10000 respectively. `gledopto-reboot.service`
 fires `curl http://10.0.0.2/reset` 8 s after ledctl starts so WLED enters realtime override
 cleanly on every boot (works around the WLED-MM realtime-intake wedge).
+
+**⚠️ TODO — remote-resilience (NOT YET DONE, do next time on-site).** The Pi's only uplink at
+some sites is a flaky router (e.g. Tadaam 4G/CGNAT). If that uplink drops or the Pi hangs while
+nobody's on-site, it falls off the tailnet and you're locked out entirely (no remote power
+control today). Two safeguards to install so a single uplink blip doesn't kill remote access:
+1. **Connectivity watchdog + self-reboot.** A `systemd` timer (every ~2 min) runs a script that
+   pings a stable host (e.g. `1.1.1.1`) and, if the box has been offline for N consecutive
+   checks (~10 min), issues `sudo reboot`. This recovers a hung Pi / wedged 4G modem unattended.
+   Belt-and-braces: also enable the hardware watchdog (`RuntimeWatchdogSec` in
+   `/etc/systemd/system.conf`) so a fully-frozen kernel still resets.
+2. **Aggressive WiFi auto-reconnect.** Ensure the Pi's WiFi rejoins on its own after an AP/uplink
+   drop — NetworkManager `connection.autoconnect=yes` + `connection.autoconnect-retries=0`
+   (infinite retries), or a small reconnect script if on `wpa_supplicant`/`dhcpcd`. Confirm the
+   site's WiFi (e.g. Tadaam SSID) is actually stored as a known network *before* leaving, and
+   verify it survives a reboot — the Pi only knows the "Xander's Pixel" hotspot by default.
+Also worth adding: a phone-controllable smart plug on the Pi (and/or router) for true remote
+power-cycle as the last-resort fix.
 
 **Strip mapping** (verified 1:1 with the operator UI via `/calibration/solo`; don't edit either
 side without re-running the calibration sequence). All four WLED outputs: WS281x, RGB, length
