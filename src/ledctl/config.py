@@ -241,6 +241,13 @@ class AgentConfig(BaseModel):
         "anthropic/claude-sonnet-4-6",
         description="OpenRouter model id (e.g. 'anthropic/claude-sonnet-4-6')",
     )
+    reasoning_effort: Literal["low", "medium", "high"] | None = Field(
+        None,
+        description=(
+            "OpenRouter unified reasoning effort for thinking models "
+            "(sent as `reasoning: {effort: ...}`). None = provider default."
+        ),
+    )
     history_max_turns: int = Field(
         5,
         ge=0,

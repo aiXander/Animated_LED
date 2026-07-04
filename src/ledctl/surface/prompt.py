@@ -16,7 +16,7 @@ Structure (single canonical home per topic — no restatements):
   PARAM SCHEMA        — 0–8 operator controls + per-effect vs master
   PERFORMANCE         — Pi budget, RULE 0 (no for loops), allocation, float32
   ANTI-PATTERNS       — concrete mistakes (no duplicates of rules above)
-  EXAMPLE EFFECTS     — verbatim gold-standard sources
+  EXAMPLE EFFECTS     — complete gold-standard write_effect payloads
   CURRENT EFFECT      — current effect source + param values
   LAST EFFECT ERROR?  — only when the previous turn failed
 """
@@ -27,6 +27,8 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 from .frames import FRAME_DESCRIPTIONS
 from .palettes import named_palette_names
 
@@ -35,10 +37,12 @@ if TYPE_CHECKING:
     from ..topology import Topology
     from .runtime import Runtime
 
-# Bundled reference effects shown verbatim to the LLM as gold-standard
-# examples. Dropped at `<repo>/src/ledctl/surface/LLM_example_effects/<slug>/effect.py`.
-# Kept OUT of `config/effects/` so the operator can't accidentally delete
-# them from the library UI and break the context.
+# Bundled reference effects shown to the LLM as gold-standard COMPLETE
+# write_effect payloads: `<slug>/effect.py` (code) + `<slug>/effect.yaml`
+# (name / summary / params sidecar, persistence format). Dropped at
+# `<repo>/src/ledctl/surface/LLM_example_effects/<slug>/`. Kept OUT of
+# `config/effects/` so the operator can't accidentally delete them from
+# the library UI and break the context.
 LLM_EXAMPLES_DIR = Path(__file__).parent / "LLM_example_effects"
 
 
@@ -178,13 +182,15 @@ SHAPE GOTCHAS — "all input arrays must have the same shape"
 """
 
 
-def _load_example_effects() -> list[tuple[str, str]]:
-    """Read every `<slug>/effect.py` under LLM_EXAMPLES_DIR (sorted).
+def _load_example_effects() -> list[dict[str, Any]]:
+    """Read every example under LLM_EXAMPLES_DIR (sorted): `effect.py` is the
+    code; the `effect.yaml` sidecar supplies name / summary / params so each
+    example renders as a COMPLETE write_effect payload.
 
-    Soft-fail on missing dir or unreadable files — the prompt still ships,
-    just without examples.
+    Soft-fail on missing dir, unreadable files, or a bad sidecar — the prompt
+    still ships, degraded rather than broken.
     """
-    out: list[tuple[str, str]] = []
+    out: list[dict[str, Any]] = []
     if not LLM_EXAMPLES_DIR.is_dir():
         return out
     for sub in sorted(LLM_EXAMPLES_DIR.iterdir()):
@@ -197,24 +203,55 @@ def _load_example_effects() -> list[tuple[str, str]]:
             source = py.read_text()
         except OSError:
             continue
-        out.append((sub.name, source))
+        meta: dict[str, Any] = {}
+        sidecar = sub / "effect.yaml"
+        if sidecar.is_file():
+            try:
+                loaded = yaml.safe_load(sidecar.read_text())
+                if isinstance(loaded, dict):
+                    meta = loaded
+            except (OSError, yaml.YAMLError):
+                pass
+        out.append(
+            {
+                "name": meta.get("name") or sub.name,
+                "summary": meta.get("summary") or "",
+                "params": meta.get("params") or [],
+                "code": source,
+            }
+        )
     return out
 
 
 def _example_effects_block() -> str:
     """Render the EXAMPLE EFFECTS section by loading from disk on every call.
 
-    Loaded at prompt-build time (not import time) so dropping a new
-    effect.py into LLM_example_effects/ takes effect on the next chat turn.
+    Loaded at prompt-build time (not import time) so dropping a new example
+    dir into LLM_example_effects/ takes effect on the next chat turn.
     """
     examples = _load_example_effects()
     if not examples:
         return "EXAMPLE EFFECTS — (none on disk; drop effects under src/ledctl/surface/LLM_example_effects/)"
-    lines = ["EXAMPLE EFFECTS — gold-standard reference sources"]
-    for i, (slug, source) in enumerate(examples, start=1):
+    lines = [
+        "EXAMPLE EFFECTS — gold-standard COMPLETE `write_effect` payloads.",
+        "Mirror this shape every time: name + summary + params + code. Note the range of",
+        "archetypes (orbiting comet, stateful sparkles, plasma field, noise flicker, beat",
+        "envelope) — start from the one closest to the request instead of forcing everything",
+        "into a particle/comet mould.",
+    ]
+    for i, ex in enumerate(examples, start=1):
         lines.append("")
-        lines.append(f"# EXAMPLE {i} — {slug}")
-        lines.append(source.rstrip())
+        lines.append(f"# EXAMPLE {i} — {ex['name']}")
+        lines.append(f"summary: {ex['summary']}")
+        lines.append("params:")
+        if ex["params"]:
+            for spec in ex["params"]:
+                compact = {k: v for k, v in spec.items() if v is not None}
+                lines.append(f"  {json.dumps(compact)}")
+        else:
+            lines.append("  []")
+        lines.append("code:")
+        lines.append(ex["code"].rstrip())
     return "\n".join(lines)
 
 

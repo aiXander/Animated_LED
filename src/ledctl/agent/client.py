@@ -37,12 +37,14 @@ class AgentClient:
         model: str,
         request_timeout_seconds: float = 60.0,
         debug_logging: bool = False,
+        reasoning_effort: str | None = None,
     ):
         self.base_url = base_url
         self.api_key_env = api_key_env
         self.model = model
         self.timeout = float(request_timeout_seconds)
         self.debug_logging = bool(debug_logging)
+        self.reasoning_effort = reasoning_effort
         self._client: OpenAI | None = None
 
     def _get_client(self) -> OpenAI:
@@ -81,6 +83,11 @@ class AgentClient:
                 [t.get("function", {}).get("name") for t in tools],
                 len(system_prompt),
             )
+        extra_body: dict[str, Any] = {}
+        if self.reasoning_effort:
+            # OpenRouter unified reasoning param (thinking models only;
+            # ignored by providers that don't support it).
+            extra_body["reasoning"] = {"effort": self.reasoning_effort}
         try:
             resp = client.chat.completions.create(
                 model=effective_model,
@@ -88,6 +95,7 @@ class AgentClient:
                 tools=tools,
                 tool_choice="auto",
                 parallel_tool_calls=False,
+                extra_body=extra_body or None,
             )
         except Exception:
             log.exception(
