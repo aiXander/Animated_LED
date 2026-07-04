@@ -26,14 +26,19 @@ uv venv --python 3.11
 uv pip install -e ".[dev]"
 
 # Run (Mac dev — simulator at http://127.0.0.1:8000, OpenAPI at /docs)
-.venv/bin/ledctl run --config config/config.dev.yaml
-.venv/bin/ledctl show-config --config config/config.dev.yaml   # inspect parsed config
+uv run ledctl run --config config/config.dev.yaml
+uv run ledctl show-config --config config/config.dev.yaml   # inspect parsed config
 
 # Tests / lint
-.venv/bin/pytest
-.venv/bin/pytest tests/test_runtime.py            # single file
-.venv/bin/ruff check src tests
+uv run pytest
+uv run pytest tests/test_runtime.py            # single file
+uv run ruff check src tests
 ```
+
+`uv run` resolves the console script from the project venv (auto-syncing if deps drift), so
+there's no need to activate or reference `.venv/bin` directly. If the venv's interpreter ever
+goes stale (broken shebang after a Python upgrade), `rm -rf .venv && uv venv --python 3.11 &&
+uv pip install -e ".[dev]"` rebuilds it.
 
 `cli.py` auto-loads `.env` from the repo root for `OPENROUTER_API_KEY` — never put the key in
 YAML. With no key, `/agent/chat` returns a clear 503 and the render loop is unaffected.
