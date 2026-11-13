@@ -348,7 +348,8 @@ drop rather than spiral on lag. The loop sleeps until the next deadline OR an au
 
 **Config** (`config.py`, pydantic): duplicate strip IDs, overlapping pixel ranges, and
 over-capacity are caught at startup. `config/config.dev.yaml` (Mac, simulator, no auth) vs
-`config/config.pi.yaml` (Pi, ddp/multi, `auth.password: CHANGE_ME`). Swap production vs dev by
+`config/config.pi.yaml` (Pi, ddp/multi, `auth.password_env: LEDCTL_PASSWORD`; the value lives in the gitignored
+`.env`, never in a tracked file: this repo is public). Swap production vs dev by
 changing `transport.mode`; everything above the transport layer is identical.
 
 ## API surface (operator endpoints)

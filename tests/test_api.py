@@ -218,3 +218,20 @@ def test_delete_session_wipes_and_bumps_epoch(client: TestClient):
     assert r.json() == {"ok": True}
     assert len(sess.messages) == 0
     assert client.app.state.chat_epoch == epoch_before + 1
+
+
+def test_password_from_env_gates_the_api(tmp_path, monkeypatch):
+    """`auth.password_env` (the Pi config's form) must enforce the env value, and
+    must refuse to boot when the variable is missing instead of running open."""
+    cfg = load_config(DEV)
+    cfg.auth.password_env = "LEDCTL_TEST_PASSWORD"
+
+    monkeypatch.delenv("LEDCTL_TEST_PASSWORD", raising=False)
+    with pytest.raises(ValueError, match="LEDCTL_TEST_PASSWORD"):
+        create_app(cfg, effects_dir=tmp_path)
+
+    monkeypatch.setenv("LEDCTL_TEST_PASSWORD", "s3cret")
+    with TestClient(create_app(cfg, effects_dir=tmp_path)) as c:
+        assert c.get("/state").status_code == 401
+        assert c.get("/state", params={"password": "wrong"}).status_code == 401
+        assert c.get("/state", params={"password": "s3cret"}).status_code == 200

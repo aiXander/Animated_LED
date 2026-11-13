@@ -9,7 +9,9 @@ server:
 # render loop and DDP path are not affected by auth — this only protects the
 # HTML/REST/WS surface.
 auth:
-  password: CHANGE_ME
+  # The password itself lives in the gitignored .env (this repo is public).
+  # ledctl refuses to start when the variable is missing, instead of running open.
+  password_env: LEDCTL_PASSWORD
 controllers:
   gledopto_main:
     type: wled-ddp

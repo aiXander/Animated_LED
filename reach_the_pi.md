@@ -67,7 +67,7 @@ The Pi is already set up to serve the operator UI to any device on the same netw
   - `GET /login?password=CHANGE_ME`
   - **Any URL with `?password=CHANGE_ME` appended** — sets the cookie and forwards. This is the "scan once and you're in" entry point.
 - **Network binding**: `server.host: 0.0.0.0` in `config/config.pi.yaml` → already listening on every interface (ethernet to Gledopto + WiFi).
-- **Password**: `auth.password: CHANGE_ME` in `config/config.pi.yaml`.
+- **Password**: `LEDCTL_PASSWORD` in the gitignored `.env`, named by `auth.password_env` in `config/config.pi.yaml`.
 
 So *server-side* access is solved. The friction is **discoverability + typing** on a phone.
 

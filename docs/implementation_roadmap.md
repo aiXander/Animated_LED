@@ -42,7 +42,7 @@ What this leaves us with going into Phase 7: a complete dev-grade controller tha
   - Chat window (re-uses `/agent/chat` from Phase 6).
   - A row of preset tiles (`default`, `chill`, `peak`, `cooldown` + any added during the build).
   - Blackout / resume.
-- **Auth:** simple shared password "CHANGE_ME" (or whatever the event rotates to). **Landed early as part of the Phase 8 prep** — see `src/ledctl/api/auth.py`. Activated by setting `auth.password` in `config.pi.yaml`; off by default in `config.dev.yaml`. Cookie-based with a `?password=…` shortcut for first visit, gates HTTP via Starlette middleware and rejects WS upgrades pre-accept (close 4401). Still meant to live behind Tailscale — never expose the Pi directly.
+- **Auth:** simple shared password (the value lives in `.env` as `LEDCTL_PASSWORD`). **Landed early as part of the Phase 8 prep** — see `src/ledctl/api/auth.py`. Activated by setting `auth.password_env` in `config.pi.yaml`; off by default in `config.dev.yaml`. Cookie-based with a `?password=…` shortcut for first visit, gates HTTP via Starlette middleware and rejects WS upgrades pre-accept (close 4401). Still meant to live behind Tailscale — never expose the Pi directly.
 - **PWA manifest** so it installs as an app icon on the bar staff's home screens.
 - Touch-friendly: 44px minimum hit targets, no hover-only affordances, single-column layout, no horizontal scroll.
 
@@ -62,7 +62,7 @@ The digital pieces below are already in place — the Pi just needs to be flashe
 
 **Already landed (pre-build day):**
 
-- **`config/config.pi.yaml`** — `transport.mode: ddp`, `controllers.gledopto_main.host: 10.0.0.2`, `server.host: 0.0.0.0` so the venue WiFi can reach it, `auth.password: CHANGE_ME` to keep randoms out, full `masters:` block for parity with dev. `audio.device: null` is the only field the build day still has to fill in (the INMP441 ALSA card name from `arecord -l`; `/audio/select` persists it).
+- **`config/config.pi.yaml`** — `transport.mode: ddp`, `controllers.gledopto_main.host: 10.0.0.2`, `server.host: 0.0.0.0` so the venue WiFi can reach it, `auth.password_env: LEDCTL_PASSWORD` to keep randoms out, full `masters:` block for parity with dev. `audio.device: null` is the only field the build day still has to fill in (the INMP441 ALSA card name from `arecord -l`; `/audio/select` persists it).
 - **Auth gate** (`src/ledctl/api/auth.py`) — Starlette middleware + `/login` (form post or `?password=…`) + `ledctl_auth` cookie + WS upgrade gate (close 4401). `/healthz`, `/login`, `/logout` are always public so a future watchdog can probe past the gate. Off automatically in `config.dev.yaml` (no `auth.password`).
 - **`/healthz`** endpoint — JSON `{ok, fps}`, public, suitable for a systemd watchdog ping.
 - **systemd unit** (`deploy/ledctl.service`) — `After=network-online.target sound.target`, `Restart=always`, `RestartSec=2`, `Nice=-5`, `audio` supplementary group for ALSA, `ProtectSystem=full` + `ProtectHome=read-only` so it plays well with overlayfs, journald logging only. Install: `sudo cp deploy/ledctl.service /etc/systemd/system/ && sudo systemctl enable --now ledctl`.

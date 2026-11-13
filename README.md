@@ -171,7 +171,7 @@ To sanity-check the DDP packet shape without real hardware, run [`wled-sim`](htt
 animated_LED/
 ├── config/
 │   ├── config.dev.yaml      # mac/sim defaults (transport.mode = simulator, no auth)
-│   ├── config.pi.yaml       # on-site defaults (transport.mode = ddp, host 10.0.0.2, auth.password = CHANGE_ME)
+│   ├── config.pi.yaml       # on-site defaults (transport.mode = ddp, host 10.0.0.2, auth.password_env = LEDCTL_PASSWORD)
 │   └── presets/             # YAML preset files: default, chill, peak, cooldown, …
 ├── deploy/
 │   └── ledctl.service       # systemd unit for the Pi (Phase 8.1)
@@ -312,7 +312,8 @@ Optional shared-password gate for the entire HTTP/WS surface. Off by default in 
 ```yaml
 # config/config.pi.yaml
 auth:
-  password: CHANGE_ME          # null/missing/empty = open server
+  password_env: LEDCTL_PASSWORD   # the value lives in .env; unset = ledctl refuses to start
+  # password: ...                 # inline alternative; null/missing/empty = open server
   cookie_max_age_days: 30    # how long the browser remembers after login
 ```
 
@@ -643,7 +644,7 @@ For centre-feed all 4 chain heads sit at `x=0`, so the dev/pi configs use `start
 8. **`asyncio.wait_for` on a stop-event** is how the engine paces sleep, so `engine.stop()` returns promptly without waiting for the next tick.
 9. **Engine drops frames rather than spiralling** if it falls behind (`engine.dropped_frames` is exposed via `/state`).
 10. **Default boot stack = single `scroll` layer** (the `default` preset) so the install isn't dark on startup. The API can replace it via `/presets/{name}` or `/effects/{name}` + `DELETE /layer/0`.
-11. **Shared-password gate landed early** (Phase 8.1, `src/ledctl/api/auth.py`). Off by default; activate by setting `auth.password` in YAML. `config.pi.yaml` ships with `CHANGE_ME` set; `config.dev.yaml` leaves the block off. Still pair with Tailscale at the venue.
+11. **Shared-password gate landed early** (Phase 8.1, `src/ledctl/api/auth.py`). Off by default; activate by setting `auth.password_env` (or `auth.password`) in YAML. `config.pi.yaml` reads `LEDCTL_PASSWORD` from `.env`; `config.dev.yaml` leaves the block off. Still pair with Tailscale at the venue.
 12. **No `git init`** yet. Repo is plain files; add when the user wants commits.
 13. **No tests for `MultiTransport`** because it instantiates a real DDP socket at app boot — needs a UDP listener fixture. Add when we exercise that path.
 

@@ -369,7 +369,7 @@ def create_app(
     async def healthz() -> dict:
         return {"ok": True, "fps": round(engine.fps, 2)}
 
-    auth_password = (cfg.auth.password or "").strip() if cfg.auth.password else ""
+    auth_password = cfg.auth.resolved_password()
     if auth_password:
         attach_password_auth(
             app, auth_password, cookie_max_age_days=cfg.auth.cookie_max_age_days

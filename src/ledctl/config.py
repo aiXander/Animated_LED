@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -42,10 +43,36 @@ class AuthConfig(BaseModel):
             "it's keeping randoms off the LED panel during a gig."
         ),
     )
+    password_env: str | None = Field(
+        None,
+        description=(
+            "Name of an environment variable holding the password (set it in the "
+            "gitignored `.env`). Keeps the password out of this YAML, which is in a "
+            "public repo. Used when `password` is empty."
+        ),
+    )
     cookie_max_age_days: int = Field(
         30, ge=1, le=365,
         description="How long the browser remembers the password after login.",
     )
+
+    def resolved_password(self) -> str:
+        """The password to enforce, or "" for an open server.
+
+        `password_env` naming a variable that is unset or empty raises: a config
+        that asks for a password must never fall back to an open server.
+        """
+        if self.password and self.password.strip():
+            return self.password.strip()
+        if not self.password_env:
+            return ""
+        value = os.environ.get(self.password_env, "").strip()
+        if not value:
+            raise ValueError(
+                f"auth.password_env names {self.password_env}, which is unset or empty. "
+                f"Add {self.password_env}=... to .env (see .env.example)."
+            )
+        return value
 
 
 class ControllerConfig(BaseModel):
