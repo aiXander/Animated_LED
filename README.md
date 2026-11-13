@@ -4,6 +4,8 @@
 --------
 --------
 
+`****` = the Pi's Tailscale hostname/IP, kept out of git; the real values are in `cmds.txt` (gitignored, local only).
+
 SSH into Pi via tailscale remotely:
 ssh xander@xanderpi
 
@@ -133,7 +135,7 @@ uv venv --python 3.11
 uv pip install -e ".[dev]"
 
 # run
-cd /Users/xandersteenbrugge/Documents/Projects/animated_LED
+cd /Users/xandersteenbrugge/Documents/GitHub/animated_LED
 uv run ledctl run --config config/config.dev.yaml
 # open http://127.0.0.1:8000  →  see the wave at ~60 FPS
 

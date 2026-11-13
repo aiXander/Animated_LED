@@ -123,16 +123,17 @@ audio_server:
   osc_listen_host: 127.0.0.1
   osc_listen_port: 9000
   ui_url: http://127.0.0.1:8766
-  # Used when the operator UI is loaded over the tailnet (https://*.ts.net).
-  # Tailscale Serve only allows 443/8443/10000; audio UI is mounted on 10000.
-  tailnet_ui_url: https://****:10000/
+  # Over the tailnet (https) the 'audio' link defaults to the page's own host on
+  # port 10000, where Tailscale Serve mounts the audio UI. Set tailnet_ui_url to
+  # override; keep tailnet hostnames out of git (the repo is public).
+  tailnet_ui_url: null
   stale_after_s: 1.5
 agent:
   enabled: true
   provider: openrouter
   base_url: https://openrouter.ai/api/v1
-  model: minimax/minimax-m3
-  reasoning_effort: none  # disables thinking on minimax-m3 (~3x faster); low/medium/high re-enables
+  model: deepseek/deepseek-v4-flash-0731
+  reasoning_effort: low  # none disables thinking entirely (faster); low/medium/high scale it up
   history_max_turns: 5
   request_timeout_seconds: 60.0
   rate_limit_per_minute: 10

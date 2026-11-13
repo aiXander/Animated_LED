@@ -146,7 +146,7 @@ $("mi-audio").addEventListener("click", async (e) => {
   e.preventDefault();
   try {
     const j = await (await fetch("/audio/ui")).json();
-    const url = (j.tailnet_ui_url && location.protocol === "https:") ? j.tailnet_ui_url : j.ui_url;
+    const url = location.protocol === "https:" ? (j.tailnet_ui_url || `https://${location.hostname}:10000/`) : j.ui_url;
     if (url) window.open(url, "_blank");
   } catch (_) {}
 });

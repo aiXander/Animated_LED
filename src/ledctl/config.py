@@ -247,7 +247,7 @@ class AgentConfig(BaseModel):
             "OpenRouter unified reasoning effort for thinking models "
             "(sent as `reasoning: {effort: ...}`). 'none' disables thinking "
             "entirely (sent as `reasoning: {enabled: false}`) — big latency "
-            "win on models like minimax-m3. None/null = provider default."
+            "win on thinking-capable models. None/null = provider default."
         ),
     )
     history_max_turns: int = Field(

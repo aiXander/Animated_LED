@@ -18,3 +18,5 @@ config/effects/
 
 # Frames file moved temporarily during the v2 surface refactor.
 /tmp/frames_v1.py
+# Private connection details for the Pi (hostnames, IPs, password).
+cmds.txt

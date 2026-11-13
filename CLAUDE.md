@@ -49,9 +49,9 @@ YAML. With no key, `/agent/chat` returns a clear 503 and the render loop is unaf
 
 **One tool, one call per turn, always the complete effect — never a diff.** The whole agent
 layer (`agent/`) is a thin OpenRouter wrapper, *not* a multi-tool loop. Model is set in YAML
-(`agent.model`, currently `minimax/minimax-m3`; `agent.reasoning_effort` maps to OpenRouter's
-unified reasoning param — `none` sends `{enabled: false}` (thinking off; the current setting,
-~3× faster on minimax-m3), `low/medium/high` send `{effort: ...}`, `null` omits the param
+(`agent.model`, currently `deepseek/deepseek-v4-flash-0731`; `agent.reasoning_effort` maps to
+OpenRouter's unified reasoning param — `none` sends `{enabled: false}` (thinking off, notably
+faster), `low/medium/high` send `{effort: ...}` (`low` is the current setting), `null` omits it
 entirely (provider default). Chat fetches abort client-side at `CHAT_TIMEOUT_MS` (90 s) in
 both `main-*.js` — keep it above `agent.request_timeout_seconds` × the retry budget).
 
@@ -419,10 +419,17 @@ side without re-running the calibration sequence). All four WLED outputs: WS281x
 | top_left | 1350 | top-left |
 
 **DDP debug recipe** when LEDs show WLED's own preset instead of ledctl content:
+0. `ip -br addr show eth0` — must read `UP` with `10.0.0.1/24`. `NO-CARRIER`/`DOWN` (and no
+   address) = the ethernet cable is unplugged or dead; nothing downstream matters. **Check this
+   first: `frames_sent` climbs happily into a dead interface, so step 1 does *not* prove a link.**
+   Re-seating the cable is enough — NetworkManager reattaches `10.0.0.1` with no reboot — but the
+   Gledopto will still need a manual `curl http://10.0.0.2/reset`, because `gledopto-reboot.service`
+   already fired 8 s after ledctl started, i.e. while the link was still down.
 1. `curl 'localhost:8000/transport?password=CHANGE_ME'` — confirm `frames_sent` is climbing.
 2. `sudo tcpdump -i any -n 'host 10.0.0.2 and udp port 4048' -c 20` — confirm packets leave.
-3. `ping -c 3 10.0.0.2` + `arp -n | grep 10.0.0.2` — must resolve a MAC, not "(incomplete)".
-4. Check WLED Info page for a "Realtime: DDP, IP: 10.0.0.1" line. **Absence with packets
+3. `ping -c 3 10.0.0.2` (`arp` isn't installed on the Pi; use `ip neigh` if you need the MAC).
+4. `curl -s http://10.0.0.2/json/info` — want `"live": true, "lip": "10.0.0.1", "lm": "DDP"`
+   (same thing the WLED Info page shows as "Realtime: DDP, IP: 10.0.0.1"). **Absence with packets
    arriving = wedged realtime intake → REBOOT THE GLEDOPTO before chasing config** (full power
    cycle has fixed this on-site with no settings changed). Only if a reboot doesn't help:
    WLED-MM **Sync → Receive UDP Realtime** ON, LED **Length** 1800, a Segment 0 spanning

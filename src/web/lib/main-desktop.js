@@ -1555,7 +1555,7 @@ $("btn-audio").addEventListener("click", async (e) => {
     const r = await fetch("/audio/ui");
     if (!r.ok) return;
     const j = await r.json();
-    let url = j.tailnet_ui_url && location.protocol === "https:" ? j.tailnet_ui_url : j.ui_url;
+    let url = location.protocol === "https:" ? (j.tailnet_ui_url || `https://${location.hostname}:10000/`) : j.ui_url;
     if (url) window.open(url, "_blank");
   } catch (_) {}
 });
