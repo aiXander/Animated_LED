@@ -18,6 +18,13 @@ and crossfades them live. There is no typed primitive graph any more.
 Pi (transport=ddp/multi). Several Claude instances may run at once — always check terminal /
 logs / hostname to know whether you're on the Pi or the Mac before acting.
 
+## Documentation map
+
+- `docs/reference/wzrd-input.md` — open it when touching `src/ledctl/wzrd/`, the audio bridge's
+  network mode, the master output stage's hook, the audio swell, or when the LEDs do not follow
+  WZRD's wall.
+- `docs/TODO/` — plans in flight.
+
 ## Commands
 
 ```bash
@@ -323,13 +330,13 @@ source: 'agent'|'user', created_at, updated_at, params, param_values, starred}`)
 `masters.audio_reactivity`), calls `Runtime.render(...)` → `(live_rgb, sim_rgb)`, encodes to
 uint8 (gamma + clip), and ships via `SplitTransport.send(led_frame=…, sim_frame=…)`. Frames
 drop rather than spiral on lag. The loop sleeps until the next deadline OR an audio-kick event
-(`engine.kick_audio()`), gated by `kick_min_interval`.
+(`engine.kick_audio()`, fired by onset packets only), gated by `kick_min_interval`.
 
 **Key modules:**
 - `topology.py` — spatial model of all 1800 LEDs; normalised positions in `[-1, 1]` per axis
   from `config` strip geometries; derives the named `ctx.frames.*` arrays.
 - `masters.py` — operator-owned `MasterControls` (`brightness ∈ [0,2]`, `speed`,
-  `audio_reactivity`, `saturation`); surfaced to effects read-only as `ctx.masters`.
+  `audio_reactivity`, `saturation`, `audio_swell` = brightness follows loudness, 0 = off); surfaced to effects read-only as `ctx.masters`.
 - `surface/` — the v2 runtime (see above). Base classes in `base.py`; sandbox in `sandbox.py`;
   param schema in `schema.py`; tool handler in `tool.py`; prompt in `prompt.py`; on-disk CRUD
   in `persistence.py`.
@@ -341,6 +348,9 @@ drop rather than spiral on lag. The loop sleeps until the next deadline OR an au
   listener + supervisor. Soft-fail everywhere: no audio → bands 0, bpm fallback, render keeps
   going. **The LED controller never captures audio itself** — pick device / tune bands at the
   audio-server's own UI (`http://127.0.0.1:8766`, the 'audio' link in the operator UI).
+- `wzrd/` — optional WZRD input (wall colours, level and masters from a projection tool, applied
+  through `Runtime.output_hook`); `osc.py` holds what its listener shares with the audio one.
+  See `docs/reference/wzrd-input.md`.
 - `agent/` — `session.py` (in-memory `SessionStore`, `history_max`-capped buffer, rate limit,
   `reset_all_buffers()`) + `client.py` (lazy OpenAI-compatible OpenRouter wrapper).
 - `api/server.py` — FastAPI app + the dual-mode operator UI. `api/auth.py` — optional
@@ -367,6 +377,7 @@ changing `transport.mode`; everything above the transport layer is identical.
 - **Diagnostics/setup:** `GET /state` (full snapshot), `GET /topology`, `GET /healthz`,
   `GET/PUT /config` (PUT hot-swaps topology), `POST /calibration/{solo,walk,stop}`,
   `GET /audio/{state,ui}`.
+- **WZRD input:** `GET/PATCH /wzrd` (settings + link status; also the `wzrd` key in `/state`).
 - **Agent:** `POST /agent/chat`, `GET/DELETE /agent/sessions/{id}`, `GET/PATCH /agent/config`.
 - **WebSockets:** `/ws/frames` (sim canvas), `/ws/state` (UI panels) — both honour `?password=`.
 

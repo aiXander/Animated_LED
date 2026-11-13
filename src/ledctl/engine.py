@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Literal
@@ -79,6 +80,10 @@ class Engine:
         self.audio_state: AudioState | None = None
         self._audio_kick: asyncio.Event | None = None
         self._asyncio_loop: asyncio.AbstractEventLoop | None = None
+        # Audio swell: a follower of /audio/level, and how much of the swell
+        # is applied (fades out over a second when the audio feed dies).
+        self._swell_level: float | None = None
+        self._swell_presence: float = 0.0
 
     # ---- audio plumbing ---- #
 
@@ -193,6 +198,40 @@ class Engine:
             connected=bool(s.connected),
         )
 
+    # ---- audio swell (LED brightness follows loudness) ---- #
+
+    def _update_swell(self, dt: float) -> float:
+        """Advance the level follower and return the output gain for this tick.
+
+            x    = clip((L - quiet) / (loud - quiet), 0, 1)
+            gain = 1 - audio_swell * (1 - x)
+
+        Dead audio must not black out the room, so the dim fades out over a
+        second while the feed is stale. That is keyed on staleness
+        (`connected`, cleared by the bridge watchdog), never on the value: a
+        stalled server sends one last 0, and real silence is also 0 and must
+        dim. Between that last 0 and the watchdog's timeout the lights dip
+        partway; that is accepted.
+        """
+        s = self.audio_state
+        cfg = self.cfg.audio_swell
+        live = s is not None and s.connected and s.level is not None
+        if live:
+            level = float(s.level)
+            if self._swell_level is None:
+                self._swell_level = level
+            else:
+                tau = cfg.attack_s if level > self._swell_level else cfg.release_s
+                a = 1.0 if tau <= 0.0 else 1.0 - math.exp(-dt / tau)
+                self._swell_level += a * (level - self._swell_level)
+        step = dt if live else -dt          # presence moves 0 <-> 1 over a second
+        self._swell_presence = min(1.0, max(0.0, self._swell_presence + step))
+        amount = float(self.masters.audio_swell) * self._swell_presence
+        if amount <= 0.0 or self._swell_level is None:
+            return 1.0
+        x = (self._swell_level - cfg.quiet) / (cfg.loud - cfg.quiet)
+        return 1.0 - amount * (1.0 - min(1.0, max(0.0, x)))
+
     # ---- main loop ---- #
 
     async def start(self) -> None:
@@ -223,13 +262,17 @@ class Engine:
         fps_window_frames = 0
         last_wall = t0
         last_render = t0 - 1.0 / float(max(1, int(self.target_fps)))
+        # The frame clock: each frame is due one period after the previous
+        # frame was DUE, not after it finished, so render + send time does not
+        # stretch the interval (it used to: 53 fps at a 60 fps target).
+        deadline = t0
         kick = self._audio_kick
 
         try:
             while not self._stop.is_set():
                 period = 1.0 / float(max(1, int(self.target_fps)))
                 kick_min_interval = period * 0.5
-                deadline = last_render + period
+                kicked = False
                 while True:
                     now = time.perf_counter()
                     remaining = deadline - now
@@ -255,11 +298,17 @@ class Engine:
                     if wait_kick in done:
                         kick.clear()
                         if time.perf_counter() - last_render >= kick_min_interval:
+                            kicked = True
                             break
                         continue
                     break
 
                 now = time.perf_counter()
+                # An onset rendered early re-phases the clock from here; a frame
+                # that is more than a period late does too, instead of bursting
+                # to catch up.
+                due = now if kicked or now - deadline > period else deadline
+                deadline = due + period
                 wall_t = now - t0
                 dt_wall = wall_t - last_wall
                 # Clamp dt at 2× target frame interval so a hiccup (DDP retransmit,
@@ -283,6 +332,7 @@ class Engine:
                 self.effective_t += dt_scaled
 
                 audio_view = self._build_audio_view()
+                self.runtime.swell_gain = self._update_swell(dt_wall)
 
                 # The sim transport throttles to its own `target_fps` (UI
                 # rate, default 24 Hz) independently of the engine tick. When
@@ -320,7 +370,7 @@ class Engine:
                     self.fps = fps_window_frames / (now - fps_window_start)
                     fps_window_start = now
                     fps_window_frames = 0
-                if last_render - deadline > period:
+                if last_render - due > period:
                     self.dropped_frames += 1
         except Exception:
             log.exception("engine loop crashed")

@@ -11,6 +11,7 @@ Bounds (enforced in `clamped()` and at the REST layer):
   - speed ∈ [0, 3]
   - audio_reactivity ∈ [0, 3]
   - saturation ∈ [0, 1]
+  - audio_swell ∈ [0, 1] (0 = off; how far the LEDs dim when the room is quiet)
 
 `brightness > 1.0` activates an adaptive headroom mode in `Mixer._apply_master_output`:
 the gain is derived from a rolling peak of the post-saturation stack so the recent
@@ -33,6 +34,7 @@ class MasterControls:
     speed: float = 1.0
     audio_reactivity: float = 1.0
     saturation: float = 1.0
+    audio_swell: float = 0.0
 
     def clamped(self) -> MasterControls:
         return MasterControls(
@@ -40,6 +42,7 @@ class MasterControls:
             speed=_clip(self.speed, 0.0, 3.0),
             audio_reactivity=_clip(self.audio_reactivity, 0.0, 3.0),
             saturation=_clip(self.saturation, 0.0, 1.0),
+            audio_swell=_clip(self.audio_swell, 0.0, 1.0),
         )
 
     def merge(self, **patch: object) -> MasterControls:
@@ -53,6 +56,7 @@ class MasterControls:
             "speed",
             "audio_reactivity",
             "saturation",
+            "audio_swell",
         }
         unknown = set(patch) - valid
         if unknown:

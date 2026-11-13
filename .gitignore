@@ -20,3 +20,8 @@ config/effects/
 /tmp/frames_v1.py
 # Private connection details for the Pi (hostnames, IPs, password).
 cmds.txt
+
+# WZRD input: operator settings are runtime state; the scratch config is for
+# developing next to a running WZRD / audio server (docs: wzrd-input).
+config/wzrd_input.yaml
+config/config.wzrd-check.yaml

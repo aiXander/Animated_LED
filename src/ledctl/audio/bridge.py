@@ -2,7 +2,10 @@
 
 The LED controller no longer captures or analyses audio itself. Instead we run
 the [Realtime_PyAudio_FFT](https://github.com/.../Realtime_PyAudio_FFT) server
-as a subprocess and consume its `/audio/lmh` and `/audio/meta` OSC messages.
+as a subprocess and consume its `/audio/*` OSC messages. In `network` mode
+(`audio_server.source`, or `LEDCTL_AUDIO_SOURCE` in the environment) nothing is
+spawned: a server on another machine sends to this one, and the listener binds
+every interface.
 Two responsibilities live here:
 
   - `OscFeatureListener` — bind a UDP socket on the configured port, dispatch
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import os
 import shutil
 import socket
@@ -39,6 +43,7 @@ from urllib.parse import urlparse
 if TYPE_CHECKING:
     from ..config import AudioServerConfig
 
+from ..osc import AllowlistOSCUDPServer, IPNetwork, LinkStats
 from .state import AudioState
 
 log = logging.getLogger(__name__)
@@ -93,19 +98,25 @@ class OscFeatureListener:
         host: str = "127.0.0.1",
         port: int = 9000,
         stale_after_s: float = DEFAULT_STALE_AFTER_S,
+        allow_from: tuple[IPNetwork, ...] = (),
     ):
         self.state = state
         self.host = host
         self.port = int(port)
         self.stale_after_s = float(stale_after_s)
+        # Senders accepted (empty = any). Only meaningful off loopback.
+        self.allow_from = tuple(allow_from)
+        # `/audio/lmh` only: one per audio block, ~187 a second when healthy.
+        self.link = LinkStats()
         self._server: Any = None
         self._server_thread: threading.Thread | None = None
         self._watchdog_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        # Optional thread-safe callback fired after every /audio/lmh write.
-        # The render loop sets this so it can wake immediately on a fresh
-        # packet instead of polling at the fixed render cadence. The caller
-        # owns thread-safety (e.g. asyncio loop.call_soon_threadsafe).
+        # Optional thread-safe callback fired on every onset packet, so a
+        # flash renders at once instead of waiting for the next frame. Band
+        # packets do NOT fire it: at ~187 a second they would drive the render
+        # rate (93 fps measured against a 60 fps target). The caller owns
+        # thread-safety (e.g. asyncio loop.call_soon_threadsafe).
         self.kick_callback: Callable[[], None] | None = None
 
     @property
@@ -117,7 +128,6 @@ class OscFeatureListener:
             return
         try:
             from pythonosc import dispatcher  # noqa: PLC0415
-            from pythonosc.osc_server import BlockingOSCUDPServer  # noqa: PLC0415
         except ImportError as e:
             log.warning("python-osc not installed: %s — audio features disabled", e)
             self.state.error = f"python-osc unavailable: {e}"
@@ -125,12 +135,12 @@ class OscFeatureListener:
         d = dispatcher.Dispatcher()
         d.map("/audio/lmh", self._on_lmh)
         d.map("/audio/meta", self._on_meta)
-        # `/audio/beat` and `/audio/bpm` are forthcoming addresses on the
-        # external audio server (onset detector + continuous tempo). Map
-        # them now so the LED side picks them up the moment they start
-        # arriving — silently no-ops while the server isn't sending.
+        # Onsets: the current server sends `/audio/onset/low` (one packet per
+        # low-band onset, no repeat); older installs may send `/audio/beat`.
+        d.map("/audio/onset/low", self._on_beat)
         d.map("/audio/beat", self._on_beat)
         d.map("/audio/bpm", self._on_bpm)
+        d.map("/audio/level", self._on_level)
         # /audio/fft is not consumed (the server only sends it when explicitly
         # enabled); register a no-op so we don't log "no handler" each frame.
         d.map("/audio/fft", lambda *_: None)
@@ -139,7 +149,11 @@ class OscFeatureListener:
             # ThreadingOSCUDPServer does at ~187 Hz. Handlers are tiny (3 float
             # writes), so serial dispatch is plenty fast and the reduced
             # scheduling jitter matters more than parallelism.
-            self._server = BlockingOSCUDPServer((self.host, self.port), d)
+            self._server = AllowlistOSCUDPServer(
+                (self.host, self.port), d, allow_from=self.allow_from,
+            )
+            # The port actually bound (differs from the request when it was 0).
+            self.port = int(self._server.server_address[1])
         except OSError as e:
             log.warning(
                 "OSC listener could not bind %s:%d (%s) — audio features disabled",
@@ -194,9 +208,7 @@ class OscFeatureListener:
         s.mid = mid
         s.high = high
         s.mark_packet()
-        cb = self.kick_callback
-        if cb is not None:
-            cb()
+        self.link.mark(s.last_packet_at)
 
     def _on_meta(self, _addr: str, *args: Any) -> None:
         # Per the audio-server README: sr:i blocksize:i n_fft_bins:i
@@ -231,7 +243,7 @@ class OscFeatureListener:
     def _on_beat(self, _addr: str, *_args: Any) -> None:
         """Rising-edge beat trigger: bumps a monotonic counter.
 
-        The server only sends `/audio/beat` on detected onsets — silence is
+        The server only sends an onset packet on detected onsets — silence is
         the absence of packets, not a `0`. Surface primitives that want
         beat semantics read `beat_count` and detect changes between frames
         (see `audio_beat`). Doesn't gate `connected` — the lmh stream
@@ -239,6 +251,20 @@ class OscFeatureListener:
         s = self.state
         s.beat_count = (s.beat_count + 1) & 0x7FFFFFFF
         s.last_beat_at = monotonic()
+        cb = self.kick_callback
+        if cb is not None:
+            cb()
+
+    def _on_level(self, _addr: str, *args: Any) -> None:
+        """Fixed-scale loudness (0 = -60 dBFS, 1 = 0 dBFS). Not the heartbeat."""
+        if not args:
+            return
+        try:
+            level = float(args[0])
+        except (TypeError, ValueError):
+            return
+        if math.isfinite(level):
+            self.state.level = min(1.0, max(0.0, level))
 
     def _on_bpm(self, _addr: str, *args: Any) -> None:
         """Continuous tempo update from the audio server's BPM tracker.
@@ -437,10 +463,14 @@ class AudioBridge:
         listener: OscFeatureListener,
         supervisor: AudioServerSupervisor | None = None,
         ui_url: str = "http://127.0.0.1:8766",
+        source: str = "local",
     ):
         self.listener = listener
         self.supervisor = supervisor
         self.ui_url = ui_url
+        # "local": the server runs on this machine (spawned here or by hand).
+        # "network": it runs elsewhere and sends to us; nothing is spawned.
+        self.source = source
 
     @property
     def state(self) -> AudioState:
@@ -470,20 +500,30 @@ class AudioBridge:
 
     @classmethod
     def from_config(cls, cfg: AudioServerConfig) -> AudioBridge:
-        """Build the bridge from an `AudioServerConfig` block."""
+        """Build the bridge from an `AudioServerConfig` block.
+
+        In `network` mode the listener binds every interface, filtered by the
+        allowlist, and no audio server is spawned whatever `autostart` says.
+        In `local` mode it stays on `osc_listen_host` and the list is unused.
+        """
+        source = cfg.resolved_source()
+        network = source == "network"
         state = AudioState()
         listener = OscFeatureListener(
             state=state,
-            host=cfg.osc_listen_host,
+            host="0.0.0.0" if network else cfg.osc_listen_host,
             port=cfg.osc_listen_port,
             stale_after_s=cfg.stale_after_s,
+            allow_from=cfg.resolved_allow_from() if network else (),
         )
         supervisor: AudioServerSupervisor | None = None
-        if cfg.autostart:
+        if cfg.autostart and not network:
             env = dict(os.environ)
             supervisor = AudioServerSupervisor(
                 command=list(cfg.command),
                 working_dir=cfg.working_dir,
                 env=env,
             )
-        return cls(listener=listener, supervisor=supervisor, ui_url=cfg.ui_url)
+        return cls(
+            listener=listener, supervisor=supervisor, ui_url=cfg.ui_url, source=source,
+        )

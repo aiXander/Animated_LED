@@ -3,7 +3,9 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .osc import IPNetwork, parse_allow_from
 
 Vec3 = tuple[float, float, float]
 
@@ -198,6 +200,27 @@ class AudioServerConfig(BaseModel):
             "repo's parent directory)."
         ),
     )
+    source: Literal["local", "network"] = Field(
+        "local",
+        description=(
+            "Where the audio server runs. 'local': on this machine (spawned "
+            "here when `autostart` is on); the listener stays on "
+            "`osc_listen_host`. 'network': on another machine that sends its "
+            "OSC here; the listener binds 0.0.0.0 and nothing is spawned. The "
+            "environment variable LEDCTL_AUDIO_SOURCE, when set, wins over "
+            "this value, so a host switches modes in its gitignored .env."
+        ),
+    )
+    allow_from: list[str] = Field(
+        default_factory=list,
+        description=(
+            "IPs or CIDR ranges allowed to send OSC to this machine's "
+            "network-facing listeners (audio in 'network' mode, and the WZRD "
+            "input). Empty = accept any sender. LEDCTL_OSC_ALLOW_FROM "
+            "(comma-separated) replaces the list when set: this repo is "
+            "public, so real addresses belong in .env, not here."
+        ),
+    )
     osc_listen_host: str = Field(
         "127.0.0.1",
         description=(
@@ -243,6 +266,49 @@ class AudioServerConfig(BaseModel):
             "rate (~187 Hz @ 48k/256), so 1.5 s is well above the noise floor."
         ),
     )
+
+    @field_validator("allow_from")
+    @classmethod
+    def _check_allow_from(cls, v: list[str]) -> list[str]:
+        parse_allow_from(v)   # raises ValueError on a bad entry
+        return v
+
+    # The two environment overrides are read at use time and never stored on
+    # the model, so the config writer cannot copy a .env value into the YAML.
+
+    def resolved_source(self) -> str:
+        env = os.environ.get("LEDCTL_AUDIO_SOURCE", "").strip().lower()
+        if not env:
+            return self.source
+        if env not in ("local", "network"):
+            raise ValueError(
+                f"LEDCTL_AUDIO_SOURCE must be 'local' or 'network', got {env!r}"
+            )
+        return env
+
+    def resolved_allow_from(self) -> tuple[IPNetwork, ...]:
+        env = os.environ.get("LEDCTL_OSC_ALLOW_FROM")
+        if env is not None and env.strip():
+            try:
+                return parse_allow_from(env.split(","))
+            except ValueError as e:
+                raise ValueError(f"LEDCTL_OSC_ALLOW_FROM: {e}") from e
+        return parse_allow_from(self.allow_from)
+
+
+class WzrdInputConfig(BaseModel):
+    """WZRD input: a UDP/OSC listener that takes the wall's colours, level and
+    masters from WZRD (a projection tool on another machine) and applies them
+    in the output stage. Operator settings live in `config/wzrd_input.yaml`,
+    not here. The sender allowlist is `audio_server.allow_from`."""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = Field(True, description="Mount the listener, /wzrd and the UI modal.")
+    listen_host: str = Field(
+        "0.0.0.0",
+        description="IPv4 interface to bind. Use 127.0.0.1 when WZRD runs on this machine.",
+    )
+    listen_port: int = Field(9100, gt=0, lt=65536)
 
 
 class AgentConfig(BaseModel):
@@ -352,6 +418,26 @@ class MastersConfig(BaseModel):
     speed: float = Field(1.0, ge=0.0, le=3.0)
     audio_reactivity: float = Field(1.0, ge=0.0, le=3.0)
     saturation: float = Field(1.0, ge=0.0, le=1.0)
+    audio_swell: float = Field(0.0, ge=0.0, le=1.0)
+
+
+class AudioSwellConfig(BaseModel):
+    """Audio swell: LED brightness follows loudness (`/audio/level`, a fixed
+    scale where 0 is -60 dBFS and 1 is 0 dBFS). How strongly is the
+    `audio_swell` master; this block sets what counts as quiet and loud.
+    Read the right values off the level shown beside the slider at soundcheck."""
+
+    model_config = ConfigDict(extra="forbid")
+    quiet: float = Field(0.33, ge=0.0, le=1.0, description="Level at full dim (-40 dBFS).")
+    loud: float = Field(0.80, ge=0.0, le=1.0, description="Level at no dim (-12 dBFS).")
+    attack_s: float = Field(0.5, ge=0.0, le=10.0, description="Time constant, getting louder.")
+    release_s: float = Field(2.0, ge=0.0, le=30.0, description="Time constant, getting quieter.")
+
+    @model_validator(mode="after")
+    def _check_range(self) -> "AudioSwellConfig":
+        if self.loud <= self.quiet:
+            raise ValueError("audio_swell.loud must be greater than audio_swell.quiet")
+        return self
 
 
 class AppConfig(BaseModel):
@@ -364,8 +450,10 @@ class AppConfig(BaseModel):
     transport: TransportConfig = TransportConfig()
     output: OutputConfig = OutputConfig()
     audio_server: AudioServerConfig = AudioServerConfig()
+    wzrd_input: WzrdInputConfig = WzrdInputConfig()
     agent: AgentConfig = AgentConfig()
     masters: MastersConfig = MastersConfig()
+    audio_swell: AudioSwellConfig = AudioSwellConfig()
 
     @model_validator(mode="before")
     @classmethod

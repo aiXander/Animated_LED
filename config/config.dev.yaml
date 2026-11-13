@@ -109,6 +109,10 @@ audio_server:
   osc_listen_port: 9000
   ui_url: http://127.0.0.1:8766
   stale_after_s: 1.5
+wzrd_input:
+  # WZRD runs on this same Mac in dev, so the listener opens no port to the
+  # network. The default (and the Pi) binds 0.0.0.0.
+  listen_host: 127.0.0.1
 agent:
   enabled: true
   provider: openrouter

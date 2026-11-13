@@ -10,6 +10,7 @@
 
 import { bindViz } from "./viz.js";
 import { $, setText } from "./util.js";
+import { applyWzrd, mountWzrdPanel } from "./wzrd.js";
 
 // --- state ---
 let state = null;
@@ -91,12 +92,21 @@ function maybeRestoreMode() {
 }
 
 // --- masters ---
+// Audio swell readout beside its slider: the fixed-scale level the audio
+// server reports and the gain it currently gives (for setting quiet / loud).
+function updateSwellInfo(a) {
+  const level = a && a.level != null ? Number(a.level).toFixed(2) : "—";
+  const gain = Number(a?.swell_gain ?? 1).toFixed(2);
+  setText($("swell-info"), `level ${level} · gain ${gain}`);
+}
+
 function bindMasters() {
   const map = [
     ["m-bri", "v-bri", "brightness"],
     ["m-spd", "v-spd", "speed"],
     ["m-aud", "v-aud", "audio_reactivity"],
     ["m-sat", "v-sat", "saturation"],
+    ["m-swl", "v-swl", "audio_swell"],
   ];
   for (const [sliderId, valId, key] of map) {
     const slider = $(sliderId);
@@ -442,10 +452,25 @@ document.addEventListener("keydown", (e) => {
     closeDeleteModal();
     closeRenameModal();
     closePlaylistModal();
+    closeWzrdModal();
     closeColorPopover();
     closeCodeModal();
   }
 });
+
+// ---- WZRD input modal (panel shared with the mobile UI: lib/wzrd.js) ---- //
+mountWzrdPanel($("wzrd-panel"));
+function closeWzrdModal() { $("wzrd-modal").classList.remove("open"); }
+$("btn-wzrd").addEventListener("click", () => $("wzrd-modal").classList.add("open"));
+$("wzrd-close").addEventListener("click", closeWzrdModal);
+$("wzrd-modal").addEventListener("click", (e) => {
+  if (e.target.id === "wzrd-modal") closeWzrdModal();
+});
+function updateWzrd(w) {
+  const link = applyWzrd(w);
+  $("btn-wzrd").style.display = link ? "" : "none";
+  if (link) $("wzrd-dot").className = `wz-dot ${link.kind}`;
+}
 
 // ---- playlist modal ---- //
 $("btn-playlist").addEventListener("click", openPlaylistModal);
@@ -1682,6 +1707,7 @@ function applyState() {
   }
   setText($("fps-pill"), `${state.fps?.toFixed?.(0) ?? "?"} fps`);
   updateAudioHud(state.audio);
+  updateSwellInfo(state.audio);
   document.body.classList.toggle("design-mode", state.mode === "design");
   document.body.classList.toggle("live-mode", state.mode === "live");
   $("btn-design").classList.toggle("active", state.mode === "design");
@@ -1696,6 +1722,8 @@ function applyState() {
     if (document.activeElement !== $("m-aud")) $("m-aud").value = m.audio_reactivity;
     setText($("v-bri"), m.brightness?.toFixed?.(2) ?? "1.00");
     setText($("v-sat"), m.saturation?.toFixed?.(2) ?? "1.00");
+    if (document.activeElement !== $("m-swl")) $("m-swl").value = m.audio_swell ?? 0;
+    setText($("v-swl"), (m.audio_swell ?? 0).toFixed(2));
     setText($("v-spd"), m.speed?.toFixed?.(2) ?? "1.00");
     setText($("v-aud"), m.audio_reactivity?.toFixed?.(2) ?? "1.00");
   }
@@ -1726,6 +1754,7 @@ function applyState() {
   }
   applyDdp(state.ddp);
   updatePlaylistStatus(state.playlist);
+  updateWzrd(state.wzrd);
 
   viz.applyCalibration(state.calibration);
   renderDeck();

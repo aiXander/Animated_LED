@@ -86,6 +86,7 @@ class MastersView:
     speed: float = 1.0
     audio_reactivity: float = 1.0
     saturation: float = 1.0
+    audio_swell: float = 0.0
     crossfade_seconds: float = 1.0
 
 

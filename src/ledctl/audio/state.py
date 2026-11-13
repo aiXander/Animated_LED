@@ -43,6 +43,9 @@ class AudioState:
     # `audio_bpm`) soft-fail to 0 / fallback. As soon as the server starts
     # publishing, the LED side picks them up automatically.
     bpm: float | None = None
+    # `/audio/level`: loudness on a fixed scale (0 = -60 dBFS, 1 = 0 dBFS, the
+    # RMS of the full signal, never auto-scaled). None = never received.
+    level: float | None = None
     beat_count: int = 0
     last_beat_at: float = 0.0
     connected: bool = False

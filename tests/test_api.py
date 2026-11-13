@@ -235,3 +235,29 @@ def test_password_from_env_gates_the_api(tmp_path, monkeypatch):
         assert c.get("/state").status_code == 401
         assert c.get("/state", params={"password": "wrong"}).status_code == 401
         assert c.get("/state", params={"password": "s3cret"}).status_code == 200
+
+
+def test_config_write_back_keeps_the_auth_block(tmp_path, monkeypatch):
+    """A config rewrite (PATCH /masters persist, PUT /config) must not drop
+    `auth`: the next boot would serve the operator UI with no password."""
+    import yaml
+
+    from ledctl.api.server import _write_config_yaml
+    from ledctl.config import AppConfig
+
+    monkeypatch.setenv("LEDCTL_TEST_PW", "s3cret")
+    raw = yaml.safe_load(DEV.read_text())
+    raw["auth"] = {"password_env": "LEDCTL_TEST_PW"}
+    path = tmp_path / "config.yaml"
+    _write_config_yaml(path, AppConfig.model_validate(raw))
+    assert load_config(path).auth.resolved_password() == "s3cret"
+
+    # Same through the API: GET /config hides the auth block, and a client that
+    # sends the layout back with PUT /config must not lose the password on disk.
+    app = create_app(load_config(path), effects_dir=tmp_path / "effects", config_path=path)
+    with TestClient(app) as c:
+        got = c.get("/config", params={"password": "s3cret"}).json()
+        assert "auth" not in got
+        r = c.put("/config", params={"password": "s3cret"}, json={"strips": got["strips"]})
+        assert r.status_code == 200
+    assert load_config(path).auth.resolved_password() == "s3cret"

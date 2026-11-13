@@ -13,6 +13,7 @@
 
 import { bindViz } from "./viz.js";
 import { $, setText } from "./util.js";
+import { applyWzrd, mountWzrdPanel } from "./wzrd.js";
 
 // ---------------- state ----------------
 let state = null;
@@ -136,6 +137,14 @@ $("btn-menu").addEventListener("click", () => openSheet("sheet-menu"));
 $("mi-library").addEventListener("click", () => { closeSheet("sheet-menu"); openLibrary(); });
 $("mi-playlist").addEventListener("click", () => { closeSheet("sheet-menu"); openPlaylist(); });
 $("mi-save").addEventListener("click", () => { closeSheet("sheet-menu"); openSaveModal(); });
+// WZRD input sheet (panel shared with the desktop UI: lib/wzrd.js).
+mountWzrdPanel($("wzrd-panel"));
+$("mi-wzrd").addEventListener("click", () => { closeSheet("sheet-menu"); openSheet("sheet-wzrd"); });
+function updateWzrd(w) {
+  const link = applyWzrd(w);
+  $("mi-wzrd").style.display = link ? "" : "none";
+  if (link) setText($("mi-wzrd-state"), link.label);
+}
 $("mi-ddp").addEventListener("click", async () => {
   const ddp = state && state.ddp;
   if (!ddp || !ddp.available) return;
@@ -152,12 +161,21 @@ $("mi-audio").addEventListener("click", async (e) => {
 });
 
 // ---------------- masters / fps / crossfade ----------------
+// Audio swell readout beside its slider: the fixed-scale level the audio
+// server reports and the gain it currently gives (for setting quiet / loud).
+function updateSwellInfo(a) {
+  const level = a && a.level != null ? Number(a.level).toFixed(2) : "—";
+  const gain = Number(a?.swell_gain ?? 1).toFixed(2);
+  setText($("swell-info"), `level ${level} · gain ${gain}`);
+}
+
 function bindMasters() {
   const map = [
     ["m-bri", "v-bri", "brightness"],
     ["m-spd", "v-spd", "speed"],
     ["m-aud", "v-aud", "audio_reactivity"],
     ["m-sat", "v-sat", "saturation"],
+    ["m-swl", "v-swl", "audio_swell"],
   ];
   for (const [sliderId, valId, key] of map) {
     $(sliderId).addEventListener("input", (e) => {
@@ -1035,6 +1053,7 @@ function applyState() {
     else if (state.chat_epoch !== lastChatEpoch) { lastChatEpoch = state.chat_epoch; chatLog.innerHTML = ""; }
   }
   updateAudioHud(state.audio);
+  updateSwellInfo(state.audio);
   document.body.classList.toggle("design-mode", state.mode === "design");
   document.body.classList.toggle("live-mode", state.mode === "live");
   for (const b of document.querySelectorAll("#mode-seg button")) b.classList.toggle("active", b.dataset.mode === state.mode);
@@ -1049,6 +1068,8 @@ function applyState() {
     setText($("v-spd"), m.speed?.toFixed?.(2) ?? "1.00");
     setText($("v-aud"), m.audio_reactivity?.toFixed?.(2) ?? "1.00");
     setText($("v-sat"), m.saturation?.toFixed?.(2) ?? "1.00");
+    if (document.activeElement !== $("m-swl")) $("m-swl").value = m.audio_swell ?? 0;
+    setText($("v-swl"), (m.audio_swell ?? 0).toFixed(2));
   }
   if (typeof state.crossfade_seconds === "number" && document.activeElement !== $("m-cf")) {
     $("m-cf").value = state.crossfade_seconds; setText($("v-cf"), state.crossfade_seconds.toFixed(2));
@@ -1067,6 +1088,7 @@ function applyState() {
 
   applyDdp(state.ddp);
   updatePlaylistStatus(state.playlist);
+  updateWzrd(state.wzrd);
   // live composition summary in the action bar
   const live = state.live;
   setText($("comp-summary"), live?.layers?.length ? `${live.layers.length} layer${live.layers.length === 1 ? "" : "s"}` : "—");

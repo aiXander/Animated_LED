@@ -119,6 +119,7 @@ class MastersPatchRequest(BaseModel):
     speed: float | None = Field(None, ge=0.0, le=3.0)
     audio_reactivity: float | None = Field(None, ge=0.0, le=3.0)
     saturation: float | None = Field(None, ge=0.0, le=1.0)
+    audio_swell: float | None = Field(None, ge=0.0, le=1.0)
     persist: bool = False
 
 
@@ -224,17 +225,15 @@ def _strips_to_yaml_dicts(strips: list[StripConfig]) -> list[dict[str, Any]]:
 
 
 def _config_to_yaml_dict(cfg: AppConfig) -> dict[str, Any]:
-    return {
-        "project": cfg.project.model_dump(),
-        "server": cfg.server.model_dump(),
-        "controllers": {k: v.model_dump() for k, v in cfg.controllers.items()},
-        "strips": _strips_to_yaml_dicts(list(cfg.strips)),
-        "transport": cfg.transport.model_dump(),
-        "output": cfg.output.model_dump(),
-        "audio_server": cfg.audio_server.model_dump(),
-        "agent": cfg.agent.model_dump(),
-        "masters": cfg.masters.model_dump(),
-    }
+    """The whole config as a YAML-ready dict.
+
+    Built from `model_dump()` so every block survives a write-back, including
+    ones added later. A hand-kept list of blocks once left out `auth`, and the
+    rewritten YAML then served the operator UI with no password.
+    """
+    data = cfg.model_dump()
+    data["strips"] = _strips_to_yaml_dicts(list(cfg.strips))
+    return data
 
 
 def _write_config_yaml(path: Path, cfg: AppConfig) -> None:
@@ -258,6 +257,7 @@ def _masters_from_config(cfg: AppConfig) -> MasterControls:
     return MasterControls(
         brightness=m.brightness, speed=m.speed,
         audio_reactivity=m.audio_reactivity, saturation=m.saturation,
+        audio_swell=m.audio_swell,
     )
 
 
@@ -343,6 +343,8 @@ def create_app(
             bridge: AudioBridge | None = app.state.audio_bridge
             if bridge is not None:
                 bridge.stop()
+            if app.state.wzrd is not None:
+                app.state.wzrd.listener.stop()
             await transport.close()
 
     app = FastAPI(title="ledctl", version="2.0.0", lifespan=lifespan)
@@ -361,6 +363,15 @@ def create_app(
     # rename). Mirrored into _full_state_payload so connected /ws/state
     # clients can clear their local chat log + sessionId in lockstep.
     app.state.chat_epoch = 0
+    # Extra top-level keys for /state and /ws/state: name -> payload function.
+    # Optional modules register here instead of editing the payload builder.
+    app.state.state_extras = {}
+
+    # WZRD input (optional module; this block is its only mount point).
+    app.state.wzrd = None
+    if cfg.wzrd_input.enabled:
+        from ..wzrd import mount_wzrd
+        app.state.wzrd = mount_wzrd(app, cfg, runtime, topology, eff_dir.parent)
 
     from .agent import install_agent_routes
     install_agent_routes(app, cfg.agent)
@@ -481,7 +492,9 @@ def create_app(
                 "tailnet_ui_url": app.state.config.audio_server.tailnet_ui_url,
                 "error": "audio_server.enabled is false",
                 "low": 0.0, "mid": 0.0, "high": 0.0,
-                "beat_count": 0, "bpm": None,
+                "beat_count": 0, "bpm": None, "level": None, "swell_gain": 1.0,
+                "source": app.state.config.audio_server.resolved_source(),
+                "packets_per_s": 0.0, "max_gap_ms": None,
             }
         s = bridge.state
         supervisor_error = (
@@ -502,6 +515,11 @@ def create_app(
             "low": round(s.low, 5), "mid": round(s.mid, 5), "high": round(s.high, 5),
             "beat_count": s.beat_count,
             "bpm": round(s.bpm, 2) if s.bpm is not None else None,
+            "level": round(s.level, 4) if s.level is not None else None,
+            "swell_gain": round(runtime.swell_gain, 4),
+            "source": bridge.source,
+            # Link health, counting /audio/lmh only (~187 a second when healthy).
+            **bridge.listener.link.snapshot(),
         }
 
     def _masters_payload() -> dict[str, Any]:
@@ -513,6 +531,7 @@ def create_app(
     def _full_state_payload() -> dict:
         snap = runtime.snapshot()
         return {
+            **{name: fn() for name, fn in app.state.state_extras.items()},
             "fps": round(engine.fps, 2),
             "target_fps": engine.target_fps,
             "sim_fps": float(sim.target_fps),
@@ -1085,7 +1104,10 @@ def create_app(
 
     @app.get("/config")
     async def get_config() -> dict:
-        return _config_to_yaml_dict(app.state.config)
+        # The auth block stays out of API responses (it can hold a password).
+        data = _config_to_yaml_dict(app.state.config)
+        data.pop("auth", None)
+        return data
 
     @app.put("/config")
     async def put_config(body: UpdateLayoutRequest) -> dict:

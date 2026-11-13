@@ -232,6 +232,12 @@ class Runtime:
         self._last_peak_wall_t: float = -1.0
         # Calibration override (set/cleared by the engine).
         self.calibration = None
+        # Optional output-stage hook (the WZRD input mounts one). An object with
+        # `tick(wall_t)`, `recolour(rgb)`, `saturation()`, `gain()` and
+        # `resize(topology)`. None = the stage behaves exactly as without it.
+        self.output_hook = None
+        # Loudness-driven gain, set by the engine each tick (1.0 = no effect).
+        self.swell_gain: float = 1.0
 
     # ---- composition pickers ---- #
 
@@ -470,6 +476,7 @@ class Runtime:
             speed=float(m.speed),
             audio_reactivity=float(m.audio_reactivity),
             saturation=float(m.saturation),
+            audio_swell=float(m.audio_swell),
             crossfade_seconds=float(self.crossfade_seconds),
         )
         return EffectFrameContext(
@@ -612,6 +619,10 @@ class Runtime:
         used when there are no sim WebSocket clients connected, so the Pi
         can spend its budget on the LIVE leg + DDP packets only.
         """
+        hook = self.output_hook
+        if hook is not None:
+            hook.tick(wall_t)   # once per frame: advances the hook's smoothing
+
         # ---- LIVE composition (with optional crossfade) ---- #
         if self._cf is not None:
             if self._cf.start_wall_t is None:
@@ -681,9 +692,19 @@ class Runtime:
     def _apply_master_output(
         self, rgb: np.ndarray, wall_t: float, *, update_envelope: bool = True
     ) -> None:
+        # The order of gains is the design. Brightness above 1 pushes the recent
+        # peak toward full output, so a gain applied BEFORE the envelope is
+        # cancelled within seconds; the hook's and the swell's gains therefore
+        # come after it.
         m = self.masters
+        hook = self.output_hook
         sat = float(m.saturation)
         bright = float(m.brightness)
+        post_gain = float(self.swell_gain)
+        if hook is not None:
+            hook.recolour(rgb)             # the effect's raw output, in place
+            sat *= float(hook.saturation())
+            post_gain *= float(hook.gain())
         if sat != 1.0:
             grey = (rgb @ _LUM)[:, None]
             np.subtract(rgb, grey, out=rgb)
@@ -700,6 +721,8 @@ class Runtime:
             gain = min(target / peak, _MAX_ADAPTIVE_GAIN)
             if gain != 1.0:
                 rgb *= gain
+        if post_gain != 1.0:
+            rgb *= post_gain
         np.clip(rgb, 0.0, 1.0, out=rgb)
 
     def _update_peak_envelope(self, current_peak: float, wall_t: float) -> None:
@@ -745,6 +768,8 @@ class Runtime:
         self._preview_buf = np.zeros((self.n, 3), dtype=np.float32)
         self._cf_buf = np.zeros((self.n, 3), dtype=np.float32)
         self._layer_scratch = np.zeros((self.n, 3), dtype=np.float32)
+        if self.output_hook is not None:
+            self.output_hook.resize(new_topology)
         for slot in ("live", "preview"):
             comp = self.composition(slot)
             new_layers: list[Layer] = []

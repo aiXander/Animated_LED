@@ -563,6 +563,10 @@
               <input id="m-sat" type="range" min="0" max="1" step="0.01">
             </div>
             <div class="master-row">
+              <div class="top"><span class="nm">audio swell <span id="swell-info" style="color:var(--dim); font-size:0.72rem; font-variant-numeric:tabular-nums;">level — · gain 1.00</span></span><span class="value" id="v-swl">0.00</span></div>
+              <input id="m-swl" type="range" min="0" max="1" step="0.01">
+            </div>
+            <div class="master-row">
               <div class="top"><span class="nm">crossfade</span><span class="value" id="v-cf">1.00</span></div>
               <input id="m-cf" type="range" min="0" max="10" step="0.05">
             </div>
@@ -613,6 +617,7 @@
         <div class="menu-list">
           <button class="menu-item" id="mi-library"><span class="ic">📚</span><span class="grow">Library</span></button>
           <button class="menu-item" id="mi-playlist"><span class="ic">▶</span><span class="grow">Playlist</span><span class="state" id="mi-playlist-state"></span></button>
+          <button class="menu-item" id="mi-wzrd" style="display:none"><span class="ic">🪄</span><span class="grow">WZRD input</span><span class="state" id="mi-wzrd-state"></span></button>
           <button class="menu-item" id="mi-save"><span class="ic">💾</span><span class="grow">Save current effect</span></button>
           <div class="menu-sep"></div>
           <button class="menu-item" id="mi-ddp"><span class="ic">📡</span><span class="grow">Pi LED control</span><span class="state" id="mi-ddp-state"></span></button>
@@ -651,6 +656,15 @@
         <button id="pl-stop" class="ghost">stop</button>
         <button id="pl-start" class="primary">▶ start</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ===== WZRD input sheet (contents built by lib/wzrd.js, shared with desktop) ===== -->
+  <div id="sheet-wzrd" class="sheet-back">
+    <div class="sheet">
+      <div class="grip"></div>
+      <h3>WZRD input</h3>
+      <div class="sheet-scroll" id="wzrd-panel"></div>
     </div>
   </div>
 

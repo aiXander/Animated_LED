@@ -193,6 +193,8 @@
       gap: 0.6rem; align-items: center; font-size: 0.78rem; color: var(--dim);
     }
     .masters-stack .row input[type="range"] { width: 100%; }
+    .masters-stack .row.swell-info { font-size: 0.68rem; margin-top: -0.25rem;
+                                     font-variant-numeric: tabular-nums; }
     .masters-stack .row .value { color: var(--text); text-align: right; font-size: 0.74rem;
                                  font-variant-numeric: tabular-nums; }
 
@@ -609,6 +611,8 @@
         <button id="btn-save-effect" title="Save the current effect to the library">💾 save</button>
         <button id="btn-library">📚 library</button>
         <button id="btn-playlist" title="Manage and start the playlist">▶ playlist</button>
+        <button id="btn-wzrd" style="display:none"
+                title="WZRD input: the LEDs take colours, level and masters from the projection"><span class="wz-dot" id="wzrd-dot"></span>WZRD</button>
         <a id="btn-audio" href="#" target="_blank" rel="noopener" class="ghost"
            style="display:inline-block; padding:0.3rem 0.7rem;">🎙 audio</a>
       </div>
@@ -677,6 +681,11 @@
           <div class="row"><span>saturation</span>
             <input id="m-sat" type="range" min="0" max="1" step="0.01">
             <span class="value" id="v-sat">1.00</span></div>
+          <div class="row" title="LED brightness follows loudness. 0 = off; 1 = dark when the room is quiet.">
+            <span>audio swell</span>
+            <input id="m-swl" type="range" min="0" max="1" step="0.01">
+            <span class="value" id="v-swl">0.00</span></div>
+          <div class="row swell-info"><span></span><span id="swell-info">level — · gain 1.00</span><span></span></div>
           <div class="row"><span>crossfade</span>
             <input id="m-cf" type="range" min="0" max="10" step="0.05">
             <span class="value" id="v-cf">1.00</span></div>
@@ -787,6 +796,17 @@
         <button id="pl-close" class="ghost">close</button>
         <button id="pl-stop" class="ghost">stop</button>
         <button id="pl-start" class="primary">▶ start playlist</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- WZRD input modal (contents built by lib/wzrd.js, shared with /m) -->
+  <div id="wzrd-modal" class="modal-back" role="dialog" aria-labelledby="wzrd-modal-title">
+    <div class="modal">
+      <h3 id="wzrd-modal-title">WZRD input</h3>
+      <div id="wzrd-panel"></div>
+      <div class="actions">
+        <button id="wzrd-close" class="ghost">close</button>
       </div>
     </div>
   </div>
