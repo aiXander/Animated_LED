@@ -1,22 +1,23 @@
 # Reaching the Pi from phones — current state and routes forward
 
-Two intertwined problems that came up while planning the on-site setup:
+Two problems that come back at every venue:
 
-1. Guests' phones (especially Android Chrome) couldn't reach the operator UI on the phone-hotspot network.
-2. We're switching from the phone hotspot to a fixed on-site WiFi network and want the Pi to land on the same IP every reboot.
+1. Guests' phones (especially Android Chrome) can't always reach the operator UI on the phone-hotspot network.
+2. On a venue's own WiFi the Pi should land on the same IP every reboot, and that WiFi may block device-to-device traffic.
 
-This doc captures what's already in place and the candidate fixes.
+This doc captures what's in place and the candidate fixes. It is venue-neutral: the network
+names, LAN addresses and passwords of a particular site go in the gitignored `cmds.txt`, never
+here (this repo is public).
 
 ---
 
 ## 0. WORKING SOLUTION (2026-07-03): Tailscale Funnel — public URLs, no client install
 
-**The blocker we actually hit:** the on-site WiFi (`TADAAM_DR7MGHR`) has **client (AP) isolation
-on** — ICMP ping passes between devices but *all TCP is blocked at the router*, so the Pi's LAN
-IP is useless for reaching ledctl/WLED from another device on the same WiFi (e.g. the bar
-Chromebook). This also silently kills SSH-over-LAN. Ping works, nothing else does = client
-isolation. Can't be fixed from the Pi; only the router admin could disable it, which we don't
-have access to.
+**The blocker it solves:** a venue WiFi with **client (AP) isolation on** (hit at the summer
+2026 install) — ICMP ping passes between devices but *all TCP is blocked at the router*, so the
+Pi's LAN IP is useless for reaching ledctl/WLED from another device on the same WiFi (e.g. a
+locked-down venue laptop). This also silently kills SSH-over-LAN. Ping works, nothing else does
+= client isolation. Can't be fixed from the Pi; only the router's admin can disable it.
 
 **The fix that sidesteps it entirely: Tailscale Funnel.** Funnel exposes a local port at a
 *public* HTTPS URL served from Tailscale's edge. Client devices reach it as **WAN traffic**
@@ -24,7 +25,7 @@ have access to.
 installed on the client** (works on a locked-down Chromebook). The public hostname is stable, so
 it's also immune to the Pi's LAN IP wandering.
 
-Currently live (all three routes funnelled; set once, persists across reboot):
+Set up on the Pi (all three routes funnelled; set once, persists across reboots until switched off):
 
 | Service | Public URL |
 | --- | --- |
@@ -48,9 +49,10 @@ tailscale funnel status                                     # what's public vs t
   revert to tailnet-only if that's not acceptable on-site.
 - Funnel depends on the venue's internet uplink. If it drops, the URLs die but the LED render
   loop keeps running locally (the LLM effect-authoring also needs internet regardless).
-- The Pi knows both `Xander's Pixel` (hotspot) and `TADAAM_DR7MGHR`, both auto-connect. It
-  prefers whichever is present; when the hotspot leaves it falls back to tadaam and Funnel keeps
-  working over tadaam's uplink.
+- The Pi auto-connects to every WiFi it has stored and prefers the one with the highest
+  autoconnect priority that is in range, so Funnel keeps working over whichever stored network
+  has an uplink (e.g. it falls back from the phone hotspot to the venue WiFi when the phone
+  leaves).
 
 This supersedes the QR-code / fixed-IP plans below **for any network with client isolation**.
 The QR + fixed-IP route (§2–3) is still the better answer for *guest phones* on a network where
@@ -75,7 +77,7 @@ So *server-side* access is solved. The friction is **discoverability + typing** 
 
 Two likely culprits when guests typed `http://<pi-ip>:8000`:
 
-- **Pixel hotspot client isolation.** Pixel hotspots sandbox clients from each other under some security settings, so guest phone ↔ Pi traffic gets dropped at the AP. CLAUDE.md already documents the workaround (WPA2-Personal + 2.4 GHz / Extend compatibility ON). Will not be an issue on a real WiFi router.
+- **Pixel hotspot client isolation.** Pixel hotspots sandbox clients from each other under some security settings, so guest phone ↔ Pi traffic gets dropped at the AP. Workaround: WPA2-Personal + 2.4 GHz / Extend compatibility ON. Will not be an issue on a real WiFi router.
 - **`xanderpi.local` mDNS.** iOS Safari and Firefox resolve it; Android Chrome usually does not. If they typed the hostname rather than the IP, that's the failure mode.
 
 ---
@@ -91,11 +93,11 @@ Two complementary surfaces (small, ~80 line diff):
 
 Tiny dep: `segno` (pure-Python, renders SVG and ANSI without Pillow). Slightly lighter than `qrcode`.
 
-**Status: not implemented yet** — decision pending after the network swap.
+**Status: not implemented.**
 
 ---
 
-## 3. Fixed IP on the new on-site WiFi
+## 3. Fixed IP on a venue WiFi
 
 Two clean ways to make the Pi land on the same IP every boot.
 
@@ -162,14 +164,14 @@ Then `sudo systemctl restart dhcpcd`.
 ## 4. Suggested rollout order
 
 1. **First**: switch to the venue WiFi and pin a fixed IP via Option A (router reservation) or B (Pi-side static) — pick based on whether you have router admin access.
-2. **Then**: ship the `/share` QR page + `ledctl share` CLI helper. Once the IP is fixed, the QR encodes a URL that stays valid for the whole festival.
+2. **Then**: ship the `/share` QR page + `ledctl share` CLI helper. Once the IP is fixed, the QR encodes a URL that stays valid for the whole event.
 3. **Optional**: also keep Tailscale around as the remote-admin path, exactly as it works today.
 
 ---
 
 ## 5. Things considered and rejected
 
-- **Static IP on the Pixel hotspot** — Pixel hotspots don't expose DHCP reservations. Moot once we leave the hotspot.
+- **Static IP on the Pixel hotspot** — Pixel hotspots don't expose DHCP reservations.
 - **Captive-portal / DNS rewriting on the Pi** — way too much plumbing for "type one URL."
 - **Hardening mDNS for Android** — broken on Android Chrome by design; can't fix from our side.
 - **Shorter password / 4-digit PIN** — `CHANGE_ME` is already short; typing pain is dominated by the IP + port, not the password. QR sidesteps both.
@@ -178,35 +180,39 @@ Then `sudo systemctl restart dhcpcd`.
 
 ## 6. Remote resilience (unattended, headless)
 
-The Pi ships to a venue where nobody can touch it. Two failure modes to survive
-without a human: (a) it never gets onto TADAAM at boot, and (b) it silently loses
+For a Pi that ships to a venue where nobody can touch it. Two failure modes to survive
+without a human: (a) it never gets onto the venue WiFi at boot, and (b) it silently loses
 the internet mid-show (so the operator UI over Funnel and the LLM effect-authoring
 both die and there's no way in to fix it).
 
-### a) Always reconnect to TADAAM at boot + retry — NetworkManager
+**Not for an attended gig on a phone hotspot or any uplink that may drop:** stop the watchdog
+there (`sudo systemctl disable --now net-watchdog`), or it reboots the Pi every 10 minutes
+without internet.
 
-`TADAAM_DR7MGHR` autoconnects with a higher priority (100) than the phone hotspot
-(10), so it wins whenever it's present, and retries **forever** instead of giving
-up after NM's default 4 tries:
+### a) Always reconnect to the venue WiFi at boot + retry — NetworkManager
+
+Give the venue's connection a higher autoconnect priority than the phone hotspot, so it wins
+whenever it's present, and make it retry **forever** instead of giving up after NM's default
+4 tries (`nmcli con show` lists the connection names):
 
 ```bash
-sudo nmcli con mod TADAAM_DR7MGHR \
+sudo nmcli con mod "<venue-connection>" \
   connection.autoconnect yes \
   connection.autoconnect-priority 100 \
   connection.autoconnect-retries 0        # 0 = infinite; -1 = NM default (4)
 ```
 
-`ipv4` is already pinned manual to `192.168.0.200/24` so the URL/IP never wanders.
+Pin a static IP on the same profile (§3 Option B) so the URL/IP never wanders.
 
 ### b) Reboot after 10 min offline — `net-watchdog` service
 
 `deploy/net-watchdog.sh` + `deploy/net-watchdog.service`: a root systemd service
-that probes public internet (anycast resolvers, not the LAN gateway — TADAAM has
-client isolation) every 30 s. While offline it re-nudges NM onto TADAAM; if the
-internet stays down for **10 min straight** it `systemctl reboot`s the Pi, which
-re-runs the whole bring-up. The countdown uses monotonic uptime, so an NTP step
-when the network returns can't skew it; a fresh boot resets the counter, so there's
-no reboot loop while genuinely offline beyond the one 10-min cycle.
+that probes public internet (anycast resolvers, not the LAN gateway — a venue WiFi may have
+client isolation) every 30 s. While offline it re-nudges NM onto WiFi (the connection named by
+`WIFI_CONN`, else any known network); if the internet stays down for **10 min straight** it
+`systemctl reboot`s the Pi, which re-runs the whole bring-up. The countdown uses monotonic
+uptime, so an NTP step when the network returns can't skew it; a fresh boot resets the counter,
+so there's no reboot loop while genuinely offline beyond the one 10-min cycle.
 
 Install:
 
@@ -221,5 +227,15 @@ journalctl -u net-watchdog -f            # watch the countdown / restore logs
 
 Tunables live in the unit as `Environment=` overrides — `CHECK_INTERVAL`,
 `FAIL_LIMIT` (default 600 s), `GRACE` (ignore the first 120 s after boot),
-`WIFI_CONN`. Bench work with no uplink: `sudo systemctl stop net-watchdog` so it
-doesn't reboot the Pi out from under you.
+`WIFI_CONN` (the venue's NM connection name; unset = any known network; set it in the copy
+installed on the Pi, not in the repo). Bench work with no uplink: `sudo systemctl stop
+net-watchdog` so it doesn't reboot the Pi out from under you.
+
+### Left on the Pi from the summer 2026 install
+
+Two leftovers, harmless away from that venue, to clear the next time someone is on the Pi:
+
+- A stored WiFi profile for that venue (autoconnect priority 100, a pinned static IP). Find it
+  with `nmcli con show`; remove it with `sudo nmcli con delete "<name>"`.
+- The watchdog script installed at `/usr/local/bin/net-watchdog.sh` still defaults to that
+  venue's network. Re-copy `deploy/net-watchdog.sh` before enabling the watchdog again.

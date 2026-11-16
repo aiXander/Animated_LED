@@ -1,0 +1,77 @@
+name: fluid_particles
+summary: Soft colour blobs drifting around the rig in both directions; bass inflates
+  them and every beat kicks them.
+source: user
+created_at: 1779849600.0
+updated_at: 1794847816.548617
+params:
+- key: count
+  label: Particles
+  control: int_slider
+  min: 2
+  max: 24
+  step: 1
+  default: 12
+- key: palette
+  label: Palette
+  help: Particle colours are spread over this palette.
+  control: palette
+  default: rainbow
+- key: speed
+  label: Speed
+  help: How fast the particles travel around the rig.
+  control: slider
+  min: 0.0
+  max: 4.0
+  step: 0.1
+  default: 1.0
+- key: damping
+  label: Damping
+  help: How quickly a beat's kick dies away into the steady drift.
+  control: slider
+  min: 0.0
+  max: 3.0
+  step: 0.05
+  default: 0.6
+- key: particle_size
+  label: Particle size
+  help: Radius of each blob (1.0 = half a row).
+  control: slider
+  min: 0.01
+  max: 0.4
+  step: 0.005
+  default: 0.12
+- key: audio_size_boost
+  label: Bass size boost
+  help: How much the bass inflates the particles.
+  control: slider
+  min: 0.0
+  max: 3.0
+  step: 0.1
+  default: 0.8
+- key: kick_impulse
+  label: Kick impulse
+  help: Random shove given to every particle on each beat.
+  control: slider
+  min: 0.0
+  max: 4.0
+  step: 0.1
+  default: 1.2
+- key: intensity
+  label: Intensity
+  help: Blob brightness; above 1 the cores go white.
+  control: slider
+  min: 0.0
+  max: 2.0
+  step: 0.05
+  default: 1.0
+param_values:
+  count: 12
+  palette: rainbow
+  speed: 1.6
+  damping: 1.55
+  particle_size: 0.14
+  audio_size_boost: 1.4
+  kick_impulse: 1.2
+  intensity: 1.0
+starred: false

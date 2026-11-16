@@ -101,13 +101,20 @@ moves what `quiet` and `loud` mean here.
 - A listener handler stores one packet by a single reference assignment and does no maths. Keep
   it that way: the render thread reads those tuples without a lock.
 - `status.gain` is the gain actually applied, so it reads 1.0 while `listen` is off;
-  `status.level` is the raw wall level, the number `level_full` should be set from.
+  `status.level` is the raw wall level, the green marker on the panel's "wall range" slider.
+- **Wall level to LED brightness is operator-set, never automatic** (Xander's call: nothing
+  may shift under him mid-show): `led_floor` at `wall_dark` or below, full at `wall_bright`,
+  a straight line between. Files saved under the old names (`follow_level` = 1 - `led_floor`,
+  `level_full` = `wall_bright`) are converted on load; without that, `load` falls back to
+  every default, `listen` off included. Pinned by
+  `tests/test_wzrd.py::test_settings_saved_under_the_old_level_names_still_load`.
 - The recolour cost is unmeasured on a Pi 4 (about 0.1 ms per leg on an M2).
 
 ## Developing on one Mac
 
 Never run the dev config while WZRD or its audio server may be up (see the UDP 9000 trap), and
-never edit the audio repo's `configs/main.yaml`: a running server rewrites it from memory. Run
+edit the audio repo's `configs/main.yaml` only while no audio server runs: a running server
+rewrites it from memory. Run
 ledctl from a scratch copy that listens for audio on 9001 and spawns nothing. It must sit in
 `config/` (effects and the playlist load from the folder next to it) and is gitignored:
 
@@ -124,8 +131,12 @@ uv run ledctl run --config config/config.wzrd-check.yaml
 Colours come from `scripts/fake_wzrd.py` (port 9100, clashes with nothing), or from the real
 WZRD with its LED link target set to `127.0.0.1:9100`. Audio comes from a throwaway `python-osc`
 sender to `127.0.0.1:9001` (`/audio/lmh`, `/audio/bpm`, `/audio/level` 187 times a second in
-that order, an `/audio/onset/low` now and then), or from the real audio server started from a
-copy of its config with that destination.
+that order, an `/audio/onset/low` now and then), or from the audio server WZRD's app starts.
+That server always reads `configs/main.yaml`, so with WZRD closed add `127.0.0.1:9001` to its
+`osc.destinations` next to `127.0.0.1:9000`, and take it out the same way afterwards. This is the
+gig's arrangement with `127.0.0.1:9001` standing in for `<pi>:9000`. WZRD sends the LED link at
+60 packets/s only while its output window shows; hidden, it sends 30. Its audio page needs
+`?ws_port=` when the server's `ws.port` is not 8765.
 
 ## Flash timing
 

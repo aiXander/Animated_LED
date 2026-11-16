@@ -64,8 +64,11 @@ thing to do on-site is read the `perf` block (see Runbook).
   operator can select, remove or reorder layers while it runs; a vanished target means the new
   layer is added. Pinned by
   `tests/test_runtime.py::test_async_install_replaces_the_layer_it_was_aimed_at`.
-- **The init budget is CPU time of the compiling thread** (`time.thread_time`): wall time on a
-  worker also counts waits for the interpreter lock and rejects legal effects at random.
+- **Both effect budgets are CPU time of the calling thread** (`time.thread_time`): the init
+  budget and the per-frame render watchdog. Wall time also counts waits for the interpreter
+  lock (the OSC listeners take it hundreds of times a second) and OS preemption, which
+  rejected legal effects and switched cheap live layers off at random. Pinned by
+  `tests/test_runtime.py::test_render_budget_counts_the_layers_own_cpu_not_lock_waits`.
 - **Effect files are written through `write_atomic`** (`surface/persistence.py`): the library
   listing, playlist loads and the value saver read them from other threads.
 - **A socket error must not end a loop that has no supervisor.** `DDPTransport.send_now` skips
@@ -74,15 +77,31 @@ thing to do on-site is read the `perf` block (see Runbook).
   logs and keeps listening.
 - **Light pushes leave out `live` and `preview`.** A client that replaces its state instead of
   merging loses the decks. Pinned by `tests/test_api.py::test_state_stream_sends_layers_only_when_needed`.
-- **Slider values reach disk up to 0.5 s late.** Anything that rewrites an `effect.yaml` calls
-  `value_saver.flush()` first.
+- **Slider values reach disk up to 10 s late** (one batched write per effect, so tuning does
+  not hammer the Pi's SD card). Anything that rewrites an `effect.yaml` calls
+  `value_saver.flush()` first, and whatever loads one (the two effect-load routes, each
+  playlist step) calls `flush_async()` first, or an effect swapped out and back in comes back
+  with its old values. Pinned for the routes by
+  `tests/test_api.py::test_knob_tuning_survives_a_reload_and_a_restart`.
 - **In-place numpy code must never write into an array it did not allocate.** Indexing a
   palette table with a scalar returns a view of the shared table. Pinned for `palette_lerp` by
   `tests/test_helpers.py::test_palette_lerp_on_a_named_palette_table`.
 - **Slow numpy shapes on 1800 × 3 data:** broadcasting against the trailing axis of 3, and
   reductions over it, run 1800 loops of 3; work on a channel-major `(3, N)` block. `np.mod` and
   `np.power` on floats are several times slower than arithmetic (hence the floor-based wrap in
-  `hsv_to_rgb` and the gamma lookup table).
+  `hsv_to_rgb` and the gamma lookup table). Measured on an M2 at N=1800: `hsv_to_rgb` ~70 µs
+  against ~20 µs for a colour table read with `np.take`; `np.einsum('pn,pc->nc')` over 10
+  particles ~100 µs against ~14 µs for `np.matmul(falloff.T, colours)`. `np.take(..., out=)`
+  only writes straight into `out` with `mode="wrap"` or `"clip"`; the default mode buffers.
+- **The effect clock starts at 0 and never runs backwards** (`ctx.dt >= 0`, `ctx.t` near 0 on
+  the first tick). A negative dt turns every `exp(-dt / tau)` envelope into NaN for good.
+  Pinned by `tests/test_engine.py::test_effect_clock_starts_at_zero_and_never_runs_backwards`.
+- **`ctx.t` in float32 array maths goes coarse as it grows; nothing errors.** `positions -
+  ctx.t * speed` loses its fraction bits: at t ≈ 800,000 s a 60 fps ring effect updated 13
+  times a second, and a few days of uptime are enough to see it. An effect that must stay smooth
+  for days keeps its own phase, `phase = (phase + ctx.dt * speed) % 1.0`, with one wrapped
+  clock per wave term (a single clock scaled by 0.7 jumps each time it wraps). The library
+  effects in `surface/examples/` do this.
 - **A tight-loop benchmark understates the live cost.** The real loop sleeps between frames,
   the CPU clocks down, and the same effect measured 2–3× slower in the running server.
 - **`late_ms` on macOS is not evidence**: bare event-loop timers there fire 1–2 ms late and

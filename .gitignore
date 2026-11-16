@@ -13,8 +13,10 @@ build/
 # Secrets — `.env.example` is the template that's checked in.
 .env
 
-# Effects on disk are runtime state, seeded from src/ledctl/surface/examples/.
-config/effects/
+# config/effects/ IS tracked: one effect library, shared by every device through
+# git. Only write-then-rename leftovers and local backups stay out.
+config/**/*.tmp
+config/effects_originals_*/
 
 # Frames file moved temporarily during the v2 surface refactor.
 /tmp/frames_v1.py

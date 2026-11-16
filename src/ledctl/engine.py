@@ -362,7 +362,10 @@ class Engine:
         t0 = time.perf_counter()
         fps_window_start = t0
         fps_window_frames = 0
-        last_wall = t0
+        # On the same clock as `wall_t` (seconds since t0), not the absolute
+        # perf_counter: `last_wall = t0` made the first dt minus the host's
+        # uptime, and started `effective_t` (ctx.t) there as well.
+        last_wall = 0.0
         last_render = t0 - 1.0 / float(max(1, int(self.target_fps)))
         # The frame clock: each frame is due one period after the previous
         # frame was DUE, not after it finished, so render + send time does not

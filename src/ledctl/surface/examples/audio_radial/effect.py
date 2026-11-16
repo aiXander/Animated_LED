@@ -1,26 +1,43 @@
 class AudioRadial(Effect):
-    """Palette-mapped concentric rings expanding from the rig centre. Speed
-    locked to ctx.t; brightness modulated by audio.bands[<param>]."""
+    """Palette rings travelling out from the rig centre. One audio band drives
+    the brightness (optionally pushing the light outward from the centre) and
+    every beat shoves the rings along."""
 
     def init(self, ctx):
-        self.r = ctx.frames.radius
-        self.lut = named_palette("ocean")
-        self._scratch = np.empty(ctx.n, dtype=np.float32)
+        self.d = ctx.frames.axial_dist            # 0 at the centre, 1 at the ends
+        self._pal = None
+        self.phase = 0.0
+        self.env = 0.0
+        self._f = np.empty(ctx.n, dtype=np.float32)
+        self._idx = np.empty(ctx.n, dtype=np.int32)
 
     def render(self, ctx):
         p = ctx.params
-        speed = float(p.ring_speed)
+        if p.palette != self._pal:
+            lut = named_palette(p.palette)
+            # Palette there-and-back, so the wrap point has no seam.
+            self.lut = np.concatenate([lut, lut[::-1]])
+            self._pal = p.palette
+        dt = float(ctx.dt)
+        self.env = max(self.env * float(np.exp(-dt / 0.3)), float(ctx.audio.beat))
+        speed = float(p.ring_speed) * (1.0 + float(p.beat_surge) * self.env)
+        self.phase = (self.phase + dt * speed) % 1.0
+
+        # Ring coordinate -> LUT index; mode="wrap" does the modulo.
+        size = self.lut.shape[0]
+        np.multiply(self.d, float(p.ring_count) * size, out=self._f)
+        self._f += (1.0 - self.phase) * size
+        np.copyto(self._idx, self._f, casting="unsafe")
+        np.take(self.lut, self._idx, axis=0, out=self.out, mode="wrap")
+
+        # Brightness: the band level, reaching outward from the centre by `spread`.
+        level = float(ctx.audio.bands[p.audio_band])
+        spread = float(p.audio_spread)
+        np.multiply(self.d, -spread, out=self._f)
+        self._f += level * (1.0 + spread)
+        clip01(self._f, out=self._f)
         floor = float(p.brightness_floor)
-        # Pick palette per param. (Recompute LUT only on change to keep the
-        # hot path allocation-free.)
-        if getattr(self, "_palette_name", None) != p.palette:
-            self.lut = named_palette(p.palette)
-            self._palette_name = p.palette
-        # ring-position = (radius - t * speed) wrapped to [0, 1)
-        np.subtract(self.r, ctx.t * speed, out=self._scratch)
-        np.mod(self._scratch, 1.0, out=self._scratch)
-        idx = (self._scratch * (LUT_SIZE - 1)).astype(np.int32)
-        np.take(self.lut, idx, axis=0, out=self.out)
-        amp = floor + (1.0 - floor) * float(ctx.audio.bands[p.audio_band])
-        self.out *= amp
+        self._f *= 1.0 - floor
+        self._f += floor
+        self.out *= self._f[:, None]
         return self.out

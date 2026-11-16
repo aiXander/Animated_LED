@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import yamlio
-from .surface.persistence import EffectStore
+from .surface.persistence import DeferredValueSaver, EffectStore
 from .surface.runtime import Runtime
 
 log = logging.getLogger(__name__)
@@ -56,6 +56,7 @@ class Playlist:
     _task: asyncio.Task | None = None
     _runtime: Runtime | None = None
     _store: EffectStore | None = None
+    _value_saver: DeferredValueSaver | None = None
 
     @classmethod
     def load(cls, path: Path) -> Playlist:
@@ -82,9 +83,13 @@ class Playlist:
             self.current_index = 0
         self.save()
 
-    def attach(self, runtime: Runtime, store: EffectStore) -> None:
+    def attach(
+        self, runtime: Runtime, store: EffectStore,
+        value_saver: DeferredValueSaver | None = None,
+    ) -> None:
         self._runtime = runtime
         self._store = store
+        self._value_saver = value_saver
 
     # ---- runtime control ---- #
 
@@ -161,6 +166,10 @@ class Playlist:
         store = self._store
         if runtime is None or store is None:
             return
+        if self._value_saver is not None:
+            # Knob tuning from the last few seconds may not be on disk yet,
+            # and a short step comes back round before the batched write.
+            await self._value_saver.flush_async()
         try:
             stored = await asyncio.to_thread(store.load, name)
         except FileNotFoundError:

@@ -59,6 +59,7 @@ def _attach_agent_state(
         request_timeout_seconds=cfg.request_timeout_seconds,
         debug_logging=cfg.debug_logging,
         reasoning_effort=cfg.reasoning_effort,
+        fallback_models=cfg.fallback_models,
     )
 
 
@@ -72,6 +73,7 @@ def build_router(app: FastAPI) -> APIRouter:
             "provider": cfg.provider,
             "base_url": cfg.base_url,
             "model": cfg.model,
+            "fallback_models": cfg.fallback_models,
             "reasoning_effort": cfg.reasoning_effort,
             "history_max_turns": cfg.history_max_turns,
             "default_crossfade_seconds": cfg.default_crossfade_seconds,

@@ -198,3 +198,63 @@ async def test_async_install_replaces_the_layer_it_was_aimed_at():
     await aimed_at_c
     # Its target is gone: the layer is added, no neighbour is overwritten.
     assert [L.name for L in rt.preview.layers] == ["b", "new_a", "late"]
+
+
+
+# Cheap but chatty: ~15 small numpy calls a frame, like a real effect. Each call
+# is a point where another thread can take the interpreter lock.
+_CHATTY = """\
+class Chatty(Effect):
+    def render(self, ctx):
+        for _ in range(15):
+            np.multiply(self.out, 0.5, out=self.out)
+        return self.out
+"""
+
+_HEAVY = """\
+class Heavy(Effect):
+    def render(self, ctx):
+        for _ in range(600):
+            np.sin(self.out, out=self.out)
+        return self.out
+"""
+
+
+def _render_frames(rt, n):
+    for i in range(n):
+        rt.render(wall_t=i / 60, dt=1 / 60, t_eff=i / 60, audio=_audio_zero())
+
+
+def test_render_budget_counts_the_layers_own_cpu_not_lock_waits():
+    """The watchdog once timed render() on the wall clock, so a cheap effect was
+    billed for every wait on the interpreter lock (the OSC listeners take it
+    hundreds of times a second) and went dark at random."""
+    import sys
+    import threading
+
+    rt = Runtime(_topo(), MasterControls())
+    rt.install_layer("live", name="chatty", summary="", source=_CHATTY, param_schema=[])
+    stop = threading.Event()
+
+    def busy():
+        while not stop.is_set():
+            sum(range(2000))
+
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(0.001)  # as cli.py sets it
+    threads = [threading.Thread(target=busy, daemon=True) for _ in range(2)]
+    for t in threads:
+        t.start()
+    try:
+        _render_frames(rt, 40)  # the watchdog trips after 30 frames over budget
+    finally:
+        stop.set()
+        for t in threads:
+            t.join()
+        sys.setswitchinterval(old_interval)
+    assert rt.live.layers[0].enabled, rt.live.layers[0].perf.p95_ms
+
+    # A layer that really spends its budget is still switched off.
+    rt.install_layer("live", name="heavy", summary="", source=_HEAVY, param_schema=[])
+    _render_frames(rt, 40)
+    assert not rt.live.layers[0].enabled

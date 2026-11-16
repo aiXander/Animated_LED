@@ -5,7 +5,6 @@ composition + persistence routes."""
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
@@ -76,20 +75,30 @@ def test_pull_live_to_preview(client: TestClient):
     assert state["preview"]["layers"][0]["name"] == "pulse_mono"
 
 
-def test_param_patch_updates_selected_preview_layer(client: TestClient, tmp_path):
-    r = client.patch("/preview/params", json={"values": {"color": "#abcdef"}})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["values"]["color"] == "#abcdef"
-    # The tweak is written off the event loop a moment later; it must still
-    # reach the library file, or a restart loses the operator's tuning.
+def test_knob_tuning_survives_a_reload_and_a_restart(tmp_path):
+    """Knob values reach the library file in batches (seconds later, and on
+    shutdown), so the file lags the running layer. Tuning must still survive
+    swapping the effect out and back in, and a restart."""
     saved = tmp_path / "pulse_mono" / "effect.yaml"
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline:
-        if yaml.safe_load(saved.read_text())["param_values"]["color"] == "#abcdef":
-            break
-        time.sleep(0.05)
+    with TestClient(create_app(load_config(DEV), effects_dir=tmp_path)) as c:
+        r = c.patch("/preview/params", json={"values": {"color": "#abcdef"}})
+        assert r.status_code == 200
+        assert r.json()["values"]["color"] == "#abcdef"
+        assert c.post("/effects/twin_comets_with_sparkles/load_preview", json={}).status_code == 200
+        r = c.post("/effects/pulse_mono/load_preview", json={})
+        layer = r.json()["snapshot"]["preview"]["layers"][0]
+        assert layer["param_values"]["color"] == "#abcdef"
     assert yaml.safe_load(saved.read_text())["param_values"]["color"] == "#abcdef"
+
+
+def test_promote_without_tuning_leaves_the_library_files_alone(tmp_path):
+    """The library is tracked in git: promoting saves the live layers' values,
+    and that must not rewrite a file whose values did not change."""
+    saved = tmp_path / "pulse_mono" / "effect.yaml"
+    with TestClient(create_app(load_config(DEV), effects_dir=tmp_path)) as c:
+        before = saved.read_bytes()
+        assert c.post("/promote", json={}).status_code == 200
+    assert saved.read_bytes() == before
 
 
 def test_state_stream_sends_layers_only_when_needed(client: TestClient):

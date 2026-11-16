@@ -331,11 +331,19 @@ class AgentConfig(BaseModel):
         description="OpenAI-compatible chat-completions endpoint",
     )
     model: str = Field(
-        "anthropic/claude-sonnet-4-6",
-        description="OpenRouter model id (e.g. 'anthropic/claude-sonnet-4-6')",
+        "openai/gpt-6-luna",
+        description="OpenRouter model id (e.g. 'openai/gpt-6-luna')",
+    )
+    fallback_models: list[str] = Field(
+        default_factory=lambda: ["z-ai/glm-5.3-flash"],
+        description=(
+            "Tried in order when `model` errors, is down or rate-limited "
+            "(OpenRouter's native `models` routing; same reasoning effort). "
+            "Empty list = no fallback."
+        ),
     )
     reasoning_effort: Literal["none", "low", "medium", "high"] | None = Field(
-        None,
+        "medium",
         description=(
             "OpenRouter unified reasoning effort for thinking models "
             "(sent as `reasoning: {effort: ...}`). 'none' disables thinking "

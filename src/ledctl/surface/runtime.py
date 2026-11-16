@@ -702,7 +702,10 @@ class Runtime:
             if not layer.enabled or layer.opacity <= 0.0:
                 continue
             ctx = self._frame_ctx(layer, wall_t, dt, t_eff, audio)
-            t0 = time.perf_counter()
+            # CPU time of this thread, not wall time: wall time also counts
+            # waits for the interpreter lock (OSC listeners, request threads)
+            # and OS preemption, which tripped cheap effects at random.
+            t0 = time.thread_time()
             try:
                 rgb = layer.instance.render(ctx)
             except Exception:
@@ -710,7 +713,7 @@ class Runtime:
                 layer.consecutive_failures += 1
                 self._maybe_disable_failing_layer(layer)
                 continue
-            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            elapsed_ms = (time.thread_time() - t0) * 1000.0
             layer.perf.add(elapsed_ms, self.PER_LAYER_BUDGET_MS)
             if layer.perf.tripped and layer.perf.over_budget != 0:
                 _log.warning(

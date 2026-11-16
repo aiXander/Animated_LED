@@ -38,6 +38,7 @@ class AgentClient:
         request_timeout_seconds: float = 60.0,
         debug_logging: bool = False,
         reasoning_effort: str | None = None,
+        fallback_models: list[str] | None = None,
     ):
         self.base_url = base_url
         self.api_key_env = api_key_env
@@ -45,6 +46,7 @@ class AgentClient:
         self.timeout = float(request_timeout_seconds)
         self.debug_logging = bool(debug_logging)
         self.reasoning_effort = reasoning_effort
+        self.fallback_models = list(fallback_models or [])
         self._client: OpenAI | None = None
 
     def _get_client(self) -> OpenAI:
@@ -90,6 +92,11 @@ class AgentClient:
             extra_body["reasoning"] = {"enabled": False}
         elif self.reasoning_effort:
             extra_body["reasoning"] = {"effort": self.reasoning_effort}
+        fallbacks = [m for m in self.fallback_models if m != effective_model]
+        if fallbacks:
+            # OpenRouter tries these in order if the primary errors, is down
+            # or rate-limited; `resp.model` names whichever one answered.
+            extra_body["models"] = [effective_model, *fallbacks]
         try:
             resp = client.chat.completions.create(
                 model=effective_model,
@@ -120,6 +127,11 @@ class AgentClient:
                 finish_reason="error",
                 model=resp.model or effective_model,
                 usage=_extract_usage(resp),
+            )
+        if fallbacks and resp.model and not resp.model.startswith(effective_model):
+            log.warning(
+                "agent.fallback_used: requested=%s answered_by=%s",
+                effective_model, resp.model,
             )
         choice = resp.choices[0]
         msg = choice.message

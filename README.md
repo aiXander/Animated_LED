@@ -22,34 +22,6 @@ ssh xander@xanderpi
 --------
 --------
 
-Local TADAAM url:
-http://192.168.0.200:8000/?password=CHANGE_ME
-http://192.168.0.200:8766/?password=CHANGE_ME
-
-  ┌───────────────────┬──────────────────────────────┐
-  │      Service      │ Address from another device  │
-  ├───────────────────┼──────────────────────────────┤
-  │ ledctl            │ 192.168.0.200:8000           │
-  ├───────────────────┼──────────────────────────────┤
-  │ audio-server      │ 192.168.0.200:8765 and :8766 │
-  ├───────────────────┼──────────────────────────────┤
-  │ SSH               │ ssh xander@192.168.0.200     │
-  └───────────────────┴──────────────────────────────┘
-
-
-
-
-
-
-TODO:
-- [x] give the Pi a static ip on TADAAM — pinned to 192.168.0.200/24 on the
-      TADAAM_DR7MGHR NetworkManager profile (ipv4.method manual).
-- [x] remote-resilience: always reconnect to TADAAM at boot + reboot after 10 min
-      offline — NM autoconnect (priority 100, infinite retries) + the
-      `net-watchdog` service. See "Remote resilience" in reach_the_pi.md.
-
-
-
 -------------------------
 -------------------------
 
@@ -321,7 +293,7 @@ Behaviour when `auth.password` is set:
 
 - HTML navigation without a cookie → 200 + login page (Tailwind-free, ~2 KB inline).
 - JSON / fetch without a cookie → 401 with `WWW-Authenticate: Cookie`.
-- `?password=…` query on any request → cookie set, request continues. Lets you bookmark `http://ledctl.local:8000/?password=CHANGE_ME` once on the bar phone.
+- `?password=…` query on any request → cookie set, request continues. Lets you bookmark `http://ledctl.local:8000/?password=CHANGE_ME` once on the operator's phone.
 - `POST /login` with `application/x-www-form-urlencoded` `password=…` → 303 redirect to `/` + cookie. (Form body is parsed manually; no `python-multipart` dep.)
 - `POST /logout` → 303 redirect to `/login` + cookie cleared.
 - WebSocket upgrades (`/ws/frames`, `/ws/state`) check the same cookie and reject with close code **4401** before accepting the upgrade.
@@ -562,7 +534,9 @@ agent:
   enabled: true
   provider: openrouter
   base_url: https://openrouter.ai/api/v1
-  model: anthropic/claude-sonnet-4-6     # any OpenRouter model id
+  model: openai/gpt-6-luna     # any OpenRouter model id
+  fallback_models: [z-ai/glm-5.3-flash]   # tried in order if `model` is down
+  reasoning_effort: medium
   history_max_messages: 20                # rolling buffer (excl. system prompt)
   request_timeout_seconds: 60
   rate_limit_per_minute: 30

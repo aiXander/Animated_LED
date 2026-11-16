@@ -111,8 +111,8 @@ class WzrdStage:
             self._set_table(bake_table(st.weights, st.bin_colours(), st.white))
             self._last_bake_wall_t = wall_t
             st.dirty = False
-        lit = min(1.0, max(0.0, st.level / s.level_full))
-        gain = 1.0 - s.follow_level * (1.0 - lit)
+        lit = min(1.0, max(0.0, (st.level - s.wall_dark) / (s.wall_bright - s.wall_dark)))
+        gain = s.led_floor + (1.0 - s.led_floor) * lit
         if s.couple_brightness:
             gain *= st.brightness
         self._gain = gain

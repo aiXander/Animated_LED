@@ -1,0 +1,68 @@
+name: forest_hues
+summary: Three interfering wave layers in forest greens; bass lifts the brightness
+  and each beat sends a ring out from the centre.
+source: agent
+created_at: 1779526616.022725
+updated_at: 1794847816.548617
+params:
+- key: palette
+  label: Palette
+  control: palette
+  default: forest
+- key: flow_speed
+  label: Flow speed
+  help: How fast all three wave layers move.
+  control: slider
+  min: 0.1
+  max: 10.0
+  step: 0.1
+  default: 2.0
+- key: base_intensity
+  label: Base intensity
+  help: Brightness with no bass.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.05
+  default: 0.7
+- key: contrast
+  label: Contrast
+  help: Stretches the waves over more of the palette; high values reach its darkest
+    and brightest ends.
+  control: slider
+  min: 0.5
+  max: 3.0
+  step: 0.05
+  default: 1.5
+- key: detail
+  label: Detail
+  help: Strength of the fast ripples over the slow swell. 0 = slow swell only.
+  control: slider
+  min: 0.0
+  max: 2.0
+  step: 0.05
+  default: 1.0
+- key: bass_boost
+  label: Bass boost
+  help: Extra brightness added by the bass.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.05
+  default: 0.5
+- key: beat_ripple
+  label: Beat ring
+  help: Brightness of the ring each beat sends out from the centre. 0 = off.
+  control: slider
+  min: 0.0
+  max: 1.5
+  step: 0.05
+  default: 0.6
+param_values:
+  palette: forest
+  flow_speed: 0.3
+  base_intensity: 1.0
+  contrast: 1.5
+  detail: 1.0
+  bass_boost: 0.5
+  beat_ripple: 0.6

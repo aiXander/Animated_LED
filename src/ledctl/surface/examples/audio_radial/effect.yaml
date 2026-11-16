@@ -1,37 +1,70 @@
 name: audio_radial
-summary: Palette-mapped rings emanating from centre, brightness on selected band.
+summary: Palette rings travelling out from the centre; a band drives brightness and
+  each beat shoves the rings along.
 source: bundled
 created_at: 0
 updated_at: 0
 params:
-  - key: palette
-    label: Palette
-    control: palette
-    default: ocean
-  - key: ring_speed
-    label: Ring speed
-    control: slider
-    min: 0.0
-    max: 2.0
-    step: 0.01
-    default: 0.4
-  - key: audio_band
-    label: Brightness driver
-    control: select
-    options:
-      - low
-      - mid
-      - high
-    default: low
-  - key: brightness_floor
-    label: Brightness floor
-    control: slider
-    min: 0.0
-    max: 1.0
-    step: 0.01
-    default: 0.3
+- key: palette
+  label: Palette
+  control: palette
+  default: ocean
+- key: ring_speed
+  label: Ring speed
+  help: Palette cycles per second. Negative = rings travel inward.
+  control: slider
+  min: -2.0
+  max: 2.0
+  step: 0.01
+  default: 0.4
+  unit: cycles/s
+- key: ring_count
+  label: Ring count
+  help: Palette cycles between the centre and each end.
+  control: slider
+  min: 0.25
+  max: 6.0
+  step: 0.05
+  default: 1.5
+- key: audio_band
+  label: Brightness driver
+  help: Which audio band drives the brightness.
+  control: select
+  options:
+  - low
+  - mid
+  - high
+  default: low
+- key: brightness_floor
+  label: Brightness floor
+  help: Brightness when the music is silent; the band fills the rest.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.3
+- key: audio_spread
+  label: Audio reach
+  help: 0 = the whole rig pulses together. 1 = quiet passages light only the centre
+    and loud ones push the light out to the ends.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.5
+- key: beat_surge
+  label: Beat surge
+  help: How hard each beat shoves the rings along. 0 = steady motion.
+  control: slider
+  min: 0.0
+  max: 6.0
+  step: 0.1
+  default: 2.0
 param_values:
   palette: ocean
   ring_speed: 0.4
+  ring_count: 1.5
   audio_band: low
   brightness_floor: 0.3
+  audio_spread: 0.5
+  beat_surge: 2.0

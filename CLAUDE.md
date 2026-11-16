@@ -26,6 +26,8 @@ logs / hostname to know whether you're on the Pi or the Mac before acting.
 - `docs/reference/render-performance.md` — open it when the LEDs lag or drop frames, or before
   adding anything that runs on the event loop (a request handler, the engine tick, a
   WebSocket push, an OSC handler); it holds the "LEDs lag" runbook.
+- `Mac_direct_setup.md` — open it before a gig to clear the Gledopto's Wi-Fi settings, or if
+  the Pi isn't on site and the Mac has to drive the Gledopto over WLED's own hotspot.
 - `docs/TODO/` — plans in flight.
 
 ## Commands
@@ -60,9 +62,10 @@ YAML. With no key, `/agent/chat` returns a clear 503 and the render loop is unaf
 
 **One tool, one call per turn, always the complete effect — never a diff.** The whole agent
 layer (`agent/`) is a thin OpenRouter wrapper, *not* a multi-tool loop. Model is set in YAML
-(`agent.model`, currently `deepseek/deepseek-v4-flash-0731`; `agent.reasoning_effort` maps to
+(`agent.model`, currently `openai/gpt-6-luna`, with `agent.fallback_models`
+(`z-ai/glm-5.3-flash`) sent as OpenRouter's `models` list so it answers when the primary is down; `agent.reasoning_effort` maps to
 OpenRouter's unified reasoning param — `none` sends `{enabled: false}` (thinking off, notably
-faster), `low/medium/high` send `{effort: ...}` (`low` is the current setting), `null` omits it
+faster), `low/medium/high` send `{effort: ...}` (`medium` is the current setting), `null` omits it
 entirely (provider default). Chat fetches abort client-side at `CHAT_TIMEOUT_MS` (90 s) in
 both `main-*.js` — keep it above `agent.request_timeout_seconds` × the retry budget).
 
@@ -235,8 +238,10 @@ smooth/EMA/normalise the bands yourself (already done upstream). Continuous reac
 
 Optional `help` string per param → hover tooltip. Slider drag → `PATCH /{slot}/params` →
 `ParamStore.update` (atomic on the loop, clamped) → next render's `ctx.params.<key>` sees it.
-No recompile, no LLM round-trip, no crossfade. Values also reach `effect.yaml` within 0.5 s
-(`DeferredValueSaver`, off the event loop) so tuning survives a restart.
+No recompile, no LLM round-trip, no crossfade. Values also reach `effect.yaml` in batches
+(`DeferredValueSaver`: one write per effect, 10 s after the first unsaved change, off the event
+loop; flushed on shutdown and before any effect is loaded or rewritten) so tuning survives a
+restart. A file whose values did not change is not rewritten.
 
 ## Per-layer safety nets (`runtime.py`)
 
@@ -245,8 +250,9 @@ No recompile, no LLM round-trip, no crossfade. Values also reach `effect.yaml` w
   rejects. Hints mapped by `_diagnostic_hint` (`ctx.frames.x` vs `ctx.x`, etc.).
 - **Per-frame isolation** — a `render()` that raises is logged, skipped that frame; **3
   consecutive failures** auto-disable the layer (operator can flip it back on).
-- **Render watchdog** — `PER_LAYER_BUDGET_MS = 5.0`; p95 over budget for ~30 consecutive frames
-  disables the layer ("worked then went black" ≈ over budget — vectorise harder).
+- **Render watchdog** — `PER_LAYER_BUDGET_MS = 5.0` of the render thread's CPU time; p95 over
+  budget for ~30 consecutive frames disables the layer ("worked then went black" ≈ over
+  budget — vectorise harder).
 - **`dt` clamp** — engine clamps `dt` at 2× the target frame interval so a hiccup doesn't
   teleport stateful effects.
 
@@ -311,11 +317,19 @@ modules `web/lib/{viz,state,util}.js` and hit the identical HTTP/WS API — **ke
 in behavioural sync** (debounce windows, optimistic deck updates, chat-epoch wipe, merging
 `/ws/state` messages) when changing either. `web/audio-meter.js` is an unused legacy orphan.
 
-## Persistence & examples — two distinct directories
+## Persistence & examples — three distinct directories
 
-- `src/ledctl/surface/examples/` — bundled **library seed**: `pulse_mono`, `audio_radial`,
-  `palette_wash_with_kick_sparkles`, `twin_comets_with_sparkles`. Copied into `config/effects/`
-  on first boot (`install_examples_if_missing()`). On boot the runtime loads `pulse_mono` into
+- `config/effects/` — **the library, tracked in git and shared by every device** (Mac, Pi):
+  effect code, knob schema and the saved knob values, which are the shared defaults. Everything
+  the operator or the LLM does in the UI (tuning a knob, save, rename, delete, star) ends up
+  in files here and shows up in `git status`. Those changes are the operator's tuning: commit
+  them when asked to share them, otherwise leave them alone, and never revert them to tidy
+  the tree. `tests/test_examples.py` loads and renders every effect in it.
+- `src/ledctl/surface/examples/` — bundled **seed**: `pulse_mono`, `audio_radial`,
+  `palette_wash_with_kick_sparkles`, `twin_comets_with_sparkles`. On every start, any of the
+  four missing from the library is copied in (`install_examples_if_missing()`; it never
+  overwrites), so an empty library still boots and deleting one of them does not stick. A new
+  effect goes into the library, not here. On boot the runtime loads `pulse_mono` into
   both slots; if that fails the slot stays empty (implicit black layer).
 - `src/ledctl/surface/LLM_example_effects/` — **prompt** gold-standard sources shown verbatim
   to the LLM (`fluid_strobe_nebula`, `rainbow_comet`, `twin_comets_with_sparkles`). Never copied
@@ -399,12 +413,36 @@ changing `transport.mode`; everything above the transport layer is identical.
 
 # Hardware & on-site operations
 
+**⚠️ Pending, do at the next on-site setup (the Pi wasn't available to do it on 2026-11-16):**
+the Gledopto's WLED Wi-Fi settings were changed (a phone hotspot was entered) while trying to
+drive it from the Mac. As soon as the Pi is back on the ethernet cable, clear them and verify DDP
+per the undo checklist in `Mac_direct_setup.md`, then delete this line.
+
+**⚠️ Pending, on the Pi, BEFORE its next `git pull` (not done as of 2026-11-16):** move the
+Pi onto the shared effect library. The Pi's `config/effects/` is still its old untracked,
+Pi-only library, sitting at the paths git now tracks. Xander's decision: the library from git
+replaces it. Confirm `hostname` says you are on the Pi, then:
+```bash
+cd /home/xander/audio_LED/Animated_LED
+sudo systemctl stop ledctl
+git status --short                                # tracked files changed on the Pi?
+mv config/effects ~/effects_pi_only_$(date +%F)   # set aside, not deleted
+git pull
+ls config/effects                                 # the library from git
+sudo systemctl start ledctl
+```
+If `git pull` refuses because a tracked file was changed on the Pi (likely `config/playlist.yaml`
+or `config/config.pi.yaml`), show Xander that file's `git diff` and let him choose between
+keeping it and `git restore <file>`. Afterwards the playlist needs rebuilding in the UI: entries
+that name Pi-only effects are skipped. The folder in `~` holds effects that exist nowhere else
+and is Xander's to delete. Then delete this block.
+
 Physical build detail (gear, power, soldering, WS2815 backup-data line) is in
 `Hardware_setup.md`. Phone/network access routes are in `reach_the_pi.md`. The essentials:
 
 **Topology.** Pi (`10.0.0.1`) ↔ Gledopto (`10.0.0.2`) over a 15 m ethernet cable; **DDP frames
 flow over ethernet only, never WiFi.** Keep WiFi off on the Gledopto (its "Static IP" is shared
-between ethernet and WiFi). The Pi joins the phone hotspot ("Xander's Pixel" / `xanderwifi`) for
+between ethernet and WiFi). The Pi joins the phone hotspot ("Xander's Pixel") for
 browser UIs, Tailscale, and SSH only. The Gledopto runs **WLED-MoonModules** (AudioReactive
 fork), and must be **GRB** colour order for WS2815.
 
@@ -415,22 +453,15 @@ LAN; via tailnet `****` ports 8443 / 443 / 10000 respectively. `gledopto-reboot.
 fires `curl http://10.0.0.2/reset` 8 s after ledctl starts so WLED enters realtime override
 cleanly on every boot (works around the WLED-MM realtime-intake wedge).
 
-**⚠️ TODO — remote-resilience (NOT YET DONE, do next time on-site).** The Pi's only uplink at
-some sites is a flaky router (e.g. Tadaam 4G/CGNAT). If that uplink drops or the Pi hangs while
-nobody's on-site, it falls off the tailnet and you're locked out entirely (no remote power
-control today). Two safeguards to install so a single uplink blip doesn't kill remote access:
-1. **Connectivity watchdog + self-reboot.** A `systemd` timer (every ~2 min) runs a script that
-   pings a stable host (e.g. `1.1.1.1`) and, if the box has been offline for N consecutive
-   checks (~10 min), issues `sudo reboot`. This recovers a hung Pi / wedged 4G modem unattended.
-   Belt-and-braces: also enable the hardware watchdog (`RuntimeWatchdogSec` in
-   `/etc/systemd/system.conf`) so a fully-frozen kernel still resets.
-2. **Aggressive WiFi auto-reconnect.** Ensure the Pi's WiFi rejoins on its own after an AP/uplink
-   drop — NetworkManager `connection.autoconnect=yes` + `connection.autoconnect-retries=0`
-   (infinite retries), or a small reconnect script if on `wpa_supplicant`/`dhcpcd`. Confirm the
-   site's WiFi (e.g. Tadaam SSID) is actually stored as a known network *before* leaving, and
-   verify it survives a reboot — the Pi only knows the "Xander's Pixel" hotspot by default.
-Also worth adding: a phone-controllable smart plug on the Pi (and/or router) for true remote
-power-cycle as the last-resort fix.
+**Remote resilience (unattended installs only).** `deploy/net-watchdog.{sh,service}` reboots
+the Pi after 10 minutes without internet and meanwhile re-nudges NetworkManager onto WiFi;
+install steps, the site-specific `WIFI_CONN` and the infinite-retry autoconnect settings are in
+`reach_the_pi.md` §6. **Keep it stopped at an attended gig** on a phone hotspot or any uplink
+that may drop, or it reboots the Pi mid-show. Before leaving a Pi unattended, confirm the
+site's WiFi is a stored network and survives a reboot: the Pi knows only the phone hotspot
+plus whatever was added on site. Not done, as far as the repo records: the hardware watchdog
+(`RuntimeWatchdogSec` in `/etc/systemd/system.conf`, for a fully frozen kernel) and a
+phone-controllable smart plug for a remote power-cycle.
 
 **⚠️ TODO — performance setup on the Pi (NOT YET DONE; do it the first time a session runs on
 the Pi).** The render-loop fixes ship with a `git pull`, but two system settings live outside

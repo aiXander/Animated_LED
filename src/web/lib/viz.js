@@ -324,17 +324,27 @@ export function bindViz({
 
     const wsUrl = (location.protocol === "https:" ? "wss:" : "ws:")
                 + "//" + location.host + "/ws/frames";
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = "arraybuffer";
-    ws.onopen = () => setStatus("connected", "ok");
-    ws.onclose = () => setStatus("disconnected", "bad");
-    ws.onerror = () => setStatus("error", "bad");
-    ws.onmessage = (ev) => {
-      const buf = new Uint8Array(ev.data);
-      // Pixel count drift → topology changed (e.g., layout edit). Refetch.
-      if (buf.length !== leds.length * 3) { reloadTopology(); }
-      lastFrame = buf;
+    // Reconnect on close: a ledctl restart (service restart on the Pi) must not
+    // freeze the sim until the operator reloads the page.
+    let backoffMs = 500;
+    const connect = () => {
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+      ws.onopen = () => { backoffMs = 500; setStatus("connected", "ok"); };
+      ws.onclose = () => {
+        setStatus("reconnecting", "bad");
+        setTimeout(connect, backoffMs);
+        backoffMs = Math.min(backoffMs * 2, 4000);
+      };
+      ws.onerror = () => setStatus("error", "bad");
+      ws.onmessage = (ev) => {
+        const buf = new Uint8Array(ev.data);
+        // Pixel count drift → topology changed (e.g., layout edit). Refetch.
+        if (buf.length !== leds.length * 3) { reloadTopology(); }
+        lastFrame = buf;
+      };
     };
+    connect();
     requestAnimationFrame(draw);
   }
 

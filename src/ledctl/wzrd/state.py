@@ -13,10 +13,11 @@ import logging
 import math
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 log = logging.getLogger(__name__)
 
@@ -35,10 +36,16 @@ class WzrdSettings(BaseModel):
     spread: float = Field(
         1.0, ge=0.0, le=1.0,
         description="How much of the wall's palette is laid out along the strips.")
-    follow_level: float = Field(
-        0.5, ge=0.0, le=1.0, description="How far the LEDs dim when the wall is dark.")
-    level_full: float = Field(
-        0.25, ge=0.02, le=1.0, description="The wall level that counts as fully lit.")
+    # The wall level maps to LED brightness on a straight line: `led_floor` at
+    # `wall_dark` or below, full at `wall_bright` or above. Operator-set on
+    # purpose (no auto-ranging): the LEDs never shift under the operator.
+    wall_dark: float = Field(
+        0.0, ge=0.0, le=0.99, description="Wall level at or below which the LEDs sit at led_floor.")
+    wall_bright: float = Field(
+        0.25, ge=0.01, le=1.0, description="Wall level at or above which the LEDs are at full.")
+    led_floor: float = Field(
+        0.5, ge=0.0, le=1.0,
+        description="LED brightness while the wall is dark; 1 = ignore the wall level.")
     couple_brightness: bool = Field(True, description="Multiply by WZRD's master brightness.")
     couple_saturation: bool = Field(True, description="Multiply by WZRD's master saturation.")
     colour_smoothing_s: float = Field(
@@ -47,6 +54,26 @@ class WzrdSettings(BaseModel):
         0.0, ge=0.0, le=1.0, description="0 = flash on the same frame the level jumps.")
     level_release_s: float = Field(
         0.25, ge=0.0, le=3.0, description="How fast the LEDs fall back after a flash.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _rename_old_keys(cls, data: Any) -> Any:
+        # Files saved before the rename (the Pi's among them) still say
+        # follow_level / level_full. Unknown keys fail validation, and `load`
+        # answers that with every default, `listen` off included.
+        if isinstance(data, dict) and ("follow_level" in data or "level_full" in data):
+            data = dict(data)
+            if "follow_level" in data:
+                data["led_floor"] = 1.0 - float(data.pop("follow_level"))
+            if "level_full" in data:
+                data["wall_bright"] = data.pop("level_full")
+        return data
+
+    @model_validator(mode="after")
+    def _wall_range_in_order(self) -> WzrdSettings:
+        if self.wall_bright < self.wall_dark + 0.01:
+            raise ValueError("wall_bright must be at least 0.01 above wall_dark")
+        return self
 
     @classmethod
     def load(cls, path: Path) -> WzrdSettings:

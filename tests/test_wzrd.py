@@ -94,3 +94,14 @@ def test_output_stage_recolours_and_follows_wzrd_masters():
 
     lis._on_masters("/wzrd/masters", 0.0, 1.0)               # WZRD BLACKOUT, coupled
     assert not run(rt).any()
+
+
+def test_settings_saved_under_the_old_level_names_still_load(tmp_path):
+    # The Pi's config/wzrd_input.yaml predates the rename. An unknown key used
+    # to fail validation, and `load` then fell back to defaults: listen off.
+    path = tmp_path / "wzrd_input.yaml"
+    path.write_text("listen: true\nfollow_level: 0.7\nlevel_full: 0.05\n")
+    s = WzrdSettings.load(path)
+    assert s.listen
+    assert s.led_floor == pytest.approx(0.3)
+    assert (s.wall_dark, s.wall_bright) == (0.0, 0.05)

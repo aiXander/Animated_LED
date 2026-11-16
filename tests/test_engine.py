@@ -49,3 +49,40 @@ async def test_a_stalled_browser_does_not_hold_up_led_frames(tmp_path: Path):
         wled.close()
     # 0.5 s at the configured frame rate, with slack for a loaded CI machine.
     assert led.frames_sent >= cfg.project.target_fps // 4
+
+
+_CLOCK_PROBE = """\
+class ClockProbe(Effect):
+    def init(self, ctx):
+        self.dts = []
+        self.ts = []
+    def render(self, ctx):
+        self.dts.append(ctx.dt)
+        self.ts.append(ctx.t)
+        return self.out
+"""
+
+
+async def test_effect_clock_starts_at_zero_and_never_runs_backwards(tmp_path: Path):
+    """The first tick once handed effects dt = -(host uptime) and started
+    ctx.t there too: envelopes of the form exp(-dt / tau) overflowed to NaN,
+    and float32 maths on ctx.t lost its precision for the whole run."""
+    cfg = load_config(DEV)
+    topology = Topology.from_config(cfg)
+    runtime = Runtime(topology, MasterControls())
+    runtime.install_layer("live", name="clock_probe", summary="", source=_CLOCK_PROBE,
+                          param_schema=[])
+    probe = runtime.live.layers[0].instance
+    fenced = len(probe.dts)              # frames the install-time fence test rendered
+    transport = SplitTransport(SimulatorTransport(target_fps=60), None)
+    engine = Engine(cfg, topology, transport, runtime, EffectStore(tmp_path))
+    try:
+        await engine.start()
+        await asyncio.sleep(0.2)
+    finally:
+        await engine.stop()
+        await transport.close()
+    dts, ts = probe.dts[fenced:], probe.ts[fenced:]
+    assert dts, "the engine never rendered the live layer"
+    assert min(dts) >= 0.0
+    assert 0.0 <= ts[0] < 1.0

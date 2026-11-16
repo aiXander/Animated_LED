@@ -161,8 +161,13 @@ class EffectStore:
         except Exception:
             return
         old = dict(meta.get("param_values") or {})
-        old.update(values)
-        meta["param_values"] = old
+        merged = {**old, **values}
+        if merged == old:
+            # Nothing was tuned (a promote, a knob put back): leave the file
+            # alone. The library is tracked in git, and a rewrite that only
+            # bumps `updated_at` is a change to commit and a pull to refuse.
+            return
+        meta["param_values"] = merged
         meta["updated_at"] = time.time()
         write_atomic(yml, yamlio.dump(meta))
 
@@ -235,12 +240,17 @@ class DeferredValueSaver:
     YAML read + write on the render thread per PATCH, i.e. dropped frames for
     as long as the operator kept dragging. Here a PATCH only records the
     newest values per effect; one worker-thread write follows `delay` seconds
-    after the first unsaved change.
+    after the first unsaved change, so a tuning session costs one write per
+    effect every `delay` seconds and nothing is written while idle.
+
+    Until that write the disk is behind the running layer: whatever reads or
+    rewrites an effect file flushes first. A power cut loses at most the last
+    `delay` seconds of tuning; a clean shutdown flushes.
 
     Event loop only, except `flush`, which any thread may call.
     """
 
-    def __init__(self, store: EffectStore, delay: float = 0.5):
+    def __init__(self, store: EffectStore, delay: float = 10.0):
         self.store = store
         self.delay = float(delay)
         self._pending: dict[str, dict[str, Any]] = {}
@@ -277,6 +287,14 @@ class DeferredValueSaver:
             self._timer = None
         self._release()
         self._write()
+
+    async def flush_async(self) -> None:
+        """`flush` for a request handler: the file write runs on a worker thread."""
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        self._release()
+        await asyncio.to_thread(self._write)
 
     def _release(self) -> None:
         pending, self._pending = self._pending, {}

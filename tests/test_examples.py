@@ -1,4 +1,5 @@
-"""Each bundled example: load + fence-test + render 60 frames cleanly."""
+"""Each effect that ships in git (the seed folder and the shared library):
+load + fence-test + render 60 frames cleanly."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from ledctl.api.server import DEFAULT_EFFECTS_DIR
 from ledctl.config import load_config
 from ledctl.masters import MasterControls
 from ledctl.surface import Runtime
@@ -24,18 +26,22 @@ def _topo() -> Topology:
 
 
 def _bundled_examples() -> list[tuple[str, str, list[dict], dict]]:
+    """The seed folder plus the library in `config/effects/`: both are tracked,
+    and the library is what every device pulls."""
     out = []
-    for sub in sorted(EXAMPLES_DIR.iterdir()):
-        if not sub.is_dir():
-            continue
-        py = sub / "effect.py"
-        ym = sub / "effect.yaml"
-        if not py.is_file() or not ym.is_file():
-            continue
-        meta = yaml.safe_load(ym.read_text())
-        out.append(
-            (sub.name, py.read_text(), meta.get("params") or [], meta.get("param_values") or {})
-        )
+    for root in (EXAMPLES_DIR, DEFAULT_EFFECTS_DIR):
+        for sub in sorted(root.iterdir()):
+            if not sub.is_dir():
+                continue
+            py = sub / "effect.py"
+            ym = sub / "effect.yaml"
+            if not py.is_file() or not ym.is_file():
+                continue
+            meta = yaml.safe_load(ym.read_text())
+            out.append((
+                f"{root.name}/{sub.name}", py.read_text(),
+                meta.get("params") or [], meta.get("param_values") or {},
+            ))
     return out
 
 
@@ -51,7 +57,7 @@ def test_each_example_loads_and_renders_cleanly():
         topo = _topo()
         rt = Runtime(topo, MasterControls())
         rt.install_layer(
-            "live", name=name, summary="bundled", source=src,
+            "live", name=name.split("/")[-1], summary="bundled", source=src,
             param_schema=schema, param_values=values,
         )
         rt._cf = None

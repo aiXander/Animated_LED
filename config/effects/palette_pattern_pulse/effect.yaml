@@ -1,0 +1,78 @@
+name: palette_pattern_pulse
+summary: Twisted plasma field through a slowly cycling palette; bass lifts the brightness
+  and beats fire a decaying strobe.
+source: agent
+created_at: 1779489875.9037812
+updated_at: 1794847816.548617
+params:
+- key: palette
+  label: Palette
+  control: palette
+  default: aurora
+- key: flow_speed
+  label: Flow speed
+  help: Speed of the plasma motion.
+  control: slider
+  min: 0.1
+  max: 5.0
+  step: 0.1
+  default: 1.5
+- key: twist_amount
+  label: Twist
+  help: Warps the pattern; 0 = plain waves along the rig.
+  control: slider
+  min: 0.0
+  max: 10.0
+  step: 0.5
+  default: 2.0
+- key: complexity
+  label: Complexity
+  help: Higher = more, thinner bands.
+  control: slider
+  min: 1.0
+  max: 10.0
+  step: 0.5
+  default: 2.0
+- key: palette_drift
+  label: Palette drift
+  help: How fast the colours cycle through the palette. 0 = fixed.
+  control: slider
+  min: 0.0
+  max: 0.5
+  step: 0.01
+  default: 0.05
+  unit: cycles/s
+- key: base_level
+  label: Base level
+  help: Brightness when the music is silent; bass fills the rest.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.4
+- key: strobe_intensity
+  label: Strobe
+  help: White flash on every beat. 0 = off.
+  control: slider
+  min: 0.0
+  max: 3.0
+  step: 0.1
+  default: 1.0
+- key: strobe_decay
+  label: Strobe decay
+  help: Short = hard strobe. Long = soft white swell.
+  control: slider
+  min: 0.02
+  max: 0.6
+  step: 0.01
+  default: 0.06
+  unit: s
+param_values:
+  palette: fire
+  flow_speed: 1.0
+  twist_amount: 0.0
+  complexity: 3.0
+  palette_drift: 0.05
+  base_level: 0.4
+  strobe_intensity: 0.7
+  strobe_decay: 0.06

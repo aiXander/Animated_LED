@@ -1,14 +1,20 @@
 class PulseMono(Effect):
-    """Solid colour fills the rig; brightness pulses on audio.low."""
+    """Solid colour that follows one audio band, with a beat punch on top and a
+    slow breath when the room is quiet. The safe-idle effect."""
 
     def init(self, ctx):
-        self._scratch = np.empty(ctx.n, dtype=np.float32)
+        self.env = 0.0          # beat envelope: snaps up on a kick, then decays
+        self.breath_t = 0.0
 
     def render(self, ctx):
         p = ctx.params
-        col = hex_to_rgb(p.color)
-        amp = float(p.floor) + (1.0 - float(p.floor)) * float(ctx.audio.low)
-        # Fill self.out with col, scaled by amp. Avoid per-frame allocation.
-        self.out[:] = col[None, :]
-        self.out *= amp
+        dt = float(ctx.dt)
+        self.env = max(self.env * float(np.exp(-dt / 0.25)), float(ctx.audio.beat))
+        self.breath_t = (self.breath_t + dt * 0.1) % 1.0
+        breath = float(p.breath) * (0.5 + 0.5 * float(np.sin(TAU * self.breath_t)))
+        # The band drives brightness; the breath takes over when it falls quiet.
+        drive = max(float(ctx.audio.bands[p.audio_band]), breath)
+        drive = min(1.0, drive + float(p.beat_punch) * self.env)
+        floor = float(p.floor)
+        self.out[:] = hex_to_rgb(p.color) * (floor + (1.0 - floor) * drive)
         return self.out

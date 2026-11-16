@@ -1,41 +1,63 @@
 name: palette_wash_with_kick_sparkles
-summary: Slow palette wash + bright sparkles on every kick. The canonical 'X plus Y' pattern.
+summary: Palette wash circling the rig, breathing with the bass, plus bright sparkles
+  on every kick. The canonical 'X plus Y' pattern.
 source: bundled
 created_at: 0
 updated_at: 0
 params:
-  - key: palette
-    label: Wash palette
-    control: palette
-    default: warm
-  - key: wash_speed
-    label: Wash speed (cycles/s)
-    control: slider
-    min: 0.0
-    max: 2.0
-    step: 0.01
-    default: 0.15
-  - key: sparkle_color
-    label: Sparkle colour
-    control: color
-    default: "#ffffff"
-  - key: sparkle_count
-    label: Sparkles per kick
-    control: int_slider
-    min: 0
-    max: 80
-    step: 1
-    default: 20
-  - key: sparkle_decay
-    label: Sparkle fade time (s)
-    control: slider
-    min: 0.05
-    max: 3.0
-    step: 0.01
-    default: 0.6
+- key: palette
+  label: Wash palette
+  control: palette
+  default: warm
+- key: wash_speed
+  label: Wash speed
+  help: Palette cycles per second around the rig.
+  control: slider
+  min: 0.0
+  max: 2.0
+  step: 0.01
+  default: 0.15
+  unit: cycles/s
+- key: wash_repeats
+  label: Wash repeats
+  help: How many times the palette repeats around the rig.
+  control: int_slider
+  min: 1
+  max: 6
+  step: 1
+  default: 1
+- key: bass_pump
+  label: Bass pump
+  help: How far the wash dims between bass hits. 0 = steady wash.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.3
+- key: sparkle_color
+  label: Sparkle colour
+  control: color
+  default: '#ffffff'
+- key: sparkle_count
+  label: Sparkles per kick
+  control: int_slider
+  min: 0
+  max: 80
+  step: 1
+  default: 20
+- key: sparkle_decay
+  label: Sparkle fade time
+  control: slider
+  min: 0.05
+  max: 3.0
+  step: 0.01
+  default: 0.6
+  unit: s
 param_values:
   palette: warm
   wash_speed: 0.15
-  sparkle_color: "#ffffff"
+  wash_repeats: 1
+  bass_pump: 0.3
+  sparkle_color: '#ffffff'
   sparkle_count: 20
   sparkle_decay: 0.6

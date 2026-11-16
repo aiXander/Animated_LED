@@ -28,7 +28,9 @@ config.
    the line returns the Pi to its own microphone and server.
 3. **Stop the network watchdog for the gig:** `sudo systemctl disable --now net-watchdog`.
    It reboots the Pi after 10 minutes without internet, again after every boot, and keeps
-   forcing NetworkManager onto the summer venue's WiFi. Re-enable it for unattended installs.
+   forcing NetworkManager onto the summer venue's WiFi. Re-enable it only for an unattended
+   install, after re-copying `deploy/net-watchdog.sh` (the repo version no longer names a
+   network; see `reach_the_pi.md` §6 in the repo root).
 4. **Turn WiFi power saving off on the Pi** (`iw dev wlan0 get power_save`; NetworkManager
    `wifi.powersave = 2` makes it stick). With power saving on, inbound packets are held and
    delivered in bursts, which is exactly the delay `max_gap_ms` shows.
@@ -38,7 +40,9 @@ config.
    hotspot, read from the phone. Type the same target in two places: `osc.destinations` (port
    9000) in the Mac audio server's gitignored `configs/main.yaml`, and WZRD's LED link target
    (port 9100). Edit `main.yaml` only while WZRD is closed: WZRD starts that server, and a
-   running server rewrites the file from memory, which would discard the edit.
+   running server rewrites the file from memory, which would discard the edit. The Mac test
+   left a `127.0.0.1:9001` destination there (ledctl standing in for the Pi): replace it with
+   the Pi's target rather than adding a third line.
 6. **Check, with `fake_wzrd.py` first and WZRD second:** the modal shows live with 60 packets
    a second (about 30 while WZRD's OUTPUT switch is off) and a largest gap under 30 ms; audio
    shows about 187 `lmh` packets a second; `frames_sent` keeps climbing.
@@ -47,7 +51,7 @@ config.
    `listen` on against off (the recolour cost on a Pi 4 is unknown; on the Mac it is about
    0.1 ms). On the Mac the rate dipped to 55-57 when the machine was busy, with `listen` on
    and off alike; watch whether the Pi shows the same.
-8. **Rehearsal settings:** `level_full` from the level shown while typical content plays; the
+8. **Rehearsal settings:** the "wall range" handles around the level shown while typical content plays; the
    ledctl brightness master low enough that the LEDs do not wash out the projection; for the
    audio swell, first set the level's dB range in the audio server's UI (it is tunable since
    2026-11-15 and rescales `level`), then read `level` beside the slider at soundcheck and
@@ -84,7 +88,8 @@ config.
 - A line in the LLM prompt (`surface/prompt.py`) while `listen` is on, saying that hues only
   pick wall colours.
 - Controls for `quiet` and `loud` in the UI; an audio-source switch in the UI.
-- Per-zone colours, once WZRD sends them.
+- Per-zone colours and the picture itself on the LEDs: planned in
+  [wall-light.md](wall-light.md), which also replaces `spread` with a `mapping` setting.
 
 ## Shipped
 

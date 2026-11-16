@@ -96,18 +96,22 @@ audio_server:
   # this terminal.
   enabled: true
   autostart: true
-  # Launch via `python -m server.main` from the Realtime_PyAudio_FFT
-  # checkout — the bridge rewrites a bare `python` token to sys.executable,
-  # so this always uses the same interpreter (and its installed deps) that
-  # ledctl itself is running under, regardless of PATH / venv activation.
-  command: ["python", "-m", "server.main"]
+  # The Rust server (the audio repo's `rust-engine` branch, the default).
+  # Build it first: `cargo build --release -p server` in that repo's engine/
+  # (WZRD's app runs the same build on boot). Absolute paths pass through the
+  # bridge untouched. Don't go back to a bare `python -m server.main`: that
+  # means ledctl's interpreter, whose venv lacks sounddevice (`uv run`
+  # re-syncs it to this repo's lockfile and removes hand-installed packages).
+  command: ["/Users/xandersteenbrugge/Documents/GitHub/Realtime_PyAudio_FFT/engine/target/release/audio-server"]
   # The audio-server reads + writes its own config.yaml next to its cwd.
   # Point at the source checkout so its on-disk settings (device, band
   # cutoffs, smoothing) persist there instead of polluting this repo.
   working_dir: /Users/xandersteenbrugge/Documents/GitHub/Realtime_PyAudio_FFT
   osc_listen_host: 127.0.0.1
   osc_listen_port: 9000
-  ui_url: http://127.0.0.1:8766
+  # The page looks for the server's WebSocket on 8765 unless told otherwise;
+  # this Mac's server uses 8767 (configs/main.yaml `ws.port`; 8765 is taken).
+  ui_url: http://127.0.0.1:8766/?ws_port=8767
   stale_after_s: 1.5
 wzrd_input:
   # WZRD runs on this same Mac in dev, so the listener opens no port to the
@@ -117,8 +121,9 @@ agent:
   enabled: true
   provider: openrouter
   base_url: https://openrouter.ai/api/v1
-  model: deepseek/deepseek-v4-flash-0731
-  reasoning_effort: low  # none disables thinking entirely (faster); low/medium/high scale it up
+  model: openai/gpt-6-luna
+  fallback_models: [z-ai/glm-5.3-flash]  # tried in order if the model above is down
+  reasoning_effort: medium  # none disables thinking entirely (faster); low/medium/high scale it up
   history_max_turns: 5
   request_timeout_seconds: 60.0
   rate_limit_per_minute: 10

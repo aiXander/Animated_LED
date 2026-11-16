@@ -328,7 +328,8 @@ def create_app(
         engine.attach_audio(None)
 
     state_fanout = LatestFanout()
-    # Slider tweaks reach the disk through this, off the event loop.
+    # Slider tweaks reach the disk through this: batched (one write per
+    # effect every 10 s while the operator tunes) and off the event loop.
     value_saver = DeferredValueSaver(store)
 
     @asynccontextmanager
@@ -340,7 +341,7 @@ def create_app(
         gc.collect()
         gc.freeze()
         await engine.start()
-        playlist.attach(runtime, store)
+        playlist.attach(runtime, store, value_saver)
         broadcaster = asyncio.create_task(
             _state_broadcaster(
                 state_fanout, _full_state_payload, lambda: sim.target_fps,
@@ -795,6 +796,8 @@ def create_app(
     @app.post("/effects/{name}/load_preview")
     async def load_preview(name: str, body: LoadEffectRequest | None = None) -> dict:
         body = body or LoadEffectRequest()
+        # Tuning from the last few seconds may not be on disk yet.
+        await value_saver.flush_async()
         try:
             kwargs = await asyncio.to_thread(_load_layer_from_store, store, name)
         except FileNotFoundError as e:
@@ -815,6 +818,8 @@ def create_app(
     @app.post("/effects/{name}/load_live")
     async def load_live(name: str, body: LoadEffectRequest | None = None) -> dict:
         body = body or LoadEffectRequest()
+        # Tuning from the last few seconds may not be on disk yet.
+        await value_saver.flush_async()
         try:
             kwargs = await asyncio.to_thread(_load_layer_from_store, store, name)
         except FileNotFoundError as e:
