@@ -58,7 +58,7 @@ class WzrdStage:
         self.settings = settings
         self.settings_path = settings_path
         self.state = WzrdState()
-        self.table = np.ones((TABLE_SIZE, 3), dtype=np.float32)
+        self._set_table(np.ones((TABLE_SIZE, 3), dtype=np.float32))
         self._last_bake_wall_t: float = -1.0
         self._gain: float = 1.0
         self.resize(topology)
@@ -74,6 +74,12 @@ class WzrdStage:
             new.save(self.settings_path)
         return new
 
+    def _set_table(self, table: np.ndarray) -> None:
+        self.table = table
+        # Channel-major copy (3, 256) for `recolour`, which works on (3, N)
+        # blocks so each numpy step is one long pass.
+        self._table_t = np.ascontiguousarray(table.T)
+
     # ---- the output hook ----
 
     def resize(self, topology: Any) -> None:
@@ -87,7 +93,8 @@ class WzrdStage:
         self._t = np.zeros(n, dtype=np.float32)
         self._mask = np.zeros(n, dtype=bool)
         self._idx = np.zeros(n, dtype=np.int32)
-        self._c = np.zeros((n, 3), dtype=np.float32)
+        self._c = np.zeros((3, n), dtype=np.float32)
+        self._rgb_t = np.zeros((3, n), dtype=np.float32)
 
     def _active(self) -> bool:
         return self.settings.listen and self.state.has_packet
@@ -101,7 +108,7 @@ class WzrdStage:
             return
         if st.dirty and (wall_t - self._last_bake_wall_t >= _BAKE_INTERVAL_S
                          or wall_t < self._last_bake_wall_t):
-            self.table = bake_table(st.weights, st.bin_colours(), st.white)
+            self._set_table(bake_table(st.weights, st.bin_colours(), st.white))
             self._last_bake_wall_t = wall_t
             st.dirty = False
         lit = min(1.0, max(0.0, st.level / s.level_full))
@@ -119,9 +126,17 @@ class WzrdStage:
             return
         v, mn, d, dp, h, t = self._v, self._mn, self._d, self._dp, self._h, self._t
         mask, idx, c = self._mask, self._idx, self._c
-        r, g, b = rgb[:, 0], rgb[:, 1], rgb[:, 2]
-        np.max(rgb, axis=1, out=v)
-        np.min(rgb, axis=1, out=mn)
+        # Work on a channel-major (3, N) copy: contiguous rows instead of
+        # stride-3 columns, so every step below is one long vector pass.
+        rgb_t = self._rgb_t
+        np.copyto(rgb_t, rgb.T)
+        r, g, b = rgb_t[0], rgb_t[1], rgb_t[2]
+        # Pairwise, not `np.max(rgb, axis=1)`: a reduction over an axis of 3
+        # runs 1800 tiny loops and was the slowest step here.
+        np.maximum(r, g, out=v)
+        np.maximum(v, b, out=v)
+        np.minimum(r, g, out=mn)
+        np.minimum(mn, b, out=mn)
         np.subtract(v, mn, out=d)
         np.maximum(d, 1e-6, out=dp)
         # Hue in sixths (0..6): blue-max, then green-max, then red-max on top.
@@ -144,12 +159,13 @@ class WzrdStage:
         np.floor(h, out=h)
         np.copyto(idx, h, casting="unsafe")
         idx &= TABLE_SIZE - 1                       # wraps negatives too
-        np.take(self.table, idx, axis=0, out=c)
-        c *= d[:, None]
-        c += mn[:, None]                            # target = mn + d * wall colour
-        c -= rgb
+        np.take(self._table_t, idx, axis=1, out=c, mode="clip")   # (3, N)
+        c *= d
+        c += mn                                     # target = mn + d * wall colour
+        c -= rgb_t
         c *= s.colour
-        rgb += c
+        c += rgb_t
+        np.copyto(rgb.T, c)
 
     def saturation(self) -> float:
         if self._active() and self.settings.couple_saturation:

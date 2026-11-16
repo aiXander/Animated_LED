@@ -14,12 +14,17 @@ Resolume-inspired layered model:
 
 The Runtime is framework-free — it doesn't know about FastAPI, audio bridges,
 or transports. The Engine wires it up.
+
+Threading: `render` and every composition mutation run on the event loop.
+`compile_layer` is the one piece that may run on a worker thread.
 """
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
+import itertools
 import logging
 import re
 import time
@@ -107,34 +112,45 @@ def build_runtime_namespace(name: str) -> dict[str, Any]:
 
 _PERF_WINDOW_FRAMES = 60   # 1 s of render times at 60 fps
 _BUDGET_TRIP_FRAMES = 30   # 0.5 s @ 60 fps of consecutive over-budget p95
+_STATS_EVERY = 10          # frames between refreshes of a layer's mean / p95
 
 
 class RenderStats:
-    """Rolling per-layer render timing with mean / p95 / over-budget counter."""
+    """Rolling per-layer render timing with mean / p95 / over-budget counter.
 
-    __slots__ = ("samples", "mean_ms", "p95_ms", "over_budget", "tripped")
+    `add` runs once per layer per frame, so it only stores the sample; the
+    mean, the p95 and the budget check are refreshed every `_STATS_EVERY`
+    frames (sorting 60 samples per frame cost more than a simple effect).
+    """
+
+    __slots__ = ("samples", "_i", "_since", "mean_ms", "p95_ms", "over_budget", "tripped")
 
     def __init__(self):
-        # Fixed-size ring buffer of render times in milliseconds.
+        # Ring buffer of the last render times in milliseconds.
         self.samples: list[float] = []
+        self._i: int = 0
+        self._since: int = 0
         self.mean_ms: float = 0.0
         self.p95_ms: float = 0.0
-        self.over_budget: int = 0
+        self.over_budget: int = 0   # consecutive frames with p95 over budget
         self.tripped: bool = False
 
     def add(self, ms: float, budget_ms: float) -> None:
-        self.samples.append(ms)
-        if len(self.samples) > _PERF_WINDOW_FRAMES:
-            self.samples.pop(0)
-        if not self.samples:
+        samples = self.samples
+        if len(samples) < _PERF_WINDOW_FRAMES:
+            samples.append(ms)
+        else:
+            samples[self._i] = ms
+            self._i = (self._i + 1) % _PERF_WINDOW_FRAMES
+        self._since += 1
+        if self._since < _STATS_EVERY:
             return
-        self.mean_ms = sum(self.samples) / len(self.samples)
-        # Cheap p95 — sort copy of the small window.
-        s = sorted(self.samples)
-        idx = max(0, int(0.95 * (len(s) - 1)))
-        self.p95_ms = s[idx]
+        self._since = 0
+        self.mean_ms = sum(samples) / len(samples)
+        ordered = sorted(samples)
+        self.p95_ms = ordered[max(0, int(0.95 * (len(ordered) - 1)))]
         if self.p95_ms > budget_ms:
-            self.over_budget += 1
+            self.over_budget += _STATS_EVERY
         else:
             self.over_budget = 0
         if self.over_budget >= _BUDGET_TRIP_FRAMES:
@@ -160,6 +176,13 @@ class Layer:
     enabled: bool = True
     consecutive_failures: int = 0
     perf: RenderStats = field(default_factory=RenderStats)
+    # The frame context handed to `render`, reused every frame (see
+    # `Runtime._frame_ctx`). Belongs to this Layer object: never copied.
+    ctx: EffectFrameContext | None = field(default=None, repr=False, compare=False)
+    # Identifies this layer's place in its composition. A layer that replaces
+    # another takes over its seat, so an install whose compile ran on a worker
+    # thread still lands where it was aimed after a select, remove or reorder.
+    seat: int = field(default_factory=itertools.count(1).__next__, repr=False, compare=False)
 
 
 @dataclass
@@ -227,6 +250,11 @@ class Runtime:
         self._preview_buf = np.zeros((self.n, 3), dtype=np.float32)
         self._cf_buf = np.zeros((self.n, 3), dtype=np.float32)
         self._layer_scratch = np.zeros((self.n, 3), dtype=np.float32)
+        self._grey = np.zeros(self.n, dtype=np.float32)
+        # Read-only masters snapshot handed to effects; rebuilt only when the
+        # operator changes a master (see `_masters_view`).
+        self._mv: MastersView | None = None
+        self._mv_key: tuple | None = None
         # Adaptive-brightness peak envelope.
         self._recent_peak: float = 0.0
         self._last_peak_wall_t: float = -1.0
@@ -276,7 +304,10 @@ class Runtime:
         # Init budget — common cause of overrun is an O(N²) precompute the LLM
         # didn't realise was quadratic; we'd rather catch it here than have the
         # operator see a hitch on promote.
-        t0 = time.perf_counter()
+        # CPU time of this thread, not wall time: on a worker thread wall time
+        # also counts the waits for the render loop to hand over the
+        # interpreter lock, which would reject a slow-but-legal init at random.
+        t0 = time.thread_time()
         try:
             instance.init(init_ctx)
         except Exception as e:
@@ -286,7 +317,7 @@ class Runtime:
                 f"{hint}\n"
                 f"---\n{_format_llm_traceback(source)}"
             ) from e
-        init_ms = (time.perf_counter() - t0) * 1000.0
+        init_ms = (time.thread_time() - t0) * 1000.0
         if init_ms > self.INIT_BUDGET_MS:
             raise EffectCompileError(
                 f"init() took {init_ms:.0f} ms (budget: {self.INIT_BUDGET_MS:.0f} ms). "
@@ -307,6 +338,80 @@ class Runtime:
             self._fence_test(layer)
         return layer
 
+    def compile_layer(
+        self,
+        *,
+        name: str,
+        summary: str,
+        source: str,
+        param_schema: list[dict],
+        param_values: dict[str, object] | None = None,
+        blend: str = "normal",
+        opacity: float = 1.0,
+    ) -> Layer:
+        """Compile + init + fence-test a layer WITHOUT placing it.
+
+        Touches no composition, so it is safe to run on a worker thread while
+        the render loop keeps ticking (`install_layer_async` does that). The
+        compile, `init()` and the 30-frame fence test add up to tens of
+        milliseconds on the Pi: on the event loop that is several dropped
+        frames per effect load. Raises EffectCompileError.
+        """
+        return self._compile_layer(
+            name=name, summary=summary, source=source,
+            param_schema=param_schema, param_values=param_values,
+            blend=blend, opacity=opacity,
+            run_fence=True,
+        )
+
+    def place_layer(
+        self,
+        slot: str,
+        layer: Layer,
+        *,
+        index: int | None = None,
+        replace: bool = True,
+    ) -> Layer:
+        """Put a compiled layer into a slot's composition. Event loop only.
+
+        If `replace=True` and `index` is None, replaces the *selected* layer
+        (default behaviour for the chat agent). If `index` is given, replaces
+        that index. If `replace=False`, inserts at `index` (or appends).
+
+        Live mutations start a crossfade from the previous live composition.
+        """
+        comp = self.composition(slot)
+        if layer.instance.out is None or layer.instance.out.shape[0] != self.n:
+            # The topology was hot-swapped while this layer compiled.
+            layer = self._compile_layer(
+                name=layer.name, summary=layer.summary, source=layer.source,
+                param_schema=layer.params.schema, param_values=layer.params.values(),
+                blend=layer.blend, opacity=layer.opacity,
+                run_fence=False,
+            )
+        if slot == "live":
+            old_comp = _clone_composition(comp)
+        if replace:
+            target = comp.selected if index is None else int(index)
+            if not comp.layers:
+                comp.layers.append(layer)
+                comp.selected = 0
+            else:
+                target = max(0, min(target, len(comp.layers) - 1))
+                layer.seat = comp.layers[target].seat
+                comp.layers[target] = layer
+                comp.selected = target
+        else:
+            if index is None:
+                insert_at = len(comp.layers)
+            else:
+                insert_at = max(0, min(int(index), len(comp.layers)))
+            comp.layers.insert(insert_at, layer)
+            comp.selected = insert_at
+        if slot == "live":
+            self._maybe_start_crossfade(old_comp)
+        return layer
+
     def install_layer(
         self,
         slot: str,
@@ -321,42 +426,46 @@ class Runtime:
         index: int | None = None,
         replace: bool = True,
     ) -> Layer:
-        """Compile and place a layer into a slot's composition.
+        """Compile and place a layer in one blocking call (boot, tests).
 
-        If `replace=True` and `index` is None, replaces the *selected* layer
-        (default behaviour for the chat agent). If `index` is given, replaces
-        that index. If `replace=False`, inserts at `index` (or appends).
-
-        Live mutations start a crossfade from the previous live composition.
+        Request handlers and the playlist use `install_layer_async`, which
+        keeps the compile off the render loop.
         """
-        comp = self.composition(slot)
-        layer = self._compile_layer(
+        self.composition(slot)   # reject an unknown slot before compiling
+        layer = self.compile_layer(
             name=name, summary=summary, source=source,
             param_schema=param_schema, param_values=param_values,
             blend=blend, opacity=opacity,
-            run_fence=True,
         )
-        if slot == "live":
-            old_comp = _clone_composition(comp)
+        return self.place_layer(slot, layer, index=index, replace=replace)
+
+    async def install_layer_async(
+        self,
+        slot: str,
+        *,
+        index: int | None = None,
+        replace: bool = True,
+        **layer_kwargs: Any,
+    ) -> Layer:
+        """`install_layer` with the compile on a worker thread.
+
+        The layer to replace is fixed now, by seat, not when the compile
+        finishes: the operator may select, remove or reorder layers meanwhile.
+        If that layer is gone by then, the new one is added on top rather than
+        overwriting a neighbour.
+        """
+        comp = self.composition(slot)
+        seat: int | None = None
+        if replace and comp.layers:
+            at = comp.selected if index is None else int(index)
+            seat = comp.layers[max(0, min(at, len(comp.layers) - 1))].seat
+        layer = await asyncio.to_thread(self.compile_layer, **layer_kwargs)
         if replace:
-            target = comp.selected if index is None else int(index)
-            if not comp.layers:
-                comp.layers.append(layer)
-                comp.selected = 0
-            else:
-                target = max(0, min(target, len(comp.layers) - 1))
-                comp.layers[target] = layer
-                comp.selected = target
-        else:
-            if index is None:
-                insert_at = len(comp.layers)
-            else:
-                insert_at = max(0, min(int(index), len(comp.layers)))
-            comp.layers.insert(insert_at, layer)
-            comp.selected = insert_at
-        if slot == "live":
-            self._maybe_start_crossfade(old_comp)
-        return layer
+            layers = self.composition(slot).layers
+            index = next((i for i, lyr in enumerate(layers) if lyr.seat == seat), None)
+            if index is None and layers:
+                replace = False
+        return self.place_layer(slot, layer, index=index, replace=replace)
 
     def remove_layer(self, slot: str, index: int) -> bool:
         comp = self.composition(slot)
@@ -462,6 +571,21 @@ class Runtime:
             rig=rig,
         )
 
+    def _masters_view(self) -> MastersView:
+        m = self.masters                      # replaced on change, never mutated
+        key = self._mv_key
+        if key is None or key[0] is not m or key[1] != self.crossfade_seconds:
+            self._mv = MastersView(
+                brightness=float(m.brightness),
+                speed=float(m.speed),
+                audio_reactivity=float(m.audio_reactivity),
+                saturation=float(m.saturation),
+                audio_swell=float(m.audio_swell),
+                crossfade_seconds=float(self.crossfade_seconds),
+            )
+            self._mv_key = (m, self.crossfade_seconds)
+        return self._mv
+
     def _build_frame_ctx(
         self,
         layer: Layer,
@@ -470,26 +594,43 @@ class Runtime:
         t_eff: float,
         audio: AudioView,
     ) -> EffectFrameContext:
-        m = self.masters
-        masters_view = MastersView(
-            brightness=float(m.brightness),
-            speed=float(m.speed),
-            audio_reactivity=float(m.audio_reactivity),
-            saturation=float(m.saturation),
-            audio_swell=float(m.audio_swell),
-            crossfade_seconds=float(self.crossfade_seconds),
-        )
         return EffectFrameContext(
             t=float(t_eff),
             wall_t=float(wall_t),
             dt=float(dt),
             audio=audio,
             params=ParamView(layer.params, strict=self.strict_params),
-            masters=masters_view,
+            masters=self._masters_view(),
             n=self.n,
             frames=FrameMap(self.topology.derived),
             pos=self.topology.normalised_positions,
         )
+
+    def _frame_ctx(
+        self,
+        layer: Layer,
+        wall_t: float,
+        dt: float,
+        t_eff: float,
+        audio: AudioView,
+    ) -> EffectFrameContext:
+        """The layer's frame context, updated for this frame.
+
+        Built once per layer and reused: only the clock, the audio snapshot
+        and the masters change between frames. Rebuilding the whole object
+        (plus its ParamView and FrameMap) per layer per frame was measurable
+        on the Pi.
+        """
+        ctx = layer.ctx
+        if ctx is None:
+            ctx = layer.ctx = self._build_frame_ctx(layer, wall_t, dt, t_eff, audio)
+            return ctx
+        ctx.t = t_eff
+        ctx.wall_t = wall_t
+        ctx.dt = dt
+        ctx.audio = audio
+        ctx.masters = self._masters_view()
+        return ctx
 
     # ---- fence test ---- #
 
@@ -555,11 +696,12 @@ class Runtime:
         out: np.ndarray,
     ) -> np.ndarray:
         """Render a composition into `out`. Walks layers bottom-up."""
-        out.fill(0.0)
+        drawn = 0
+        scratch = self._layer_scratch
         for layer in comp.layers:
             if not layer.enabled or layer.opacity <= 0.0:
                 continue
-            ctx = self._build_frame_ctx(layer, wall_t, dt, t_eff, audio)
+            ctx = self._frame_ctx(layer, wall_t, dt, t_eff, audio)
             t0 = time.perf_counter()
             try:
                 rgb = layer.instance.render(ctx)
@@ -582,13 +724,27 @@ class Runtime:
                 layer.consecutive_failures += 1
                 self._maybe_disable_failing_layer(layer)
                 continue
-            if rgb.dtype != np.float32:
-                rgb = rgb.astype(np.float32, copy=False)
-            np.copyto(self._layer_scratch, rgb)
-            np.clip(self._layer_scratch, 0.0, 1.0, out=self._layer_scratch)
-            _blend_into(out, self._layer_scratch, layer.blend, float(layer.opacity))
             layer.consecutive_failures = 0
-        np.clip(out, 0.0, 1.0, out=out)
+            opacity = float(layer.opacity)
+            if drawn == 0:
+                # Bottom layer over black: normal, add and screen all reduce to
+                # `src * opacity`, multiply to black. Clipping straight into
+                # `out` skips the scratch copy and the blend, and is the whole
+                # composition for the usual single-layer case.
+                if layer.blend == "multiply":
+                    out.fill(0.0)
+                else:
+                    np.clip(rgb, 0.0, 1.0, out=out, casting="unsafe")
+                    if opacity < 1.0:
+                        out *= opacity
+            else:
+                np.clip(rgb, 0.0, 1.0, out=scratch, casting="unsafe")
+                _blend_into(out, scratch, layer.blend, opacity)
+            drawn += 1
+        if drawn == 0:
+            out.fill(0.0)
+        elif drawn > 1:
+            np.clip(out, 0.0, 1.0, out=out)
         return out
 
     def _maybe_disable_failing_layer(self, layer: Layer) -> None:
@@ -640,8 +796,9 @@ class Runtime:
                 self._render_composition(self.live, wall_t, dt, t_eff, audio,
                                          out=self._live_buf)
                 np.multiply(self._cf_buf, 1.0 - alpha, out=self._cf_buf)
-                self._cf_buf += self._live_buf * alpha
-                np.clip(self._cf_buf, 0.0, 1.0, out=self._live_buf)
+                self._live_buf *= alpha
+                self._live_buf += self._cf_buf
+                np.clip(self._live_buf, 0.0, 1.0, out=self._live_buf)
         else:
             self._render_composition(self.live, wall_t, dt, t_eff, audio,
                                      out=self._live_buf)
@@ -706,7 +863,8 @@ class Runtime:
             sat *= float(hook.saturation())
             post_gain *= float(hook.gain())
         if sat != 1.0:
-            grey = (rgb @ _LUM)[:, None]
+            np.dot(rgb, _LUM, out=self._grey)
+            grey = self._grey[:, None]
             np.subtract(rgb, grey, out=rgb)
             rgb *= sat
             rgb += grey
@@ -768,6 +926,7 @@ class Runtime:
         self._preview_buf = np.zeros((self.n, 3), dtype=np.float32)
         self._cf_buf = np.zeros((self.n, 3), dtype=np.float32)
         self._layer_scratch = np.zeros((self.n, 3), dtype=np.float32)
+        self._grey = np.zeros(self.n, dtype=np.float32)
         if self.output_hook is not None:
             self.output_hook.resize(new_topology)
         for slot in ("live", "preview"):
@@ -816,21 +975,33 @@ def _clip01(v) -> float:
 
 
 def _blend_into(dst: np.ndarray, src: np.ndarray, mode: str, opacity: float) -> None:
-    """Blend `src` into `dst` in-place. Both float32 (N, 3) in [0, 1]."""
+    """Blend `src` into `dst` in-place. Both float32 (N, 3) in [0, 1].
+
+    `src` is scratch: it is overwritten, so no temporary is allocated.
+    """
     a = float(np.clip(opacity, 0.0, 1.0))
     if a == 0.0:
         return
     if mode == "normal":
         dst *= 1.0 - a
-        dst += src * a
+        src *= a
+        dst += src
     elif mode == "add":
-        dst += src * a
+        src *= a
+        dst += src
     elif mode == "screen":
+        # 1 - (1 - dst) * (1 - a * src)
+        src *= -a
+        src += 1.0
         np.subtract(1.0, dst, out=dst)
-        dst *= 1.0 - a * src
+        dst *= src
         np.subtract(1.0, dst, out=dst)
     elif mode == "multiply":
-        dst *= 1.0 - a * (1.0 - src)
+        # dst * (1 - a * (1 - src))
+        np.subtract(1.0, src, out=src)
+        src *= -a
+        src += 1.0
+        dst *= src
     else:
         raise ValueError(f"unknown blend mode: {mode!r}")
 

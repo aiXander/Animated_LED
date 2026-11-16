@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import json
 import logging
 import re
@@ -54,9 +55,12 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .. import yamlio
 from ..audio import AudioBridge
 from ..config import AppConfig, AudioServerConfig, StripConfig
 from ..engine import Engine
+from ..fanout import LatestFanout
+from ..hostinfo import host_health
 from ..masters import MasterControls
 from ..playlist import (
     DEFAULT_PLAY_SECONDS,
@@ -71,6 +75,7 @@ from ..surface import (
     Runtime,
 )
 from ..surface.palettes import NAMED_STOPS, named_palette_names
+from ..surface.persistence import DeferredValueSaver, write_atomic
 from ..topology import Topology
 from ..transports.ddp import DDPTransport
 from ..transports.simulator import SimulatorTransport
@@ -322,14 +327,25 @@ def create_app(
     else:
         engine.attach_audio(None)
 
-    state_clients: set[WebSocket] = set()
+    state_fanout = LatestFanout()
+    # Slider tweaks reach the disk through this, off the event loop.
+    value_saver = DeferredValueSaver(store)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        # Everything allocated so far (FastAPI, pydantic models, numpy, the
+        # app itself) lives for the whole run. Moving it out of the garbage
+        # collector's reach keeps full collections from walking that heap
+        # mid-show: tens of milliseconds on the Pi, i.e. a visible hitch.
+        gc.collect()
+        gc.freeze()
         await engine.start()
         playlist.attach(runtime, store)
         broadcaster = asyncio.create_task(
-            _state_broadcaster(state_clients, _full_state_payload, lambda: sim.target_fps),
+            _state_broadcaster(
+                state_fanout, _full_state_payload, lambda: sim.target_fps,
+                take_dirty=_take_state_dirty,
+            ),
             name="ledctl-state-broadcaster",
         )
         try:
@@ -339,6 +355,8 @@ def create_app(
             broadcaster.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await broadcaster
+            await state_fanout.close()
+            value_saver.flush()
             await engine.stop()
             bridge: AudioBridge | None = app.state.audio_bridge
             if bridge is not None:
@@ -363,6 +381,16 @@ def create_app(
     # rename). Mirrored into _full_state_payload so connected /ws/state
     # clients can clear their local chat log + sessionId in lockstep.
     app.state.chat_epoch = 0
+    app.state.value_saver = value_saver
+    # Set by any mutating HTTP request: the next /ws/state push then carries
+    # the full snapshot (layers included) instead of waiting for its turn.
+    app.state.state_dirty = True
+    app.add_middleware(_MarkStateDirty, app_state=app.state)
+
+    def _take_state_dirty() -> bool:
+        dirty = bool(app.state.state_dirty)
+        app.state.state_dirty = False
+        return dirty
     # Extra top-level keys for /state and /ws/state: name -> payload function.
     # Optional modules register here instead of editing the payload builder.
     app.state.state_extras = {}
@@ -525,12 +553,26 @@ def create_app(
     def _masters_payload() -> dict[str, Any]:
         return asdict(engine.masters)
 
+    _perf_cache: dict[str, Any] = {"at": 0.0, "value": {}}
+
+    def _perf_payload() -> dict[str, Any]:
+        """Frame timings + host health. Refreshed twice a second at most:
+        the numbers are windows over seconds, the stream is 24 Hz."""
+        now = time.monotonic()
+        if now - _perf_cache["at"] >= 0.5:
+            _perf_cache["value"] = {**engine.stats.snapshot(), "host": host_health()}
+            _perf_cache["at"] = now
+        return _perf_cache["value"]
+
     def _ddp_state_payload() -> dict[str, Any]:
         return transport.ddp_state()
 
-    def _full_state_payload() -> dict:
-        snap = runtime.snapshot()
-        return {
+    def _full_state_payload(include_layers: bool = True) -> dict:
+        """The operator UI's state. `include_layers=False` leaves out the two
+        compositions (`live`, `preview`: every layer's source, schema and
+        values, by far the bulk of the payload); /ws/state sends that light
+        form on most ticks and the UI merges it into what it has."""
+        payload = {
             **{name: fn() for name, fn in app.state.state_extras.items()},
             "fps": round(engine.fps, 2),
             "target_fps": engine.target_fps,
@@ -541,7 +583,7 @@ def create_app(
             "transport_mode": app.state.config.transport.mode,
             "sim_clients": sim.client_count,
             "blackout": runtime.blackout,
-            "crossfading": snap["crossfading"],
+            "crossfading": runtime._cf is not None,
             "calibration": engine.calibration_summary(),
             "gamma": engine.gamma,
             "audio": _audio_state_payload(),
@@ -550,11 +592,15 @@ def create_app(
             "sim_paused": bool(sim.paused),
             "mode": runtime.mode,
             "crossfade_seconds": runtime.crossfade_seconds,
-            "live": snap["live"],
-            "preview": snap["preview"],
             "playlist": playlist.state(),
             "chat_epoch": int(getattr(app.state, "chat_epoch", 0)),
+            "perf": _perf_payload(),
         }
+        if include_layers:
+            snap = runtime.snapshot()
+            payload["live"] = snap["live"]
+            payload["preview"] = snap["preview"]
+        return payload
 
     @app.get("/state")
     async def state() -> dict:
@@ -607,7 +653,9 @@ def create_app(
     # ---- effects library ---- #
 
     @app.get("/effects")
-    async def list_effects() -> dict:
+    def list_effects() -> dict:
+        # Plain `def`: FastAPI runs it on a worker thread, so reading every
+        # effect file does not hold up the render loop.
         names = store.list()
         out = []
         for n in names:
@@ -626,6 +674,7 @@ def create_app(
 
     @app.delete("/effects/{name}")
     async def delete_effect(name: str) -> dict:
+        value_saver.flush()
         ok = store.delete(name)
         if not ok:
             raise HTTPException(status_code=404, detail=f"no effect {name!r}")
@@ -659,6 +708,7 @@ def create_app(
                 status_code=422,
                 detail=e.errors(include_url=False, include_context=False),
             ) from e
+        value_saver.flush()
         try:
             stored = store.save(args=args, param_values=sel.params.values())
         except (OSError, ValueError) as e:
@@ -685,6 +735,7 @@ def create_app(
                 status_code=409,
                 detail=f"an effect named {body.new_name!r} already exists",
             )
+        value_saver.flush()
         try:
             stored = store.rename(name, body.new_name)
         except FileNotFoundError as e:
@@ -711,11 +762,11 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"no effect {name!r}")
         # Round-trip the yaml — `save_values` only handles param_values, so
         # do a tiny manual write here.
-        from yaml import safe_dump, safe_load
+        value_saver.flush()
         yml = (store.root / name / "effect.yaml")
-        meta = safe_load(yml.read_text()) or {}
+        meta = yamlio.load(yml.read_text()) or {}
         meta["starred"] = bool(body.starred)
-        yml.write_text(safe_dump(meta, sort_keys=False, default_flow_style=False))
+        write_atomic(yml, yamlio.dump(meta))
         return {"name": name, "starred": bool(body.starred)}
 
     def _wipe_agent_history() -> None:
@@ -745,11 +796,13 @@ def create_app(
     async def load_preview(name: str, body: LoadEffectRequest | None = None) -> dict:
         body = body or LoadEffectRequest()
         try:
-            kwargs = _load_layer_from_store(store, name)
+            kwargs = await asyncio.to_thread(_load_layer_from_store, store, name)
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         try:
-            runtime.install_layer(
+            # Compile + fence test run on a worker thread; the render loop
+            # keeps ticking meanwhile.
+            await runtime.install_layer_async(
                 "preview", **kwargs,
                 blend=body.blend, opacity=body.opacity,
                 index=body.layer_index, replace=not body.add_layer,
@@ -763,11 +816,13 @@ def create_app(
     async def load_live(name: str, body: LoadEffectRequest | None = None) -> dict:
         body = body or LoadEffectRequest()
         try:
-            kwargs = _load_layer_from_store(store, name)
+            kwargs = await asyncio.to_thread(_load_layer_from_store, store, name)
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         try:
-            runtime.install_layer(
+            # Compile + fence test run on a worker thread; the render loop
+            # keeps ticking meanwhile.
+            await runtime.install_layer_async(
                 "live", **kwargs,
                 blend=body.blend, opacity=body.opacity,
                 index=body.layer_index, replace=not body.add_layer,
@@ -801,8 +856,7 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(e)) from e
         # Persist current preview values (post-tweak) on each layer.
         for layer in runtime.live.layers:
-            with contextlib.suppress(Exception):
-                store.save_values(layer.name, layer.params.values())
+            value_saver.schedule(layer.name, layer.params.values())
         return runtime.snapshot()
 
     @app.post("/pull_live_to_preview")
@@ -825,9 +879,9 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"no layer at index {idx}")
         layer = comp.layers[idx]
         layer.params.update(body.values)
-        # Best-effort persist tweaks on disk so a restart preserves them.
-        with contextlib.suppress(Exception):
-            store.save_values(layer.name, layer.params.values())
+        # Persist the tweak so a restart keeps it: deferred and off the event
+        # loop, because this runs many times a second during a knob drag.
+        value_saver.schedule(layer.name, layer.params.values())
         return {"slot": slot, "index": idx, "values": layer.params.values()}
 
     @app.patch("/preview/params")
@@ -1175,27 +1229,66 @@ def create_app(
         if not await _ws_auth_or_close(websocket):
             return
         await websocket.accept()
-        state_clients.add(websocket)
         try:
+            # A new client starts from the full snapshot; the stream then
+            # mixes light and full pushes (see `_state_broadcaster`).
+            await websocket.send_text(
+                json.dumps(_full_state_payload(), separators=(",", ":"))
+            )
+            state_fanout.add(websocket)
             while True:
                 await websocket.receive_text()
         except WebSocketDisconnect:
             pass
         finally:
-            state_clients.discard(websocket)
+            state_fanout.discard(websocket)
 
     return app
 
 
+class _MarkStateDirty:
+    """ASGI middleware: after any mutating HTTP request, flag the state as
+    changed so the next /ws/state push is a full one."""
+
+    def __init__(self, app, app_state) -> None:
+        self.app = app
+        self.app_state = app_state
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope["method"] in ("GET", "HEAD", "OPTIONS"):
+            await self.app(scope, receive, send)
+            return
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self.app_state.state_dirty = True
+
+
+# The compositions (layer sources, schemas, values) only go out this often,
+# unless an operator action marked the state dirty.
+_FULL_STATE_EVERY_S = 0.5
+_LIGHT, _FULL = 0, 1   # fanout channels: a light push never replaces a pending full one
+
+
 async def _state_broadcaster(
-    clients: set[WebSocket],
+    fanout: LatestFanout,
     payload_fn,
     fps_fn,
+    take_dirty=lambda: False,
 ) -> None:
-    """Push `_full_state_payload()` to every /ws/state client at the rate
-    returned by `fps_fn` (the sim/UI FPS — re-read each tick so a slider drag
-    takes effect immediately)."""
+    """Push the state to every /ws/state client at the rate returned by
+    `fps_fn` (the sim/UI FPS — re-read each tick so a slider drag takes effect
+    immediately).
+
+    Most pushes are light: everything except the two compositions, which the
+    UI keeps from the last full push. A full snapshot goes out when a request
+    changed something (`take_dirty`) and at least every `_FULL_STATE_EVERY_S`
+    (playlist steps, layers the watchdog disabled, per-layer timings).
+    Serialising and shipping every layer's source 24 times a second cost the
+    Pi CPU and the tailnet link bandwidth for nothing.
+    """
     next_tick = time.perf_counter()
+    last_full = 0.0
     while True:
         period = 1.0 / max(1.0, float(fps_fn()))
         next_tick += period
@@ -1204,18 +1297,16 @@ async def _state_broadcaster(
             await asyncio.sleep(sleep)
         else:
             next_tick = time.perf_counter()
-        if not clients:
+            await asyncio.sleep(0)
+        if not fanout:
             continue
+        now = time.perf_counter()
+        full = take_dirty() or now - last_full >= _FULL_STATE_EVERY_S
         try:
-            text = json.dumps(payload_fn(), separators=(",", ":"))
+            text = json.dumps(payload_fn(include_layers=full), separators=(",", ":"))
         except Exception:
             log.exception("state broadcaster payload failed")
             continue
-        dead: list[WebSocket] = []
-        for ws in list(clients):
-            try:
-                await ws.send_text(text)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            clients.discard(ws)
+        if full:
+            last_full = now
+        fanout.publish(text, _FULL if full else _LIGHT)

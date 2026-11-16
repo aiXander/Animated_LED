@@ -5,9 +5,11 @@ composition + persistence routes."""
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from ledctl.api.server import create_app
@@ -74,11 +76,43 @@ def test_pull_live_to_preview(client: TestClient):
     assert state["preview"]["layers"][0]["name"] == "pulse_mono"
 
 
-def test_param_patch_updates_selected_preview_layer(client: TestClient):
+def test_param_patch_updates_selected_preview_layer(client: TestClient, tmp_path):
     r = client.patch("/preview/params", json={"values": {"color": "#abcdef"}})
     assert r.status_code == 200
     body = r.json()
     assert body["values"]["color"] == "#abcdef"
+    # The tweak is written off the event loop a moment later; it must still
+    # reach the library file, or a restart loses the operator's tuning.
+    saved = tmp_path / "pulse_mono" / "effect.yaml"
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if yaml.safe_load(saved.read_text())["param_values"]["color"] == "#abcdef":
+            break
+        time.sleep(0.05)
+    assert yaml.safe_load(saved.read_text())["param_values"]["color"] == "#abcdef"
+
+
+def test_state_stream_sends_layers_only_when_needed(client: TestClient):
+    """The /ws/state contract both front-ends merge against: the first push is
+    the full snapshot, routine pushes leave the compositions out, and a change
+    to a layer still reaches the client."""
+    with client.websocket_connect("/ws/state") as ws:
+        first = ws.receive_json()
+        assert "live" in first and "preview" in first
+
+        routine = [ws.receive_json() for _ in range(6)]
+        assert all("audio" in m and "fps" in m for m in routine)
+        assert any("live" not in m and "preview" not in m for m in routine)
+
+        client.patch("/preview/params", json={"values": {"color": "#abcdef"}})
+        for _ in range(40):
+            m = ws.receive_json()
+            if "preview" in m and (
+                m["preview"]["layers"][0]["param_values"]["color"] == "#abcdef"
+            ):
+                break
+        else:
+            raise AssertionError("the param change never arrived on /ws/state")
 
 
 def test_mode_toggle(client: TestClient):

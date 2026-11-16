@@ -18,8 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from . import yamlio
 from .surface.persistence import EffectStore
 from .surface.runtime import Runtime
 
@@ -63,7 +62,7 @@ class Playlist:
         p = cls(path=Path(path))
         if p.path.is_file():
             try:
-                data = yaml.safe_load(p.path.read_text()) or {}
+                data = yamlio.load(p.path.read_text()) or {}
                 raw = data.get("entries") or []
                 p.entries = [PlaylistEntry.from_dict(e) for e in raw if e.get("name")]
             except Exception:
@@ -74,7 +73,7 @@ class Playlist:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"entries": [e.to_dict() for e in self.entries]}
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(yaml.safe_dump(payload, sort_keys=False, default_flow_style=False))
+        tmp.write_text(yamlio.dump(payload))
         tmp.replace(self.path)
 
     def replace_entries(self, raw: list[dict[str, Any]]) -> None:
@@ -136,7 +135,7 @@ class Playlist:
                     self.current_index = 0
                 entry = self.entries[self.current_index]
                 try:
-                    self._load_into_live(entry.name)
+                    await self._load_into_live(entry.name)
                 except Exception:
                     log.exception("playlist: load failed for %r; skipping to next", entry.name)
                 self.started_at = time.time()
@@ -154,18 +153,21 @@ class Playlist:
         except asyncio.CancelledError:
             raise
 
-    def _load_into_live(self, name: str) -> None:
+    async def _load_into_live(self, name: str) -> None:
+        # The file read and the compile both run on a worker thread: on the
+        # event loop they held up the render loop at every playlist step,
+        # right as the crossfade started.
         runtime = self._runtime
         store = self._store
         if runtime is None or store is None:
             return
         try:
-            stored = store.load(name)
+            stored = await asyncio.to_thread(store.load, name)
         except FileNotFoundError:
             log.warning("playlist: effect %r missing from library; skipping", name)
             return
         try:
-            runtime.install_layer(
+            await runtime.install_layer_async(
                 "live",
                 name=stored.name,
                 summary=stored.summary,

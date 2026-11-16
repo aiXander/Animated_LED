@@ -315,6 +315,8 @@
     .fps-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem; }
     .fps-cell .top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.2rem; }
     .fps-cell .nm { font-size: 0.82rem; color: var(--text); }
+    .perf-line { margin-top: 0.6rem; font-size: 0.72rem; color: var(--dim); font-variant-numeric: tabular-nums; }
+    .perf-line.warn { color: var(--warn); }
     .fps-cell .value { font-size: 0.84rem; color: var(--accent); font-variant-numeric: tabular-nums; }
     #btn-blackout-big { width: 100%; padding: 0.75rem; font-size: 0.95rem; font-weight: 700; letter-spacing: 0.06em; }
     .toggle-line { display: flex; align-items: center; justify-content: space-between; gap: 0.7rem; padding: 0.2rem 0; }
@@ -583,6 +585,7 @@
                 <input id="m-simfps" type="range" min="0" max="4" step="1" value="1">
               </div>
             </div>
+            <div id="perf-line" class="perf-line"></div>
           </div>
           <div class="out-section" style="border-bottom:none;">
             <h4>Live output</h4>

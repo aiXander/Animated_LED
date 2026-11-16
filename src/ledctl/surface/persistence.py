@@ -10,19 +10,31 @@ copy themselves into `config/effects/` on first boot if not already present.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from .. import yamlio
 from .schema import WriteEffectArgs
+
+log = logging.getLogger(__name__)
 
 EXAMPLES_DIR = Path(__file__).parent / "examples"
 _NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Write-then-rename, so a reader on another thread (the library listing,
+    a playlist step, the deferred value saver) never sees a half-written file."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    tmp.replace(path)
 
 
 def _validate_name(name: str) -> str:
@@ -76,7 +88,7 @@ class EffectStore:
         if not py.is_file() or not yml.is_file():
             raise FileNotFoundError(f"no saved effect {name!r} at {d}")
         source = py.read_text()
-        meta = yaml.safe_load(yml.read_text()) or {}
+        meta = yamlio.load(yml.read_text()) or {}
         return StoredEffect(
             name=name,
             summary=str(meta.get("summary", "")),
@@ -112,7 +124,7 @@ class EffectStore:
         created_at = now
         if existed:
             try:
-                old = yaml.safe_load((d / "effect.yaml").read_text()) or {}
+                old = yamlio.load((d / "effect.yaml").read_text()) or {}
                 created_at = float(old.get("created_at", now))
             except Exception:
                 pass
@@ -125,10 +137,8 @@ class EffectStore:
             "params": param_schema,
             "param_values": defaults,
         }
-        (d / "effect.py").write_text(args.code)
-        (d / "effect.yaml").write_text(
-            yaml.safe_dump(meta, sort_keys=False, default_flow_style=False)
-        )
+        write_atomic(d / "effect.py", args.code)
+        write_atomic(d / "effect.yaml", yamlio.dump(meta))
         return StoredEffect(
             name=args.name,
             summary=args.summary,
@@ -147,14 +157,14 @@ class EffectStore:
         if not yml.is_file():
             return
         try:
-            meta = yaml.safe_load(yml.read_text()) or {}
+            meta = yamlio.load(yml.read_text()) or {}
         except Exception:
             return
         old = dict(meta.get("param_values") or {})
         old.update(values)
         meta["param_values"] = old
         meta["updated_at"] = time.time()
-        yml.write_text(yaml.safe_dump(meta, sort_keys=False, default_flow_style=False))
+        write_atomic(yml, yamlio.dump(meta))
 
     def delete(self, name: str) -> bool:
         _validate_name(name)
@@ -180,12 +190,12 @@ class EffectStore:
         src.rename(dst)
         yml = dst / "effect.yaml"
         try:
-            meta = yaml.safe_load(yml.read_text()) or {}
+            meta = yamlio.load(yml.read_text()) or {}
         except Exception:
             meta = {}
         meta["name"] = new
         meta["updated_at"] = time.time()
-        yml.write_text(yaml.safe_dump(meta, sort_keys=False, default_flow_style=False))
+        write_atomic(yml, yamlio.dump(meta))
         return self.load(new)
 
     # ---- bundled examples ---- #
@@ -216,3 +226,69 @@ class EffectStore:
             shutil.copyfile(src_yml, dest / "effect.yaml")
             installed.append(name)
         return installed
+
+
+class DeferredValueSaver:
+    """Write slider tweaks to disk off the event loop, at most every `delay` s.
+
+    A knob drag PATCHes many times a second. Saving each one inline meant a
+    YAML read + write on the render thread per PATCH, i.e. dropped frames for
+    as long as the operator kept dragging. Here a PATCH only records the
+    newest values per effect; one worker-thread write follows `delay` seconds
+    after the first unsaved change.
+
+    Event loop only, except `flush`, which any thread may call.
+    """
+
+    def __init__(self, store: EffectStore, delay: float = 0.5):
+        self.store = store
+        self.delay = float(delay)
+        self._pending: dict[str, dict[str, Any]] = {}
+        # Values whose delay has passed, waiting for a writer. One shared
+        # dict, so whichever writer runs next takes the newest values: a
+        # queued worker can never write an older snapshot after a flush.
+        self._due: dict[str, dict[str, Any]] = {}
+        self._due_lock = threading.Lock()
+        self._timer: asyncio.TimerHandle | None = None
+        self._tasks: set[asyncio.Task] = set()
+        self._write_lock = threading.Lock()
+
+    def schedule(self, name: str, values: dict[str, Any]) -> None:
+        self._pending[name] = dict(values)
+        if self._timer is None:
+            loop = asyncio.get_running_loop()
+            self._timer = loop.call_later(self.delay, self._fire)
+
+    def _fire(self) -> None:
+        self._timer = None
+        if not self._pending:
+            return
+        self._release()
+        task = asyncio.create_task(asyncio.to_thread(self._write))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def flush(self) -> None:
+        """Write everything pending now, in the calling thread. Used before an
+        operation that rewrites the same files (save, rename, delete, star)
+        and on shutdown."""
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        self._release()
+        self._write()
+
+    def _release(self) -> None:
+        pending, self._pending = self._pending, {}
+        with self._due_lock:
+            self._due.update(pending)
+
+    def _write(self) -> None:
+        with self._write_lock:
+            with self._due_lock:
+                due, self._due = self._due, {}
+            for name, values in due.items():
+                try:
+                    self.store.save_values(name, values)
+                except Exception:
+                    log.exception("could not save param values for %r", name)

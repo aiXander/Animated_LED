@@ -11,6 +11,7 @@ from __future__ import annotations
 import colorsys
 import logging
 import math
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -67,13 +68,18 @@ def _srgb(v: float) -> float:
     return 12.92 * v if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055
 
 
-def centre_colours(k: int) -> np.ndarray:
-    """(k, 3): the colour of each hue bin's centre, largest channel 1, sRGB-encoded
-    (what WZRD sends for an empty bin)."""
+@lru_cache(maxsize=8)
+def _centre_colours(k: int) -> np.ndarray:
     out = np.empty((k, 3), dtype=np.float32)
     for i in range(k):
         out[i] = [_srgb(c) for c in colorsys.hsv_to_rgb(i / k, 1.0, 1.0)]
     return out
+
+
+def centre_colours(k: int) -> np.ndarray:
+    """(k, 3): the colour of each hue bin's centre, largest channel 1, sRGB-encoded
+    (what WZRD sends for an empty bin). A fresh array each call."""
+    return _centre_colours(k).copy()
 
 
 def _alpha(dt: float, tau: float) -> float:

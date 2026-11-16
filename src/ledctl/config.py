@@ -422,14 +422,15 @@ class MastersConfig(BaseModel):
 
 
 class AudioSwellConfig(BaseModel):
-    """Audio swell: LED brightness follows loudness (`/audio/level`, a fixed
-    scale where 0 is -60 dBFS and 1 is 0 dBFS). How strongly is the
+    """Audio swell: LED brightness follows loudness (`/audio/level`, never
+    auto-gained: 0..1 over a dB range set in the audio server's UI, by default
+    -60 to 0 dBFS). How strongly is the
     `audio_swell` master; this block sets what counts as quiet and loud.
     Read the right values off the level shown beside the slider at soundcheck."""
 
     model_config = ConfigDict(extra="forbid")
-    quiet: float = Field(0.33, ge=0.0, le=1.0, description="Level at full dim (-40 dBFS).")
-    loud: float = Field(0.80, ge=0.0, le=1.0, description="Level at no dim (-12 dBFS).")
+    quiet: float = Field(0.33, ge=0.0, le=1.0, description="Level at full dim (default: -40 dBFS).")
+    loud: float = Field(0.80, ge=0.0, le=1.0, description="Level at no dim (default: -12 dBFS).")
     attack_s: float = Field(0.5, ge=0.0, le=10.0, description="Time constant, getting louder.")
     release_s: float = Field(2.0, ge=0.0, le=30.0, description="Time constant, getting quieter.")
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import numpy as np
@@ -168,3 +169,32 @@ def test_remove_and_reorder_layer():
     assert [L.name for L in rt.live.layers] == ["b", "c", "a"]
     rt.remove_layer("live", 1)
     assert [L.name for L in rt.live.layers] == ["b", "a"]
+
+
+async def test_async_install_replaces_the_layer_it_was_aimed_at():
+    """The compile runs on a worker thread; what the operator does to the deck
+    meanwhile must not redirect the install onto another layer."""
+    rt = Runtime(_topo(), MasterControls())
+    for name in ("a", "b", "c"):
+        rt.install_layer("preview", name=name, summary="", source=_PULSE,
+                         param_schema=_PARAMS_PULSE, replace=False)
+    rt.select_layer("preview", 0)
+
+    def new(name):
+        return rt.install_layer_async(
+            "preview", name=name, summary="", source=_PULSE, param_schema=_PARAMS_PULSE)
+
+    aimed_at_a = asyncio.ensure_future(new("new_a"))
+    await asyncio.sleep(0)                 # compile is now in flight
+    rt.reorder_layer("preview", 0, 2)      # a moves to the end
+    rt.select_layer("preview", 0)          # operator selects b
+    await aimed_at_a
+    assert [L.name for L in rt.preview.layers] == ["b", "c", "new_a"]
+
+    rt.select_layer("preview", 1)
+    aimed_at_c = asyncio.ensure_future(new("late"))
+    await asyncio.sleep(0)
+    rt.remove_layer("preview", 1)          # c is removed mid-compile
+    await aimed_at_c
+    # Its target is gone: the layer is added, no neighbour is overwritten.
+    assert [L.name for L in rt.preview.layers] == ["b", "new_a", "late"]

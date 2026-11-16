@@ -49,9 +49,11 @@ config.
    and off alike; watch whether the Pi shows the same.
 8. **Rehearsal settings:** `level_full` from the level shown while typical content plays; the
    ledctl brightness master low enough that the LEDs do not wash out the projection; for the
-   audio swell, read `level` beside the slider at soundcheck and set `quiet` / `loud` in the
-   `audio_swell:` block (room sound through the Mac's microphone read 0.18 to 0.64, so the
-   defaults 0.33 / 0.80 will likely need lowering); if beat flashes on the LEDs visibly lead
+   audio swell, first set the level's dB range in the audio server's UI (it is tunable since
+   2026-11-15 and rescales `level`), then read `level` beside the slider at soundcheck and
+   set `quiet` / `loud` in the `audio_swell:` block (with the server's default range, room
+   sound through the Mac's microphone read 0.18 to 0.64, so the defaults 0.33 / 0.80 will
+   likely need lowering); if beat flashes on the LEDs visibly lead
    the wall, build the event delay under "Later".
 9. **Xander turns the public Tailscale Funnel off for the gig** (`tailscale funnel status`
    shows what is public). An agent never does this.

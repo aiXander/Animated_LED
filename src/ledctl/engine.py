@@ -7,6 +7,11 @@ Per tick:
   4. Encode each via PixelBuffer (gamma + uint8) and ship via SplitTransport.
 
 Frames drop rather than spiral on lag — same as v1.
+
+A tick never awaits anything: DDP is a synchronous UDP send and the browser
+preview is handed to its own sender, so the only thing that can delay a frame
+is other code holding the event loop. `FrameStats` measures exactly that
+(`late_ms`), next to the render and output cost, and `/state` reports it.
 """
 
 from __future__ import annotations
@@ -33,6 +38,82 @@ log = logging.getLogger(__name__)
 
 
 _CAL_COLOR: tuple[float, float, float] = (1.0, 0.0, 0.0)
+
+
+class FrameStats:
+    """Timings of the last ~4 s of frames (at 60 fps), in milliseconds.
+
+      render_ms  Runtime.render: effects, blending, master output stage
+      out_ms     gamma/uint8 encode + DDP send + handing the preview to its sender
+      late_ms    how long after its deadline a frame started = time something
+                 else held the event loop. This is what a dropped frame looks like.
+    """
+
+    SIZE = 256
+    # A frame starting this late is a visible hitch; counted and logged.
+    STALL_MS = 50.0
+
+    def __init__(self) -> None:
+        self._render = np.zeros(self.SIZE, dtype=np.float32)
+        self._out = np.zeros(self.SIZE, dtype=np.float32)
+        self._late = np.zeros(self.SIZE, dtype=np.float32)
+        self._i = 0
+        self._n = 0
+        self.stalls: int = 0             # frames that started > STALL_MS late, since boot
+        self.worst_late_ms: float = 0.0  # since boot
+        self._log_at: float = 0.0
+        self._log_stalls: int = 0
+        self._log_worst: float = 0.0
+
+    def add(self, render_ms: float, out_ms: float, late_ms: float, now: float) -> None:
+        i = self._i
+        self._render[i] = render_ms
+        self._out[i] = out_ms
+        self._late[i] = late_ms
+        self._i = (i + 1) % self.SIZE
+        if self._n < self.SIZE:
+            self._n += 1
+        if late_ms > self.worst_late_ms:
+            self.worst_late_ms = late_ms
+        if late_ms > self.STALL_MS:
+            self.stalls += 1
+            self._log_stalls += 1
+            self._log_worst = max(self._log_worst, late_ms)
+        # At most one line every 10 s, so a bad night doesn't flood the journal.
+        if self._log_stalls and now - self._log_at >= 10.0:
+            log.warning(
+                "render loop held up %d time(s) in the last 10 s (worst %.0f ms): "
+                "something else ran on the event loop",
+                self._log_stalls, self._log_worst,
+            )
+            self._log_at = now
+            self._log_stalls = 0
+            self._log_worst = 0.0
+
+    def snapshot(self) -> dict[str, float | int]:
+        n = self._n
+        if n == 0:
+            return {"frames": 0}
+
+        def stat(buf: np.ndarray) -> tuple[float, float, float]:
+            w = np.sort(buf[:n])
+            return (
+                round(float(w[n // 2]), 2),
+                round(float(w[min(n - 1, int(0.95 * n))]), 2),
+                round(float(w[-1]), 2),
+            )
+
+        r50, r95, rmax = stat(self._render)
+        o50, o95, omax = stat(self._out)
+        l50, l95, lmax = stat(self._late)
+        return {
+            "frames": n,
+            "render_ms_p50": r50, "render_ms_p95": r95, "render_ms_max": rmax,
+            "out_ms_p50": o50, "out_ms_p95": o95, "out_ms_max": omax,
+            "late_ms_p50": l50, "late_ms_p95": l95, "late_ms_max": lmax,
+            "stalls": self.stalls,
+            "worst_late_ms": round(self.worst_late_ms, 1),
+        }
 
 
 @dataclass
@@ -75,11 +156,14 @@ class Engine:
         self.dropped_frames: int = 0
         self.elapsed: float = 0.0
         self.effective_t: float = 0.0
+        self.stats = FrameStats()
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self.audio_state: AudioState | None = None
-        self._audio_kick: asyncio.Event | None = None
         self._asyncio_loop: asyncio.AbstractEventLoop | None = None
+        # The future the loop is sleeping on between frames (None while a
+        # frame renders). An onset resolves it early.
+        self._wake: asyncio.Future | None = None
         # Audio swell: a follower of /audio/level, and how much of the swell
         # is applied (fades out over a second when the audio feed dies).
         self._swell_level: float | None = None
@@ -91,11 +175,30 @@ class Engine:
         self.audio_state = state
 
     def kick_audio(self) -> None:
+        """Thread-safe: ask for a frame now (an onset arrived)."""
         loop = self._asyncio_loop
-        ev = self._audio_kick
-        if loop is None or ev is None:
+        if loop is None:
             return
-        loop.call_soon_threadsafe(ev.set)
+        loop.call_soon_threadsafe(self._on_kick)
+
+    def _on_kick(self) -> None:
+        # An onset that lands while a frame is rendering is not lost: the next
+        # frame reads it from the beat counter.
+        fut = self._wake
+        if fut is not None and not fut.done():
+            fut.set_result(True)
+
+    async def _sleep(self, seconds: float) -> bool:
+        """Sleep up to `seconds`. True = an onset woke us early."""
+        loop = self._asyncio_loop
+        fut = loop.create_future()
+        self._wake = fut
+        handle = loop.call_later(seconds, _resolve_timer, fut)
+        try:
+            return await fut
+        finally:
+            handle.cancel()
+            self._wake = None
 
     # ---- runtime fps ---- #
 
@@ -239,7 +342,6 @@ class Engine:
             return
         self._stop.clear()
         self._asyncio_loop = asyncio.get_running_loop()
-        self._audio_kick = asyncio.Event()
         self._last_beats = (
             int(self.audio_state.beat_count) if self.audio_state is not None else 0
         )
@@ -266,48 +368,41 @@ class Engine:
         # frame was DUE, not after it finished, so render + send time does not
         # stretch the interval (it used to: 53 fps at a 60 fps target).
         deadline = t0
-        kick = self._audio_kick
+        runtime = self.runtime
+        transport = self.transport
+        stats = self.stats
 
         try:
             while not self._stop.is_set():
                 period = 1.0 / float(max(1, int(self.target_fps)))
                 kick_min_interval = period * 0.5
                 kicked = False
+                slept = False
                 while True:
-                    now = time.perf_counter()
-                    remaining = deadline - now
+                    remaining = deadline - time.perf_counter()
                     if remaining <= 0:
                         break
-                    if kick is None:
-                        try:
-                            await asyncio.wait_for(self._stop.wait(), timeout=remaining)
-                            return
-                        except TimeoutError:
-                            break
-                    wait_kick = asyncio.create_task(kick.wait())
-                    wait_stop = asyncio.create_task(self._stop.wait())
-                    done, pending = await asyncio.wait(
-                        {wait_kick, wait_stop},
-                        timeout=remaining,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for t in pending:
-                        t.cancel()
-                    if wait_stop in done:
-                        return
-                    if wait_kick in done:
-                        kick.clear()
-                        if time.perf_counter() - last_render >= kick_min_interval:
-                            kicked = True
-                            break
-                        continue
-                    break
+                    slept = True
+                    if (
+                        await self._sleep(remaining)
+                        and time.perf_counter() - last_render >= kick_min_interval
+                    ):
+                        kicked = True
+                        break
+                if not slept:
+                    # Behind schedule: still give HTTP and WebSocket tasks a turn.
+                    await asyncio.sleep(0)
 
                 now = time.perf_counter()
+                late = 0.0 if kicked else max(0.0, now - deadline)
                 # An onset rendered early re-phases the clock from here; a frame
                 # that is more than a period late does too, instead of bursting
-                # to catch up.
-                due = now if kicked or now - deadline > period else deadline
+                # to catch up (the slots it skipped count as dropped).
+                if kicked or late <= period:
+                    due = now if kicked else deadline
+                else:
+                    due = now
+                    self.dropped_frames += int(late / period)
                 deadline = due + period
                 wall_t = now - t0
                 dt_wall = wall_t - last_wall
@@ -332,37 +427,40 @@ class Engine:
                 self.effective_t += dt_scaled
 
                 audio_view = self._build_audio_view()
-                self.runtime.swell_gain = self._update_swell(dt_wall)
+                runtime.swell_gain = self._update_swell(dt_wall)
 
                 # The sim transport throttles to its own `target_fps` (UI
                 # rate, default 24 Hz) independently of the engine tick. When
                 # the UI frame isn't due — or no browser is connected, or sim
                 # is paused — we skip the preview render AND the sim encode
                 # so the Pi spends every cycle on the LIVE composition + DDP.
-                sim_active = self.transport.sim.should_send_now()
-                live_rgb, sim_rgb = self.runtime.render(
+                sim_active = transport.sim.should_send_now()
+                live_rgb, sim_rgb = runtime.render(
                     wall_t=wall_t,
                     dt=dt_scaled,
                     t_eff=self.effective_t,
                     audio=audio_view,
                     render_preview=sim_active,
                 )
+                t_rendered = time.perf_counter()
 
-                # Encode + send.
-                np.copyto(self.live_pb.rgb, live_rgb)
-                live_bytes = self.live_pb.to_uint8(self.gamma)
+                # Encode + send. Nothing here waits on a network peer.
+                live_bytes = self.live_pb.encode(live_rgb, self.gamma)
                 if not sim_active:
                     sim_bytes = None
                 elif sim_rgb is live_rgb:
                     sim_bytes = live_bytes
                 else:
-                    np.copyto(self.sim_pb.rgb, sim_rgb)
-                    sim_bytes = self.sim_pb.to_uint8(self.gamma)
-                await self.transport.send(led_frame=live_bytes, sim_frame=sim_bytes)
+                    sim_bytes = self.sim_pb.encode(sim_rgb, self.gamma)
+                transport.send_now(led_frame=live_bytes, sim_frame=sim_bytes)
 
                 last_render = time.perf_counter()
-                if kick is not None:
-                    kick.clear()
+                stats.add(
+                    (t_rendered - now) * 1000.0,
+                    (last_render - t_rendered) * 1000.0,
+                    late * 1000.0,
+                    last_render,
+                )
 
                 self.frame_count += 1
                 fps_window_frames += 1
@@ -377,4 +475,9 @@ class Engine:
             raise
 
 
-__all__ = ["CalibrationState", "Engine"]
+def _resolve_timer(fut: asyncio.Future) -> None:
+    if not fut.done():
+        fut.set_result(False)
+
+
+__all__ = ["CalibrationState", "Engine", "FrameStats"]

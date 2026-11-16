@@ -79,3 +79,24 @@ def test_small_frame_single_packet_has_push(udp_listener):
     packets = _recv_all(udp_listener)
     assert len(packets) == 1
     assert packets[0][0] & DDP_FLAG_PUSH
+
+
+def test_a_dead_link_skips_the_frame_instead_of_raising(udp_listener, monkeypatch):
+    """`sendto` raises when the route to the controller is gone (cable out).
+    The engine tick calls `send_now` unguarded, so a raise would end the
+    render loop and the LEDs would stay dark after the link came back."""
+    t = DDPTransport("127.0.0.1", udp_listener.getsockname()[1])
+
+    class _Unreachable:
+        def sendto(self, *_):
+            raise OSError(101, "Network is unreachable")
+
+    good = t._sock
+    monkeypatch.setattr(t, "_sock", _Unreachable())
+    t.send_now(np.zeros((1800, 3), dtype=np.uint8))
+    assert (t.frames_sent, t.send_errors) == (0, 1)
+
+    monkeypatch.setattr(t, "_sock", good)
+    t.send_now(np.zeros((1800, 3), dtype=np.uint8))
+    assert t.frames_sent == 1
+    good.close()

@@ -12,7 +12,7 @@
 // Desktop (index.html + main-desktop.js) is untouched.
 
 import { bindViz } from "./viz.js";
-import { $, setText } from "./util.js";
+import { $, perfSummary, setText } from "./util.js";
 import { applyWzrd, mountWzrdPanel } from "./wzrd.js";
 
 // ---------------- state ----------------
@@ -61,7 +61,10 @@ function connectStateStream() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws/state`);
   ws.addEventListener("message", (e) => {
-    try { state = JSON.parse(e.data); applyState(); } catch (_) {}
+    // Most pushes are "light": everything except the `live` / `preview`
+    // compositions, which the server resends only when they change (and at
+    // least twice a second). Merge, so a light push keeps the last ones.
+    try { state = Object.assign(state || {}, JSON.parse(e.data)); applyState(); } catch (_) {}
   });
   ws.addEventListener("close", () => { setDot("bad"); setTimeout(connectStateStream, 500); });
   ws.addEventListener("open", () => setDot("ok"));
@@ -1080,6 +1083,11 @@ function applyState() {
   if (typeof state.sim_fps === "number" && document.activeElement !== $("m-simfps")) {
     const idx = nearestIdx(SIM_FPS_VALUES, state.sim_fps); $("m-simfps").value = String(idx); setText($("v-simfps"), String(SIM_FPS_VALUES[idx]));
   }
+
+  const perf = perfSummary(state.perf);
+  const perfLine = $("perf-line");
+  setText(perfLine, perf.detail);
+  perfLine.classList.toggle("warn", perf.warn);
 
   // blackout button
   const bo = $("btn-blackout-big");

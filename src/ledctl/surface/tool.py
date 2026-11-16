@@ -99,17 +99,17 @@ def write_effect_tool_schema() -> dict[str, Any]:
     }
 
 
-def apply_write_effect(
-    raw_args: dict[str, Any],
-    *,
-    runtime: Runtime,
-    store: EffectStore,
-) -> dict[str, Any]:
-    """Validate + compile + persist + swap into the selected PREVIEW layer."""
+def _prepare_write_effect(
+    raw_args: dict[str, Any], runtime: Runtime,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Validate the tool arguments and gather what the compile needs.
+
+    Returns `(layer_kwargs, None)` or `(None, error_result)`.
+    """
     try:
         args = WriteEffectArgs.model_validate(raw_args)
     except ValidationError as e:
-        return {
+        return None, {
             "ok": False,
             "error": "tool_argument_validation_failed",
             "details": e.errors(include_url=False, include_context=False),
@@ -132,32 +132,61 @@ def apply_write_effect(
                 carry[key] = prev_values[key]
         blend_to_use = sel.blend
         opacity_to_use = float(sel.opacity)
+    return {
+        "name": args.name,
+        "summary": args.summary,
+        "source": args.code,
+        "param_schema": param_schema,
+        "param_values": carry,
+        "blend": blend_to_use,
+        "opacity": opacity_to_use,
+    }, None
 
-    try:
-        runtime.install_layer(
-            "preview",
-            name=args.name,
-            summary=args.summary,
-            source=args.code,
-            param_schema=param_schema,
-            param_values=carry,
-            blend=blend_to_use,
-            opacity=opacity_to_use,
-        )
-    except EffectCompileError as e:
-        return {
-            "ok": False,
-            "error": "compile_failed",
-            "details": str(e),
-        }
 
+def _write_effect_ok(layer_kwargs: dict[str, Any]) -> dict[str, Any]:
     # Note: LLM-authored effects are intentionally NOT persisted here.
     # The library is a curated set; the operator must explicitly click 💾 save
     # (POST /preview/save) to add an effect to it.
-    _ = store  # kept for signature compatibility / future use
     return {
         "ok": True,
         "applied": "preview",
-        "name": args.name,
-        "params": param_schema,
+        "name": layer_kwargs["name"],
+        "params": layer_kwargs["param_schema"],
     }
+
+
+def apply_write_effect(
+    raw_args: dict[str, Any],
+    *,
+    runtime: Runtime,
+    store: EffectStore,
+) -> dict[str, Any]:
+    """Validate + compile + swap into the selected PREVIEW layer (blocking)."""
+    _ = store  # kept for signature compatibility / future use
+    layer_kwargs, error = _prepare_write_effect(raw_args, runtime)
+    if error is not None:
+        return error
+    try:
+        runtime.install_layer("preview", **layer_kwargs)
+    except EffectCompileError as e:
+        return {"ok": False, "error": "compile_failed", "details": str(e)}
+    return _write_effect_ok(layer_kwargs)
+
+
+async def apply_write_effect_async(
+    raw_args: dict[str, Any],
+    *,
+    runtime: Runtime,
+    store: EffectStore,
+) -> dict[str, Any]:
+    """`apply_write_effect` with the compile + fence test on a worker thread,
+    so a chat turn does not hold up the render loop."""
+    _ = store
+    layer_kwargs, error = _prepare_write_effect(raw_args, runtime)
+    if error is not None:
+        return error
+    try:
+        await runtime.install_layer_async("preview", **layer_kwargs)
+    except EffectCompileError as e:
+        return {"ok": False, "error": "compile_failed", "details": str(e)}
+    return _write_effect_ok(layer_kwargs)

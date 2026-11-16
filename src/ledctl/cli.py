@@ -1,10 +1,16 @@
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
-from .api.server import create_app
-from .config import load_config
+# Before numpy loads: keep its BLAS on one thread. Every array here is tiny
+# (1800 LEDs); a BLAS thread pool only adds wake-ups and jitter on the Pi.
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
+from .api.server import create_app  # noqa: E402
+from .config import load_config  # noqa: E402
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -16,6 +22,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--host", default=None, help="Override server.host")
     run.add_argument("--port", default=None, type=int, help="Override server.port")
     run.add_argument("--log-level", default="info")
+    run.add_argument(
+        "--access-log",
+        action="store_true",
+        help="Log every HTTP request (off by default: a knob drag is ~20 requests/s, "
+             "each a formatted line through journald on the render thread)",
+    )
     run.add_argument(
         "--open",
         action="store_true",
@@ -72,9 +84,17 @@ def main(argv: list[str] | None = None) -> int:
             ui_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
             url = f"http://{ui_host}:{port}/"
             threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+        # Worker threads (OSC listeners, effect compiles, disk writes) share the
+        # interpreter lock with the render loop. The default hand-over interval
+        # is 5 ms, a third of a frame at 60 fps; 1 ms keeps a busy worker from
+        # holding a frame back that long.
+        sys.setswitchinterval(0.001)
         # Imported lazily so `show-config` doesn't pay the uvicorn import cost.
         import uvicorn
-        uvicorn.run(app, host=host, port=port, log_level=args.log_level)
+        uvicorn.run(
+            app, host=host, port=port, log_level=args.log_level,
+            access_log=args.access_log,
+        )
         return 0
 
     parser.error(f"unknown command: {args.command}")

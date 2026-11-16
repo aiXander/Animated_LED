@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import time
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ..fanout import LatestFanout
 from .base import Transport
 
 if TYPE_CHECKING:
@@ -21,6 +20,10 @@ class SimulatorTransport(Transport):
     to `target_fps` so the UI viz can run at e.g. 24 Hz while the LEDs run at
     60 Hz. The Pi-side savings are real: each browser frame on a tailnet means
     `pixels.tobytes()` + WS framing + WireGuard encryption.
+
+    Sending never waits on a browser: `publish()` hands the frame to a
+    per-client sender (`LatestFanout`), so a congested link drops preview
+    frames for that one client instead of holding up the render loop.
     """
 
     # Snap values exposed in the operator UI. Keep in sync with the slider
@@ -29,8 +32,7 @@ class SimulatorTransport(Transport):
     ALLOWED_FPS: tuple[int, ...] = (12, 24, 30, 40, 60)
 
     def __init__(self, target_fps: float = 24.0) -> None:
-        self._clients: set[WebSocket] = set()
-        self._lock = asyncio.Lock()
+        self._fanout = LatestFanout()
         # When paused, send_frame is a no-op. Used by the operator UI to
         # offload the Pi: pausing the simulator stream stops every connected
         # browser viz from receiving frames so the render loop only feeds DDP.
@@ -42,16 +44,14 @@ class SimulatorTransport(Transport):
         self._next_send_t: float = 0.0
 
     async def add_client(self, ws: WebSocket) -> None:
-        async with self._lock:
-            self._clients.add(ws)
+        self._fanout.add(ws)
 
     async def remove_client(self, ws: WebSocket) -> None:
-        async with self._lock:
-            self._clients.discard(ws)
+        self._fanout.discard(ws)
 
     @property
     def client_count(self) -> int:
-        return len(self._clients)
+        return len(self._fanout)
 
     def set_target_fps(self, fps: float) -> float:
         v = int(round(float(fps)))
@@ -68,7 +68,7 @@ class SimulatorTransport(Transport):
         """Predicate the engine uses to short-circuit preview render + sim
         encode on frames we'd drop anyway. Does not advance internal state —
         the actual send call does that."""
-        if self.paused or not self._clients:
+        if self.paused or not self._fanout:
             return False
         if self.target_fps <= 0.0:
             return False
@@ -76,8 +76,9 @@ class SimulatorTransport(Transport):
         # still counts as on-time and we don't accumulate cumulative drift.
         return time.monotonic() + 1e-3 >= self._next_send_t
 
-    async def send_frame(self, pixels: np.ndarray) -> None:
-        if self.paused or not self._clients:
+    def publish(self, pixels: np.ndarray) -> None:
+        """Queue one frame for every connected browser. Returns immediately."""
+        if self.paused or not self._fanout:
             return
         if self.target_fps > 0.0:
             now = time.monotonic()
@@ -91,25 +92,10 @@ class SimulatorTransport(Transport):
                 self._next_send_t = now + period
             else:
                 self._next_send_t += period
-        data = pixels.tobytes()
-        # Snapshot so we don't mutate during iteration.
-        async with self._lock:
-            targets = list(self._clients)
-        dead: list[WebSocket] = []
-        for ws in targets:
-            try:
-                await ws.send_bytes(data)
-            except Exception:
-                dead.append(ws)
-        if dead:
-            async with self._lock:
-                for ws in dead:
-                    self._clients.discard(ws)
+        self._fanout.publish(pixels.tobytes())
+
+    async def send_frame(self, pixels: np.ndarray) -> None:
+        self.publish(pixels)
 
     async def close(self) -> None:
-        async with self._lock:
-            targets = list(self._clients)
-            self._clients.clear()
-        for ws in targets:
-            with contextlib.suppress(Exception):
-                await ws.close()
+        await self._fanout.close()

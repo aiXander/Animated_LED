@@ -46,43 +46,36 @@ def hsv_to_rgb(h, s, v, out=None):
         hsv_to_rgb(ctx.frames.x, 1.0, 1.0)       # → (N, 3) per-LED rainbow
         hsv_to_rgb(hue, 1.0, 1.0, out=self.out)  # → allocation-free per-LED fill
     """
-    # Broadcast h, s, v to a common shape FIRST. Without this, `q = v * (1-s*f)`
-    # has h's shape while `p = v * (1-s)` has s/v's shape — and `np.stack` of a
-    # (N,) and a 0-d array later raises "all input arrays must have the same
-    # shape." The cheap fix is `broadcast_arrays`, which gives us views all of
-    # the same shape with no per-element copy.
-    h, s, v = np.broadcast_arrays(
-        np.asarray(h, dtype=np.float32),
-        np.asarray(s, dtype=np.float32),
-        np.asarray(v, dtype=np.float32),
-    )
-    h6 = np.mod(h, 1.0) * 6.0
-    i = np.floor(h6).astype(np.int32)
-    f = h6 - i.astype(np.float32)
-    p = v * (1.0 - s)
-    q = v * (1.0 - s * f)
-    t = v * (1.0 - s * (1.0 - f))
-    i_mod = i % 6
-    r_choices = np.stack([v, q, p, p, t, v], axis=-1)
-    g_choices = np.stack([t, v, v, q, p, p], axis=-1)
-    b_choices = np.stack([p, p, t, v, v, q], axis=-1)
-    if h6.ndim == 0:
-        rgb = np.array(
-            [r_choices[i_mod], g_choices[i_mod], b_choices[i_mod]],
-            dtype=np.float32,
-        )
-        if out is None:
-            return rgb
-        np.copyto(out, rgb)
-        return out
+    h = np.asarray(h, dtype=np.float32)
+    s = np.asarray(s, dtype=np.float32)
+    v = np.asarray(v, dtype=np.float32)
+    shape = np.broadcast_shapes(h.shape, s.shape, v.shape)
+    # Closed form:  channel = v*(1 - s) + v*s * clip(|k - 2| - 1, 0, 1)
+    # with k = (h*6 + n) mod 6 and n = 5, 3, 1 for R, G, B. Computed on a
+    # channel-major (3, ...) block so every step is one long contiguous pass
+    # (broadcasting against a trailing axis of 3 would run 1800 loops of 3),
+    # then copied into the (..., 3) result. No (N, 6) choice tables, no
+    # gathers: the table version this replaces was the most expensive call in
+    # most effects.
+    h = np.broadcast_to(h, shape)
+    h6 = h - np.floor(h)                      # wrap to [0, 1) without fmod
+    h6 *= 6.0
+    k = np.add.outer(_HSV_OFFSETS, h6)        # (3, ...): k - 2, before the wrap
+    np.subtract(k, 6.0, out=k, where=k >= 4.0)
+    np.abs(k, out=k)
+    k -= 1.0
+    np.clip(k, 0.0, 1.0, out=k)
+    vs = v * s
+    k *= vs
+    k += v - vs
     if out is None:
-        out = np.empty(h6.shape + (3,), dtype=np.float32)
-    # Write channel-by-channel into `out` — no final stack allocation, and a
-    # caller-provided `out` (e.g. self.out) is filled in place.
-    out[..., 0] = np.take_along_axis(r_choices, i_mod[..., None], axis=-1)[..., 0]
-    out[..., 1] = np.take_along_axis(g_choices, i_mod[..., None], axis=-1)[..., 0]
-    out[..., 2] = np.take_along_axis(b_choices, i_mod[..., None], axis=-1)[..., 0]
+        out = np.empty(shape + (3,), dtype=np.float32)
+    out[...] = np.moveaxis(k, 0, -1)
     return out
+
+
+# n - 2 for n = 5 (R), 3 (G), 1 (B): see hsv_to_rgb.
+_HSV_OFFSETS = np.array([3.0, 1.0, -1.0], dtype=np.float32)
 
 
 def lerp(a, b, t, out=None):
@@ -167,6 +160,25 @@ def palette_lerp(stops, t, out=None):
     is written into it in place.
     """
     # LUT fast path: (M, 3) ndarray. Catches `palette_lerp(named_palette('fire'), …)`.
+    # Evenly spaced stops need no search: index straight into the table and
+    # blend the two neighbours.
+    if isinstance(stops, np.ndarray) and stops.ndim == 2 and stops.shape[1] == 3 \
+            and stops.shape[0] >= 2:
+        lut = stops.astype(np.float32, copy=False)
+        last = lut.shape[0] - 1
+        x = np.clip(np.asarray(t, dtype=np.float32) * last, 0.0, float(last))
+        i0 = np.minimum(x.astype(np.intp), last - 1)
+        frac = (x - i0)[..., None]
+        lo = lut[i0]
+        # A fresh array: for a scalar `t`, `lut[i0]` is a VIEW of the shared
+        # palette table, so nothing below may write into `lo` or `lut`.
+        res = lut[i0 + 1] - lo
+        res *= frac
+        res += lo
+        if out is None:
+            return res
+        np.copyto(out, res)
+        return out
     if isinstance(stops, np.ndarray) and stops.ndim == 2 and stops.shape[1] == 3:
         xs = np.linspace(0.0, 1.0, stops.shape[0], dtype=np.float32)
         cols_arr = stops.astype(np.float32, copy=False)

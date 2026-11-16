@@ -39,3 +39,14 @@ def test_gamma_darkens_midtones():
     assert int(linear[0, 0]) == 128
     assert int(gamma_corrected[0, 0]) < 70
     assert int(gamma_corrected[0, 0]) > 40
+
+
+def test_gamma_follows_the_power_curve():
+    """Gamma goes through a lookup table; it must stay within one output code
+    of the exact curve over the whole range, out-of-range input included."""
+    rng = np.random.default_rng(0)
+    pb = PixelBuffer(2000)
+    pb.rgb[:] = rng.uniform(-0.2, 1.2, size=(2000, 3)).astype(np.float32)
+    exact = np.rint(np.clip(pb.rgb.astype(np.float64), 0.0, 1.0) ** 2.2 * 255.0)
+    got = pb.to_uint8(gamma=2.2).astype(np.float64)
+    assert np.abs(got - exact).max() <= 1.0

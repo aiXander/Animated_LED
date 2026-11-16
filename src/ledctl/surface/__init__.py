@@ -40,6 +40,7 @@ from .schema import WriteEffectArgs
 from .tool import (
     WRITE_EFFECT_TOOL_NAME,
     apply_write_effect,
+    apply_write_effect_async,
     write_effect_tool_schema,
 )
 
@@ -68,6 +69,7 @@ __all__ = [
     "WRITE_EFFECT_TOOL_NAME",
     "WriteEffectArgs",
     "apply_write_effect",
+    "apply_write_effect_async",
     "build_runtime_namespace",
     "build_system_prompt",
     "compile_effect",

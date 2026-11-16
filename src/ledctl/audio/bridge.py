@@ -85,7 +85,7 @@ def _audio_server_already_running(ui_url: str, timeout_s: float = 0.5) -> bool:
 class OscFeatureListener:
     """Bind a UDP socket and dispatch `/audio/lmh` + `/audio/meta` into AudioState.
 
-    Uses `python-osc`'s `BlockingOSCUDPServer` driven by a daemon thread so
+    Uses `AllowlistOSCUDPServer` (see `ledctl.osc`) driven by a daemon thread so
     callers don't have to think about asyncio integration. A second thread
     watches for stale state — if the writer's `last_packet_at` falls behind
     by `stale_after_s`, we flip `connected = False` so consumers know the
@@ -126,31 +126,23 @@ class OscFeatureListener:
     def start(self) -> None:
         if self._server is not None:
             return
+        handlers = {
+            "/audio/lmh": self._on_lmh,
+            "/audio/meta": self._on_meta,
+            # Onsets: the current server sends `/audio/onset/low` (one packet per
+            # low-band onset, no repeat); older installs may send `/audio/beat`.
+            "/audio/onset/low": self._on_beat,
+            "/audio/beat": self._on_beat,
+            "/audio/bpm": self._on_bpm,
+            "/audio/level": self._on_level,
+            # /audio/fft is not consumed (the server only sends it when
+            # explicitly enabled): accepted and dropped unparsed.
+            "/audio/fft": None,
+        }
         try:
-            from pythonosc import dispatcher  # noqa: PLC0415
-        except ImportError as e:
-            log.warning("python-osc not installed: %s — audio features disabled", e)
-            self.state.error = f"python-osc unavailable: {e}"
-            return
-        d = dispatcher.Dispatcher()
-        d.map("/audio/lmh", self._on_lmh)
-        d.map("/audio/meta", self._on_meta)
-        # Onsets: the current server sends `/audio/onset/low` (one packet per
-        # low-band onset, no repeat); older installs may send `/audio/beat`.
-        d.map("/audio/onset/low", self._on_beat)
-        d.map("/audio/beat", self._on_beat)
-        d.map("/audio/bpm", self._on_bpm)
-        d.map("/audio/level", self._on_level)
-        # /audio/fft is not consumed (the server only sends it when explicitly
-        # enabled); register a no-op so we don't log "no handler" each frame.
-        d.map("/audio/fft", lambda *_: None)
-        try:
-            # Single-threaded server: avoids the per-packet thread spawn that
-            # ThreadingOSCUDPServer does at ~187 Hz. Handlers are tiny (3 float
-            # writes), so serial dispatch is plenty fast and the reduced
-            # scheduling jitter matters more than parallelism.
+            # One thread, serial dispatch: handlers are a few float writes.
             self._server = AllowlistOSCUDPServer(
-                (self.host, self.port), d, allow_from=self.allow_from,
+                (self.host, self.port), handlers, allow_from=self.allow_from,
             )
             # The port actually bound (differs from the request when it was 0).
             self.port = int(self._server.server_address[1])

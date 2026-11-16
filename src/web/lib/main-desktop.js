@@ -9,7 +9,7 @@
 //   - Token usage (input/output) printed after every assistant turn
 
 import { bindViz } from "./viz.js";
-import { $, setText } from "./util.js";
+import { $, perfSummary, setText } from "./util.js";
 import { applyWzrd, mountWzrdPanel } from "./wzrd.js";
 
 // --- state ---
@@ -47,7 +47,10 @@ function connectStateStream() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws/state`);
   ws.addEventListener("message", (e) => {
-    try { state = JSON.parse(e.data); applyState(); } catch (_) {}
+    // Most pushes are "light": everything except the `live` / `preview`
+    // compositions, which the server resends only when they change (and at
+    // least twice a second). Merge, so a light push keeps the last ones.
+    try { state = Object.assign(state || {}, JSON.parse(e.data)); applyState(); } catch (_) {}
   });
   ws.addEventListener("close", () => setTimeout(connectStateStream, 500));
   ws.addEventListener("open", () => {
@@ -1705,7 +1708,11 @@ function applyState() {
       chatLog.innerHTML = "";
     }
   }
-  setText($("fps-pill"), `${state.fps?.toFixed?.(0) ?? "?"} fps`);
+  const perf = perfSummary(state.perf);
+  const fpsPill = $("fps-pill");
+  setText(fpsPill, `${state.fps?.toFixed?.(0) ?? "?"} fps${perf.short ? " · " + perf.short : ""}`);
+  if (fpsPill.title !== perf.detail) fpsPill.title = perf.detail;
+  fpsPill.classList.toggle("warn", perf.warn);
   updateAudioHud(state.audio);
   updateSwellInfo(state.audio);
   document.body.classList.toggle("design-mode", state.mode === "design");

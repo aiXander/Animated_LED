@@ -3,6 +3,8 @@ calls into, so a shape bug here causes every effect to fail at fence-test."""
 
 from __future__ import annotations
 
+import colorsys
+
 import numpy as np
 import pytest
 
@@ -12,6 +14,7 @@ from ledctl.surface.helpers import (
     hex_to_rgb,
     hsv_to_rgb,
     lerp,
+    named_palette,
     palette_lerp,
     pulse,
     tri,
@@ -37,6 +40,10 @@ def test_hsv_to_rgb_array_h_scalar_sv():
     assert out.dtype == np.float32
     # h=0 → red, h=1/3 → green, h=2/3 → blue.
     np.testing.assert_allclose(out[0], [1.0, 0.0, 0.0], atol=1e-3)
+    # Every sextant, negative and >1 hues included, against the stdlib.
+    hues = np.array([-0.3, 0.05, 0.2, 0.4, 0.55, 0.7, 0.9, 1.25], dtype=np.float32)
+    want = [colorsys.hsv_to_rgb(float(x) % 1.0, 0.6, 0.8) for x in hues]
+    np.testing.assert_allclose(hsv_to_rgb(hues, 0.6, 0.8), want, atol=1e-5)
 
 
 def test_hsv_to_rgb_array_h_scalar_v_array_s():
@@ -98,6 +105,22 @@ def test_palette_lerp_array_t():
     out = palette_lerp(stops, np.array([0.0, 0.5, 1.0]))
     assert out.shape == (3, 3)
     np.testing.assert_allclose(out[2], [1.0, 1.0, 1.0])
+
+
+def test_palette_lerp_on_a_named_palette_table():
+    """The baked-table path: interpolates between neighbouring entries, clamps
+    outside [0, 1], and never writes into the shared palette (a scalar `t`
+    indexes a view of it)."""
+    lut = named_palette("fire")
+    before = lut.copy()
+    last = len(lut) - 1
+    np.testing.assert_allclose(palette_lerp(lut, 0.0), lut[0], atol=1e-6)
+    np.testing.assert_allclose(
+        palette_lerp(lut, np.array([-1.0, 2.5 / last, 7.0])),
+        [lut[0], (lut[2] + lut[3]) / 2, lut[-1]],
+        atol=1e-5,
+    )
+    np.testing.assert_array_equal(lut, before)
 
 
 def test_palette_lerp_flat_4tuple_stops():

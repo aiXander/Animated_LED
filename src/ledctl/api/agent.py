@@ -26,7 +26,7 @@ from ..agent import AgentClient, AgentTurn, ChatSession, MissingApiKey
 from ..config import AgentConfig
 from ..surface import (
     WRITE_EFFECT_TOOL_NAME,
-    apply_write_effect,
+    apply_write_effect_async,
     build_system_prompt,
     write_effect_tool_schema,
 )
@@ -145,7 +145,10 @@ def build_router(app: FastAPI) -> APIRouter:
         max_attempts = 1 + max(0, int(cfg.retry_on_tool_error))
 
         for attempt in range(max_attempts):
-            system_prompt = build_system_prompt(
+            # Off the event loop: assembling the prompt is pure string work
+            # that would otherwise cost the render loop a few frames per turn.
+            system_prompt = await asyncio.to_thread(
+                build_system_prompt,
                 topology=topology,
                 runtime=runtime,
                 audio_state=audio_state,
@@ -178,7 +181,7 @@ def build_router(app: FastAPI) -> APIRouter:
             for tc in result.tool_calls:
                 if tc["name"] == WRITE_EFFECT_TOOL_NAME and attempt_primary is None:
                     attempt_primary = tc
-                    tool_result = apply_write_effect(
+                    tool_result = await apply_write_effect_async(
                         tc["arguments"],
                         runtime=runtime,
                         store=effect_store,

@@ -1,0 +1,26 @@
+[Unit]
+# Pin the CPU frequency governor to `performance`.
+#
+# Raspberry Pi OS defaults to `ondemand`, which clocks the CPU down whenever
+# the load looks light. The render loop works for a few milliseconds and then
+# sleeps until the next frame, so it looks light, runs at a reduced clock and
+# takes two to three times as long per frame. The operator UI shows the
+# current governor and clock speed next to the frame timings (hover the fps
+# pill on desktop, Output tab on mobile).
+#
+# Install:
+#   sudo cp deploy/cpu-performance.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cpu-performance.service
+#   cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor   # -> performance
+
+Description=CPU governor = performance (for the ledctl render loop)
+Before=ledctl.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$g"; done'
+
+[Install]
+WantedBy=multi-user.target

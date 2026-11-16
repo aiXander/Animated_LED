@@ -29,9 +29,15 @@ EnvironmentFile=-/home/pi/animated_LED/.env
 ExecStart=/home/pi/animated_LED/.venv/bin/ledctl run --config /home/pi/animated_LED/config/config.pi.yaml
 Restart=always
 RestartSec=2
-# Small priority bump — keeps the render loop ahead of background tasks
-# without going full real-time (which would need RT-priv setup).
-Nice=-5
+# Priority bump — keeps the render loop (and the audio-server it spawns) ahead
+# of background tasks such as tailscaled and journald.
+Nice=-10
+# Optional, NOT yet tried on the Pi: real-time scheduling, so the loop wakes
+# on time even when another process is busy on the same core. Uncomment both
+# lines, `systemctl daemon-reload && systemctl restart ledctl`, and check that
+# SSH stays responsive while a heavy effect runs before leaving it on.
+#CPUSchedulingPolicy=rr
+#CPUSchedulingPriority=10
 # Read-only rootfs / overlayfs (Phase 8.1): everything the engine writes
 # (presets, edited config, logs) goes through journald or
 # /var/lib/ledctl on a writable partition.

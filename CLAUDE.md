@@ -23,6 +23,9 @@ logs / hostname to know whether you're on the Pi or the Mac before acting.
 - `docs/reference/wzrd-input.md` — open it when touching `src/ledctl/wzrd/`, the audio bridge's
   network mode, the master output stage's hook, the audio swell, or when the LEDs do not follow
   WZRD's wall.
+- `docs/reference/render-performance.md` — open it when the LEDs lag or drop frames, or before
+  adding anything that runs on the event loop (a request handler, the engine tick, a
+  WebSocket push, an OSC handler); it holds the "LEDs lag" runbook.
 - `docs/TODO/` — plans in flight.
 
 ## Commands
@@ -35,6 +38,7 @@ uv pip install -e ".[dev]"
 # Run (Mac dev — simulator at http://127.0.0.1:8000, OpenAPI at /docs)
 uv run ledctl run --config config/config.dev.yaml
 uv run ledctl show-config --config config/config.dev.yaml   # inspect parsed config
+# HTTP request logging is off by default; add --access-log to `run` when debugging the API
 
 # Tests / lint
 uv run pytest
@@ -231,8 +235,8 @@ smooth/EMA/normalise the bands yourself (already done upstream). Continuous reac
 
 Optional `help` string per param → hover tooltip. Slider drag → `PATCH /{slot}/params` →
 `ParamStore.update` (atomic on the loop, clamped) → next render's `ctx.params.<key>` sees it.
-No recompile, no LLM round-trip, no crossfade. Each patch also persists via
-`EffectStore.save_values(...)` so tuning survives a restart.
+No recompile, no LLM round-trip, no crossfade. Values also reach `effect.yaml` within 0.5 s
+(`DeferredValueSaver`, off the event loop) so tuning survives a restart.
 
 ## Per-layer safety nets (`runtime.py`)
 
@@ -304,8 +308,8 @@ Output) over bottom-sheets for menu/library/playlist/colour/palette. `GET /` 307
 phone-class User-Agents to `/m` (iPad excluded; `?view=desktop` forces desktop, `?view=mobile`
 forces mobile); the PWA manifest `start_url` is `/m`. Both front-ends share the view-agnostic
 modules `web/lib/{viz,state,util}.js` and hit the identical HTTP/WS API — **keep the two `main-*.js`
-in behavioural sync** (debounce windows, optimistic deck updates, chat-epoch wipe) when changing
-either. `web/audio-meter.js` is an unused legacy orphan.
+in behavioural sync** (debounce windows, optimistic deck updates, chat-epoch wipe, merging
+`/ws/state` messages) when changing either. `web/audio-meter.js` is an unused legacy orphan.
 
 ## Persistence & examples — two distinct directories
 
@@ -328,9 +332,14 @@ source: 'agent'|'user', created_at, updated_at, params, param_values, starred}`)
 **Render loop** (`engine.py`): fixed-timestep async loop at `target_fps`. Each tick computes
 `effective_t += dt × speed` (`dt` clamped), builds an `AudioView` (bands pre-multiplied by
 `masters.audio_reactivity`), calls `Runtime.render(...)` → `(live_rgb, sim_rgb)`, encodes to
-uint8 (gamma + clip), and ships via `SplitTransport.send(led_frame=…, sim_frame=…)`. Frames
-drop rather than spiral on lag. The loop sleeps until the next deadline OR an audio-kick event
-(`engine.kick_audio()`, fired by onset packets only), gated by `kick_min_interval`.
+uint8 (gamma + clip), and ships via `SplitTransport.send_now(led_frame=…, sim_frame=…)`: DDP
+first, then the browser preview is handed to a per-client mailbox. **The tick never awaits a
+network peer, and request handlers keep file I/O, YAML and effect compiles off the event loop**
+(see `docs/reference/render-performance.md`). Frames drop rather than spiral on lag. The loop
+sleeps until the next deadline OR an audio-kick event (`engine.kick_audio()`, fired by onset
+packets only), gated by `kick_min_interval`. Frame timings and Pi health (temperature, CPU
+clock, governor, throttling) are the `perf` key of `/state`, shown in the fps pill (desktop)
+and the Output tab (mobile).
 
 **Key modules:**
 - `topology.py` — spatial model of all 1800 LEDs; normalised positions in `[-1, 1]` per axis
@@ -343,6 +352,8 @@ drop rather than spiral on lag. The loop sleeps until the next deadline OR an au
 - `pixelbuffer.py` — float32 working buffer in `[0, 1]`; gamma applied once here, not in WLED.
 - `transports/` — `simulator` (WebSocket), `ddp` (UDP to WLED, 480 px/packet, PUSH on final
   packet only), and `split.py` (`SplitTransport` = one sim leg + 0-or-1 DDP leg).
+- `fanout.py` — `LatestFanout`, the per-client mailbox behind both WebSockets: a slow browser
+  skips to the newest message instead of holding up the sender.
 - `audio/` — thin bridge to the external [Realtime_PyAudio_FFT](https://github.com/Jaymon/Realtime_PyAudio_FFT)
   server (spawned as a subprocess); `state.py` holds `AudioState`, `bridge.py` is the OSC
   listener + supervisor. Soft-fail everywhere: no audio → bands 0, bpm fallback, render keeps
@@ -380,6 +391,9 @@ changing `transport.mode`; everything above the transport layer is identical.
 - **WZRD input:** `GET/PATCH /wzrd` (settings + link status; also the `wzrd` key in `/state`).
 - **Agent:** `POST /agent/chat`, `GET/DELETE /agent/sessions/{id}`, `GET/PATCH /agent/config`.
 - **WebSockets:** `/ws/frames` (sim canvas), `/ws/state` (UI panels) — both honour `?password=`.
+  `/ws/state` sends the compositions (`live`, `preview`) only on connect, after a mutating
+  request and every 0.5 s; the pushes in between omit them, so a client **merges** each message
+  into its state rather than replacing it.
 
 ---
 
@@ -417,6 +431,35 @@ control today). Two safeguards to install so a single uplink blip doesn't kill r
    verify it survives a reboot — the Pi only knows the "Xander's Pixel" hotspot by default.
 Also worth adding: a phone-controllable smart plug on the Pi (and/or router) for true remote
 power-cycle as the last-resort fix.
+
+**⚠️ TODO — performance setup on the Pi (NOT YET DONE; do it the first time a session runs on
+the Pi).** The render-loop fixes ship with a `git pull`, but two system settings live outside
+the repo and only take effect once changed on the Pi itself. Confirm `hostname` says you are on
+the Pi, then run these (each is safe to repeat):
+1. **CPU governor → `performance`.** Raspberry Pi OS defaults to `ondemand`, which clocks the
+   CPU down between frames and makes every frame 2–3× slower.
+   ```bash
+   sudo cp deploy/cpu-performance.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now cpu-performance.service
+   cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor   # must print: performance
+   ```
+2. **Raise the service's CPU priority (`Nice=-5` → `Nice=-10`).** systemd runs the *installed
+   copy* of the unit at `/etc/systemd/system/ledctl.service`, not the file in `deploy/`, and
+   that copy is patched for this Pi (`User=xander`, real paths). **Edit it in place; do not
+   copy `deploy/ledctl.service` over it**, which would put back `User=pi` and break the service.
+   ```bash
+   sudo sed -i 's/^Nice=.*/Nice=-10/' /etc/systemd/system/ledctl.service
+   sudo systemctl daemon-reload && sudo systemctl restart ledctl
+   systemctl show ledctl -p Nice                                # must print: Nice=-10
+   ```
+3. **Read the health numbers** and report them to the operator:
+   `curl -s 'localhost:8000/state?password=…' | jq .perf` (password from `.env`). Want
+   `governor: performance`, `throttled` and `undervoltage` false, `temp_c` well under 80, `stalls`
+   not climbing. What each number means and what to do about it:
+   `docs/reference/render-performance.md` (Runbook).
+
+When all three check out, delete this block.
 
 **Strip mapping** (verified 1:1 with the operator UI via `/calibration/solo`; don't edit either
 side without re-running the calibration sequence). All four WLED outputs: WS281x, RGB, length
@@ -457,10 +500,15 @@ Origin = centre of scaffolding. `ctx.pos` normalised so each axis ∈ `[-1, 1]`;
 
 ## Deploy artefacts
 
-- `deploy/ledctl.service` — systemd unit (`Restart=always`, `Nice=-5`, `audio` group,
-  `ProtectSystem=full`). The template ships `User=pi` / `/home/pi/...` paths; on the actual Pi
-  patch to `User=xander` and the real layout (`/home/xander/audio_LED/Animated_LED/`).
+- `deploy/ledctl.service` — systemd unit **template** (`Restart=always`, `Nice=-10`, `audio`
+  group, `ProtectSystem=full`; real-time scheduling is in the file commented out, untested on
+  the Pi). It ships `User=pi` / `/home/pi/...` paths; the copy installed on the Pi at
+  `/etc/systemd/system/ledctl.service` is patched to `User=xander` and the real layout
+  (`/home/xander/audio_LED/Animated_LED/`), so apply later template changes to that copy by
+  hand rather than overwriting it.
 - `deploy/{gledopto-reboot,wled-proxy}.service` + `wled-proxy.socket`.
+- `deploy/cpu-performance.service` — pins the CPU governor to `performance` at boot (the
+  default `ondemand` clocks the Pi down between frames).
 - `.env.example` → copy to `.env` (gitignored) for the OpenRouter key.
 - Pi gotchas: `audio_server.command` must be an **absolute path** (systemd has no user PATH);
   the venv needs `python-osc` (`uv pip install python-osc`); the audio-server's own

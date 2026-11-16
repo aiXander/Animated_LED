@@ -81,22 +81,19 @@ class WzrdListener:
 
     @property
     def dropped(self) -> int:
-        """Packets refused: failed validation, or a sender off the allowlist."""
+        """Packets refused: failed validation, unparseable, or a sender off the
+        allowlist."""
         srv = self._server
-        return self.invalid + (srv.rejected if srv is not None else 0)
+        return self.invalid + (srv.rejected + srv.malformed if srv is not None else 0)
 
     def start(self) -> None:
         if self._server is not None:
             return
-        from pythonosc import dispatcher  # noqa: PLC0415
-
-        d = dispatcher.Dispatcher()
-        d.map(COLORS_ADDRESS, self._on_colors)
-        d.map(MASTERS_ADDRESS, self._on_masters)
-        d.set_default_handler(self._on_other)
+        handlers = {COLORS_ADDRESS: self._on_colors, MASTERS_ADDRESS: self._on_masters}
         try:
             self._server = AllowlistOSCUDPServer(
-                (self.host, self.port), d, allow_from=self.allow_from,
+                (self.host, self.port), handlers, allow_from=self.allow_from,
+                default_handler=self._on_other,
             )
         except OSError as e:
             self.error = f"could not bind {self.host}:{self.port}: {e}"

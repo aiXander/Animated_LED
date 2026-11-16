@@ -35,17 +35,29 @@ class SplitTransport(Transport):
         """Compatibility hook — fans the same frame to both legs."""
         await self.send(led_frame=pixels, sim_frame=pixels)
 
+    def send_now(
+        self,
+        *,
+        led_frame: np.ndarray | None,
+        sim_frame: np.ndarray | None,
+    ) -> None:
+        """Ship one tick's frames. Synchronous and never waits on a peer.
+
+        LEDs first: nothing may sit between a rendered frame and its DDP
+        packets. The browser preview is queued for its own sender afterwards.
+        """
+        if self.led is not None and led_frame is not None:
+            self.led.send_now(led_frame)
+        if sim_frame is not None:
+            self.sim.publish(sim_frame)
+
     async def send(
         self,
         *,
         led_frame: np.ndarray | None,
         sim_frame: np.ndarray | None,
     ) -> None:
-        # Sim first — cheap and the operator stares at it. Then DDP.
-        if sim_frame is not None:
-            await self.sim.send_frame(sim_frame)
-        if self.led is not None and led_frame is not None:
-            await self.led.send_frame(led_frame)
+        self.send_now(led_frame=led_frame, sim_frame=sim_frame)
 
     async def close(self) -> None:
         with contextlib.suppress(Exception):
@@ -70,4 +82,5 @@ class SplitTransport(Transport):
             "port": self.led.port,
             "frames_sent": self.led.frames_sent,
             "packets_sent": self.led.packets_sent,
+            "send_errors": self.led.send_errors,
         }

@@ -47,7 +47,9 @@ here first). Two datagrams per rendered WZRD frame, to UDP 9100, IPv4:
 
 **Audio** (`/audio/*`, owned by the audio server repo): `/audio/lmh`, `/audio/bpm` and
 `/audio/level` once per audio block (about 187 a second), `/audio/onset/low` as a single
-packet per onset with no repeat. `/audio/level` is a fixed scale (0 = -60 dBFS, 1 = 0 dBFS).
+packet per onset with no repeat. `/audio/level` is a loudness that is never auto-gained:
+0..1 over a dB range set in the audio server's UI (default -60 to 0 dBFS). Moving that range
+moves what `quiet` and `loud` mean here.
 
 ## Why it's built this way
 
@@ -167,7 +169,9 @@ Both listeners accept unauthenticated UDP once a host is configured for a gig: 9
 - **Flashes arrive late or unevenly:** read `max_gap_ms` in the modal (WZRD) and in
   `/audio/state` (audio). A 40 ms gap delays a flash by 40 ms; WiFi power saving on the
   receiver is the usual cause.
-- **Setting up audio swell:** read `level` beside the swell slider at soundcheck (0.33 is
-  -40 dBFS, 0.80 is -12 dBFS) and put the quiet and loud readings in the `audio_swell:` block.
+- **Setting up audio swell:** set the level's dB range in the audio server's UI first (it
+  rescales everything below), then read `level` beside the swell slider at soundcheck and
+  put the quiet and loud readings in the `audio_swell:` block. With the server's default
+  range, 0.33 is -40 dBFS and 0.80 is -12 dBFS.
 - **Beat effects never fire:** `/audio/state` `beat_count` must climb. Onsets are
   `/audio/onset/low` (current server) or `/audio/beat` (older installs).
