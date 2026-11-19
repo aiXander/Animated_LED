@@ -239,3 +239,33 @@ Two leftovers, harmless away from that venue, to clear the next time someone is 
   with `nmcli con show`; remove it with `sudo nmcli con delete "<name>"`.
 - The watchdog script installed at `/usr/local/bin/net-watchdog.sh` still defaults to that
   venue's network. Re-copy `deploy/net-watchdog.sh` before enabling the watchdog again.
+
+---
+
+## 7. Pi missing from Tailscale, and no cable, screen or keyboard on hand
+
+Two separate causes, hit together on 2026-11-19:
+
+- **Tailscale login expired.** Check from the Mac with `tailscale status --json` (the `Expired`
+  field on the Pi's entry). Fix in the admin console: Machines → XanderPi → `…` → Disable key
+  expiry. That is now done for XanderPi, so it should not come back.
+- **The Pi doesn't know the hotspot's password** (it was changed on the phone). The Pi's Wi-Fi
+  can be changed from the SD card on a Mac, which can write only the FAT boot partition:
+  - The image uses cloud-init. `network-config` there is read on the **first boot only**, so
+    editing it changes nothing on an installed Pi.
+  - What works is a one-time job, the same mechanism the Raspberry Pi Imager uses. Put a script
+    `wifi-fix.sh` in the boot partition and append
+    `systemd.run=/boot/firmware/wifi-fix.sh systemd.run_success_action=reboot systemd.unit=kernel-command-line.target`
+    to the single line of `cmdline.txt`. The script removes that text from `cmdline.txt` as its
+    first step (else it runs on every boot), writes a NetworkManager keyfile to
+    `/etc/NetworkManager/system-connections/` (mode 600) and deletes itself.
+  - Store the password as its WPA hash, not in plain text:
+    `pbkdf2_hmac("sha1", password, ssid, 4096, 32).hex()` goes in `psk=`.
+  - The 2026-11-19 run left a profile `hotspot-new` (autoconnect priority 10) for the hotspot,
+    alongside the original cloud-init profile.
+
+**Login is keys only (since 2026-11-19).** `xander` has no usable password (`passwd -l`), SSH
+refuses passwords (`/etc/ssh/sshd_config.d/00-keys-only.conf`) and `sudo` needs none
+(`/etc/sudoers.d/010-xander-nopasswd`). The Mac's SSH key is the way in, over Tailscale or the
+LAN. If that key is lost, add a new public key to `/home/xander/.ssh/authorized_keys` with the
+SD-card one-time job above.
