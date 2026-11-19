@@ -6,11 +6,14 @@ show up as "the LEDs lag" with nothing wrong in the software, so the operator
 UI reports them next to the frame timings.
 
 Everything is read from sysfs, best effort: on a machine without these files
-(the Mac) every field is None.
+(the Mac) every field is None. Newer Pi kernels dropped the throttling file
+from sysfs; there the flags come from `vcgencmd get_throttled` (~2 ms, at most
+once per cache window).
 """
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -33,6 +36,22 @@ def _read(path: Path) -> str | None:
         return None
 
 
+def _throttled_flags() -> int | None:
+    raw = _read(_THROTTLED)
+    if raw is None:
+        try:
+            # Prints "throttled=0x50000".
+            raw = subprocess.run(
+                ["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=1.0,
+            ).stdout.strip().partition("=")[2]
+        except (OSError, subprocess.SubprocessError):
+            return None
+    try:
+        return int(raw, 16)
+    except ValueError:
+        return None
+
+
 def host_health() -> dict[str, Any]:
     """Temperature, clock speed, governor and throttling flags. Cached 5 s."""
     global _cache
@@ -41,11 +60,7 @@ def host_health() -> dict[str, Any]:
         return _cache[1]
     temp = _read(_TEMP)
     freq = _read(_FREQ)
-    flags_raw = _read(_THROTTLED)
-    try:
-        flags = int(flags_raw, 16) if flags_raw is not None else None
-    except ValueError:
-        flags = None
+    flags = _throttled_flags()
     out: dict[str, Any] = {
         "temp_c": round(int(temp) / 1000.0, 1) if temp and temp.isdigit() else None,
         "cpu_mhz": round(int(freq) / 1000.0) if freq and freq.isdigit() else None,

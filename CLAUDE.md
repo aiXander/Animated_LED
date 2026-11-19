@@ -430,28 +430,16 @@ the Gledopto's WLED Wi-Fi settings were changed (a phone hotspot was entered) wh
 drive it from the Mac. As soon as the Pi is back on the ethernet cable, clear them and verify DDP
 per the undo checklist in `Mac_direct_setup.md`, then delete this line.
 
-**⚠️ Pending, on the Pi, BEFORE its next `git pull` (not done as of 2026-11-16):** move the
-Pi onto the shared effect library. The Pi's `config/effects/` is still its old untracked,
-Pi-only library, in the folder where git now keeps `star/` and `double-line/`. Xander's
-decision: the library from git replaces it. Confirm `hostname` says you are on the Pi, then:
+**Updating the Pi.** The Pi has no GitHub key, and its global git config rewrites every
+`https://github.com/` URL to SSH, so a plain `git pull` fails with "Permission denied
+(publickey)". The repo is public: pull over HTTPS with the global config skipped, then refresh
+dependencies (ledctl stopped, as for any library change):
 ```bash
-cd /home/xander/audio_LED/Animated_LED
-sudo systemctl stop ledctl
-git status --short                                # tracked files changed on the Pi?
-mv config/effects ~/effects_pi_only_$(date +%F)   # set aside, not deleted
-git pull
-ls config/effects/star                            # the library from git
-sudo systemctl start ledctl
+GIT_CONFIG_GLOBAL=/dev/null git pull --ff-only https://github.com/aiXander/Animated_LED.git main
+~/.local/bin/uv pip install -q -e .
 ```
-If `git pull` refuses because a tracked file was changed on the Pi (likely `config/playlist.yaml`
-or `config/config.pi.yaml`), show Xander that file's `git diff` and let him choose between
-keeping it and `git restore <file>`. The playlist from git plays the seven first-night effects;
-if the Pi's own file is kept, its entries that name Pi-only effects are skipped. The folder in `~` holds effects that exist nowhere else
-and is Xander's to delete. **At the same setup Xander copies the `OPENROUTER_API_KEY` line from
-the Mac's `.env` into the Pi's `.env` by hand** (the key was replaced on 2026-11-16; without
-it chat fails on the Pi, the LEDs are unaffected). The same pull brings the three-leg hub geometry in
-`config/config.pi.yaml`: from then on the Pi sends 1350 pixels a frame and the rectangle
-install cannot be driven. Then delete this block.
+The Pi's `.env` holds `LEDCTL_PASSWORD` and `OPENROUTER_API_KEY`; without the password ledctl
+refuses to start.
 
 Physical build detail (gear, power, soldering, WS2815 backup-data line) is in
 `Hardware_setup.md`. Phone/network access routes are in `reach_the_pi.md`. The essentials:
@@ -478,35 +466,6 @@ site's WiFi is a stored network and survives a reboot: the Pi knows only the pho
 plus whatever was added on site. Not done, as far as the repo records: the hardware watchdog
 (`RuntimeWatchdogSec` in `/etc/systemd/system.conf`, for a fully frozen kernel) and a
 phone-controllable smart plug for a remote power-cycle.
-
-**⚠️ TODO — performance setup on the Pi (NOT YET DONE; do it the first time a session runs on
-the Pi).** The render-loop fixes ship with a `git pull`, but two system settings live outside
-the repo and only take effect once changed on the Pi itself. Confirm `hostname` says you are on
-the Pi, then run these (each is safe to repeat):
-1. **CPU governor → `performance`.** Raspberry Pi OS defaults to `ondemand`, which clocks the
-   CPU down between frames and makes every frame 2–3× slower.
-   ```bash
-   sudo cp deploy/cpu-performance.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now cpu-performance.service
-   cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor   # must print: performance
-   ```
-2. **Raise the service's CPU priority (`Nice=-5` → `Nice=-10`).** systemd runs the *installed
-   copy* of the unit at `/etc/systemd/system/ledctl.service`, not the file in `deploy/`, and
-   that copy is patched for this Pi (`User=xander`, real paths). **Edit it in place; do not
-   copy `deploy/ledctl.service` over it**, which would put back `User=pi` and break the service.
-   ```bash
-   sudo sed -i 's/^Nice=.*/Nice=-10/' /etc/systemd/system/ledctl.service
-   sudo systemctl daemon-reload && sudo systemctl restart ledctl
-   systemctl show ledctl -p Nice                                # must print: Nice=-10
-   ```
-3. **Read the health numbers** and report them to the operator:
-   `curl -s 'localhost:8000/state?password=…' | jq .perf` (password from `.env`). Want
-   `governor: performance`, `throttled` and `undervoltage` false, `temp_c` well under 80, `stalls`
-   not climbing. What each number means and what to do about it:
-   `docs/reference/render-performance.md` (Runbook).
-
-When all three check out, delete this block.
 
 **Strip mapping.** All four WLED outputs: WS281x, RGB, length 450, Reversed OFF; the Gledopto
 is not reconfigured per layout. In ledctl each strip is one leg, `reversed: false`, logical
