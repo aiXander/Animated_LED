@@ -1,0 +1,78 @@
+name: palette_pattern_pulse
+summary: Twisted plasma field sampled along the legs, through a slowly cycling palette;
+  bass swells the brightness and beats add a soft white swell.
+source: agent
+created_at: 1779489875.9037812
+updated_at: 1794856109.954247
+params:
+- key: palette
+  label: Palette
+  control: palette
+  default: fire
+- key: flow_speed
+  label: Flow speed
+  help: Speed of the plasma motion.
+  control: slider
+  min: 0.05
+  max: 5.0
+  step: 0.05
+  default: 0.4
+- key: twist_amount
+  label: Twist
+  help: Turns the pattern differently on every leg; 0 = one plain field.
+  control: slider
+  min: 0.0
+  max: 10.0
+  step: 0.5
+  default: 0.0
+- key: complexity
+  label: Complexity
+  help: Higher = more, thinner bands.
+  control: slider
+  min: 1.0
+  max: 10.0
+  step: 0.5
+  default: 3.0
+- key: palette_drift
+  label: Palette drift
+  help: How fast the colours cycle through the palette. 0 = fixed.
+  control: slider
+  min: 0.0
+  max: 0.5
+  step: 0.01
+  default: 0.02
+  unit: cycles/s
+- key: base_level
+  label: Base level
+  help: Brightness when the music is silent; bass lifts it by up to 60%.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.4
+- key: strobe_intensity
+  label: Beat swell
+  help: White added on every beat. 0 = off.
+  control: slider
+  min: 0.0
+  max: 3.0
+  step: 0.01
+  default: 0.12
+- key: strobe_decay
+  label: Swell decay
+  help: How long the white takes to fade. Short = a hard strobe.
+  control: slider
+  min: 0.05
+  max: 1.5
+  step: 0.01
+  default: 0.5
+  unit: s
+param_values:
+  palette: fire
+  flow_speed: 0.4
+  twist_amount: 0.0
+  complexity: 3.0
+  palette_drift: 0.02
+  base_level: 0.4
+  strobe_intensity: 0.12
+  strobe_decay: 0.5

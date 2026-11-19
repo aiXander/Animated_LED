@@ -71,6 +71,27 @@ def test_render_returns_two_buffers_in_design_mode():
     assert sim is not live
 
 
+def test_a_beat_between_two_preview_renders_still_reaches_the_preview():
+    # A beat lasts one tick, and the preview renders only when a browser frame
+    # is due. The beat must wait for the next preview render, not be lost.
+    src = """\
+class BeatLatch(Effect):
+    def render(self, ctx):
+        self.out[:] = ctx.audio.beat
+        return self.out
+"""
+    rt = Runtime(_topo(), MasterControls())
+    rt.install_layer("preview", name="beat_latch", summary="", source=src, param_schema=[])
+    rt.mode = "design"
+    rt.preview_half_rate = False
+    rt.render(wall_t=0.0, dt=1/60, t_eff=0.0, audio=AudioView(beat=1.0),
+              render_preview=False)                       # no browser frame due
+    _, sim = rt.render(wall_t=1/60, dt=1/60, t_eff=1/60, audio=AudioView(beat=0.0))
+    assert sim.max() == 1.0
+    _, sim = rt.render(wall_t=2/60, dt=1/60, t_eff=2/60, audio=AudioView(beat=0.0))
+    assert sim.max() == 0.0                               # and it is delivered once
+
+
 def test_render_lives_share_buffer_in_live_mode():
     topo = _topo()
     rt = Runtime(topo, MasterControls())
@@ -214,7 +235,7 @@ class Chatty(Effect):
 _HEAVY = """\
 class Heavy(Effect):
     def render(self, ctx):
-        for _ in range(600):
+        for _ in range(1500):
             np.sin(self.out, out=self.out)
         return self.out
 """

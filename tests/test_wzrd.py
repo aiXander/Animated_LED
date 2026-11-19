@@ -80,28 +80,48 @@ def test_output_stage_recolours_and_follows_wzrd_masters():
     lis = WzrdListener()
     lis._on_colors("/wzrd/colors", *_colors(*VECTORS[0]))    # a red-and-blue wall
     lis._on_masters("/wzrd/masters", 1.0, 1.0)
-    stage = WzrdStage(topo, lis, WzrdSettings(listen=False, spread=0.0))
+    stage = WzrdStage(topo, lis, WzrdSettings(listen=False))
     rt = Runtime(topo, MasterControls(brightness=2.0))
     rt.output_hook = stage
     np.testing.assert_array_equal(run(rt), plain)            # listen off = no hook
 
-    stage.settings = WzrdSettings(listen=True, colour=1.0, spread=0.0)
+    # The wall's palette lies from hub to tip on every leg: red on the inner
+    # half, blue on the outer half, whatever colour the effect drew there.
+    radius = topo.derived["radius"]
+    inner, outer = radius < 0.4, radius > 0.6
+    assert {int(x) for x in topo.derived["leg"][inner]} == {0, 1, 2}
+    lit = frame.max(axis=1) > 0                              # red, cyan and white alike
+    cyan = np.arange(n) % 4 == 1
+
+    stage.settings = WzrdSettings(listen=True, colour=1.0)
     out = run(rt)
-    np.testing.assert_allclose(out[0::4], [[1, 0, 0]] * (n // 4), atol=1e-3)
-    np.testing.assert_allclose(out[1::4], [[0, 0, 1]] * (n // 4), atol=1e-3)   # cyan -> blue
-    np.testing.assert_array_equal(out[2::4], 1.0)            # white stays white
+    np.testing.assert_allclose(out[inner & lit] - [1, 0, 0], 0, atol=1e-3)
+    np.testing.assert_allclose(out[outer & lit] - [0, 0, 1], 0, atol=1e-3)
     np.testing.assert_array_equal(out[3::4], 0.0)            # black stays black
 
+    stage.settings = WzrdSettings(listen=True, colour=1.0, tint_white=False)
+    out = run(rt)
+    np.testing.assert_array_equal(out[2::4], 1.0)            # white stays white
+    np.testing.assert_allclose(out[inner & cyan] - [1, 0, 0], 0, atol=1e-3)
+
+    stage.settings = WzrdSettings(listen=True, colour=0.0, wash=1.0)
+    out = run(rt)                                            # the wall alone, black LEDs too
+    np.testing.assert_allclose(out[inner] - [1, 0, 0], 0, atol=1e-3)
+    np.testing.assert_allclose(out[outer] - [0, 0, 1], 0, atol=1e-3)
+
+    stage.settings = WzrdSettings(listen=True)
     lis._on_masters("/wzrd/masters", 0.0, 1.0)               # WZRD BLACKOUT, coupled
     assert not run(rt).any()
 
 
 def test_settings_saved_under_the_old_level_names_still_load(tmp_path):
-    # The Pi's config/wzrd_input.yaml predates the rename. An unknown key used
-    # to fail validation, and `load` then fell back to defaults: listen off.
+    # The Pi's config/wzrd_input.yaml predates the renames and still carries
+    # `spread`, which is gone. An unknown key used to fail validation, and
+    # `load` then fell back to defaults: listen off.
     path = tmp_path / "wzrd_input.yaml"
-    path.write_text("listen: true\nfollow_level: 0.7\nlevel_full: 0.05\n")
+    path.write_text("listen: true\nspread: 1.0\nfollow_level: 0.7\nlevel_full: 0.05\n")
     s = WzrdSettings.load(path)
     assert s.listen
+    assert (s.mapping, s.wash, s.tint_white) == ("palette", 0.0, True)
     assert s.led_floor == pytest.approx(0.3)
     assert (s.wall_dark, s.wall_bright) == (0.0, 0.05)

@@ -13,7 +13,7 @@ import logging
 import math
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import yaml
@@ -32,10 +32,18 @@ class WzrdSettings(BaseModel):
     listen: bool = Field(
         False, description="Off = packets still show in the status; the output is untouched.")
     colour: float = Field(
-        1.0, ge=0.0, le=1.0, description="How far the LED colours move to the wall's colours.")
-    spread: float = Field(
         1.0, ge=0.0, le=1.0,
-        description="How much of the wall's palette is laid out along the strips.")
+        description="How far the effect's pattern is drawn in the wall's colours.")
+    wash: float = Field(
+        0.0, ge=0.0, le=1.0,
+        description="How much of the wall's own light replaces the effect; 1 = the effect is gone.")
+    mapping: Literal["palette", "rows", "rings", "bands"] = Field(
+        "palette",
+        description="Which part of the wall each LED sees. `palette`: the wall's palette from "
+                    "hub to tip, the same on every leg. The others need WZRD's picture and "
+                    "show `palette` until it is sent.")
+    tint_white: bool = Field(
+        True, description="The effect's white and grey take the wall's colour too.")
     # The wall level maps to LED brightness on a straight line: `led_floor` at
     # `wall_dark` or below, full at `wall_bright` or above. Operator-set on
     # purpose (no auto-ranging): the LEDs never shift under the operator.
@@ -49,7 +57,7 @@ class WzrdSettings(BaseModel):
     couple_brightness: bool = Field(True, description="Multiply by WZRD's master brightness.")
     couple_saturation: bool = Field(True, description="Multiply by WZRD's master saturation.")
     colour_smoothing_s: float = Field(
-        0.7, ge=0.0, le=5.0, description="Time constant of the colour table.")
+        0.7, ge=0.0, le=5.0, description="Time constant of the wall's colours.")
     level_attack_s: float = Field(
         0.0, ge=0.0, le=1.0, description="0 = flash on the same frame the level jumps.")
     level_release_s: float = Field(
@@ -58,11 +66,13 @@ class WzrdSettings(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _rename_old_keys(cls, data: Any) -> Any:
-        # Files saved before the rename (the Pi's among them) still say
-        # follow_level / level_full. Unknown keys fail validation, and `load`
-        # answers that with every default, `listen` off included.
-        if isinstance(data, dict) and ("follow_level" in data or "level_full" in data):
+        # Files saved by older versions (the Pi's among them) still say
+        # follow_level / level_full / spread. Unknown keys fail validation, and
+        # `load` answers that with every default, `listen` off included.
+        if isinstance(data, dict) and (
+                "follow_level" in data or "level_full" in data or "spread" in data):
             data = dict(data)
+            data.pop("spread", None)     # its job is now the `mapping` setting
             if "follow_level" in data:
                 data["led_floor"] = 1.0 - float(data.pop("follow_level"))
             if "level_full" in data:

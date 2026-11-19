@@ -85,7 +85,11 @@ from .auth import attach_password_auth, is_websocket_authenticated
 log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
-DEFAULT_EFFECTS_DIR = Path(__file__).resolve().parents[3] / "config" / "effects"
+# `config/` holds the playlist and the WZRD settings; the live effect library
+# is one folder deeper. Its sibling `effects/double-line/` is a frozen copy of
+# the effects tuned for the old rectangle rig: never loaded, never edited.
+DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
+DEFAULT_EFFECTS_DIR = DEFAULT_CONFIG_DIR / "effects" / "star"
 
 
 def _build_split_transport(cfg: AppConfig, sim: SimulatorTransport) -> SplitTransport:
@@ -218,11 +222,9 @@ def _strips_to_yaml_dicts(strips: list[StripConfig]) -> list[dict[str, Any]]:
             "id": s.id, "controller": s.controller, "output": s.output,
             "pixel_offset": s.pixel_offset, "pixel_count": s.pixel_count,
             "leds_per_meter": s.leds_per_meter,
-            "geometry": {
-                "type": s.geometry.type,
-                "start": list(s.geometry.start),
-                "end": list(s.geometry.end),
-            },
+            # The geometry model as it is, whatever its type. Writing `start`
+            # and `end` by hand would save a spoke as a line with no angle.
+            "geometry": s.geometry.model_dump(mode="json", exclude_defaults=True),
             "reversed": s.reversed,
         }
         for s in strips
@@ -297,10 +299,16 @@ def create_app(
     )
     runtime.crossfade_seconds = float(cfg.agent.default_crossfade_seconds)
 
-    eff_dir = (effects_dir or DEFAULT_EFFECTS_DIR).resolve()
+    # The playlist and the WZRD settings live in the config folder, which is
+    # not the library's parent: the default library sits two levels below it.
+    if effects_dir is None:
+        eff_dir, config_dir = DEFAULT_EFFECTS_DIR.resolve(), DEFAULT_CONFIG_DIR.resolve()
+    else:
+        eff_dir = effects_dir.resolve()
+        config_dir = eff_dir.parent
     store = EffectStore(eff_dir)
     store.install_examples_if_missing()
-    playlist = Playlist.load(default_playlist_path(eff_dir.parent))
+    playlist = Playlist.load(default_playlist_path(config_dir))
 
     # Boot defaults: try to load `pulse_mono` into both slots; if that fails
     # for any reason, fall back to a single black layer.
@@ -400,7 +408,7 @@ def create_app(
     app.state.wzrd = None
     if cfg.wzrd_input.enabled:
         from ..wzrd import mount_wzrd
-        app.state.wzrd = mount_wzrd(app, cfg, runtime, topology, eff_dir.parent)
+        app.state.wzrd = mount_wzrd(app, cfg, runtime, topology, config_dir)
 
     from .agent import install_agent_routes
     install_agent_routes(app, cfg.agent)
@@ -628,7 +636,7 @@ def create_app(
                     "id": s.id, "controller": s.controller, "output": s.output,
                     "pixel_offset": s.pixel_offset, "pixel_count": s.pixel_count,
                     "leds_per_meter": s.leds_per_meter,
-                    "start": list(s.geometry.start), "end": list(s.geometry.end),
+                    "start": list(s.start), "end": list(s.end),
                     "reversed": s.reversed,
                 }
                 for s in topo.strips
@@ -1197,7 +1205,7 @@ def create_app(
                 {
                     "id": s.id, "pixel_offset": s.pixel_offset,
                     "pixel_count": s.pixel_count,
-                    "start": list(s.geometry.start), "end": list(s.geometry.end),
+                    "start": list(s.start), "end": list(s.end),
                     "reversed": s.reversed,
                 }
                 for s in new_topo.strips

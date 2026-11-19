@@ -1,0 +1,68 @@
+name: leg_sweep
+summary: 'A slow beam turning round the hub: each leg glows as the beam passes its
+  direction; twist bends it into a spiral that runs out along the legs.'
+source: agent
+created_at: 1794854814.264789
+updated_at: 1794854927.884181
+params:
+- key: palette
+  label: Palette
+  control: palette
+  default: twilight
+- key: speed
+  label: Speed
+  help: Turns of the beam per minute.
+  control: slider
+  min: 0.0
+  max: 30.0
+  step: 0.5
+  default: 4.0
+  unit: turns/min
+- key: width
+  label: Beam width
+  help: Half-width in turns. 0.5 = no leg ever goes dark.
+  control: slider
+  min: 0.05
+  max: 0.5
+  step: 0.01
+  default: 0.4
+- key: twist
+  label: Twist
+  help: How much later the beam reaches a leg's tip than the hub. 0 = whole legs.
+  control: slider
+  min: -1.0
+  max: 1.0
+  step: 0.01
+  default: 0.25
+- key: floor
+  label: Brightness floor
+  help: Brightness away from the beam.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.05
+- key: peak
+  label: Brightness peak
+  help: Brightness in the beam.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.75
+- key: beat_push
+  label: Beat push
+  help: How hard a beat pushes the beam on. 0 = steady.
+  control: slider
+  min: 0.0
+  max: 4.0
+  step: 0.1
+  default: 1.0
+param_values:
+  palette: twilight
+  speed: 4.0
+  width: 0.4
+  twist: 0.25
+  floor: 0.05
+  peak: 0.75
+  beat_push: 1.0

@@ -1,0 +1,70 @@
+name: audio_radial
+summary: Palette rings travelling out from the hub; a band drives brightness and each
+  beat pushes the rings along.
+source: bundled
+created_at: 0
+updated_at: 1794856109.954247
+params:
+- key: palette
+  label: Palette
+  control: palette
+  default: ocean
+- key: ring_speed
+  label: Ring speed
+  help: Palette cycles per second. Negative = rings travel inward.
+  control: slider
+  min: -2.0
+  max: 2.0
+  step: 0.01
+  default: 0.1
+  unit: cycles/s
+- key: ring_count
+  label: Ring count
+  help: Palette cycles between the hub and the tips.
+  control: slider
+  min: 0.25
+  max: 6.0
+  step: 0.05
+  default: 1.5
+- key: audio_band
+  label: Brightness driver
+  help: Which audio band drives the brightness.
+  control: select
+  options:
+  - low
+  - mid
+  - high
+  default: low
+- key: brightness_floor
+  label: Brightness floor
+  help: Brightness when the music is silent; the band fills the rest.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.5
+- key: audio_spread
+  label: Audio reach
+  help: 0 = the whole rig pulses together. 1 = quiet passages light only the hub and
+    loud ones push the light out to the tips.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.5
+- key: beat_surge
+  label: Beat surge
+  help: How hard each beat pushes the rings along. 0 = steady motion.
+  control: slider
+  min: 0.0
+  max: 6.0
+  step: 0.1
+  default: 1.0
+param_values:
+  palette: ocean
+  ring_speed: 0.1
+  ring_count: 1.5
+  audio_band: low
+  brightness_floor: 0.5
+  audio_spread: 0.5
+  beat_surge: 1.0

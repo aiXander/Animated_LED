@@ -20,6 +20,8 @@ import builtins
 import types
 from typing import Any
 
+import numpy as np
+
 from .base import Effect
 from .frames import FRAME_DESCRIPTIONS
 
@@ -58,6 +60,24 @@ def _build_safe_builtins() -> dict[str, Any]:
 
 
 SAFE_BUILTINS = _build_safe_builtins()
+
+
+def _warm_numpy_methods() -> None:
+    """Call once, at import, every array method numpy loads lazily.
+
+    numpy imports the Python helper behind these methods on their first use,
+    and that import looks up `__import__` in the builtins of the calling
+    frame. Effect code has none, so `arr.max()` raised KeyError('__import__')
+    whenever an effect happened to be the first caller in the process: the
+    same effect compiled or failed depending on what had run before it.
+    """
+    a = np.zeros(2, dtype=np.float32)
+    for name in ("any", "all", "sum", "prod", "max", "min", "mean", "std", "var"):
+        getattr(a, name)()
+    a.clip(0.0, 1.0)
+
+
+_warm_numpy_methods()
 
 
 _FORBIDDEN_NODES = (ast.Import, ast.ImportFrom)

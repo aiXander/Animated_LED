@@ -1,0 +1,72 @@
+name: rainbow_comet
+summary: 'Rainbow comets on one path through the star: out along a leg, back to the
+  hub, on to the next leg; each beat nudges the rainbow along the colour wheel.'
+source: agent
+created_at: 1778352980.7684128
+updated_at: 1794855910.941014
+params:
+- key: direction
+  label: Direction
+  help: The order in which the legs are visited.
+  control: select
+  options:
+  - Clockwise
+  - Counter-Clockwise
+  default: Clockwise
+- key: speed
+  label: Speed
+  help: Laps of the whole star per second; a lap runs out and back along every leg.
+  control: slider
+  min: 0.005
+  max: 1.0
+  step: 0.005
+  default: 0.03
+  unit: laps/s
+- key: comets
+  label: Comets
+  help: Evenly spaced along the path.
+  control: int_slider
+  min: 1
+  max: 6
+  step: 1
+  default: 1
+- key: tail_length
+  label: Tail length
+  help: Tail as a fraction of the gap to the next comet.
+  control: slider
+  min: 0.1
+  max: 1.0
+  step: 0.01
+  default: 0.8
+- key: rainbow_stretch
+  label: Rainbow stretch
+  help: Times the colour wheel repeats along the whole path.
+  control: slider
+  min: 0.1
+  max: 5.0
+  step: 0.01
+  default: 0.57
+- key: base_brightness
+  label: Base brightness
+  help: Brightness when the music is silent; bass fills the rest.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.5
+- key: beat_hue_shift
+  label: Beat hue shift
+  help: How far each beat nudges the colours along the wheel. 0 = off.
+  control: slider
+  min: 0.0
+  max: 0.5
+  step: 0.01
+  default: 0.06
+param_values:
+  direction: Clockwise
+  speed: 0.03
+  comets: 1
+  tail_length: 0.8
+  rainbow_stretch: 0.57
+  base_brightness: 0.5
+  beat_hue_shift: 0.06

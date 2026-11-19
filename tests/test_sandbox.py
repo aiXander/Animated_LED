@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from ledctl.surface.runtime import build_runtime_namespace
@@ -82,3 +85,23 @@ def test_open_blocked():
 
 def test_max_source_bytes_constant_8k():
     assert MAX_SOURCE_BYTES == 8 * 1024
+
+
+def test_array_methods_work_when_an_effect_is_their_first_caller():
+    # numpy loads the helper behind `.any()`, `.max()`, `.mean()`, `.clip()`...
+    # on first use, through `__import__`, which effect code does not have. A
+    # fresh interpreter, because any earlier call in this process hides it.
+    code = '''
+from ledctl.surface.runtime import build_runtime_namespace
+from ledctl.surface.sandbox import compile_effect
+src = """
+class E(Effect):
+    def render(self, ctx):
+        a = np.ones(4, dtype=np.float32)
+        return (a.any(), a.all(), a.max(), a.min(), a.mean(), a.std(), a.var(),
+                a.prod(), a.sum(), a.clip(0, 1))
+"""
+compile_effect(src, "e", build_runtime_namespace("e"))().render(None)
+'''
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr

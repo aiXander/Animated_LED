@@ -1,14 +1,14 @@
 name: pulse_mono
-summary: Solid colour following one audio band, with a beat punch and a slow breath
-  in silence. The safe-idle effect.
+summary: One colour, brightest at the hub, following one audio band, with a soft beat
+  swell and a slow breath rolling out from the hub in silence. The safe-idle effect.
 source: bundled
 created_at: 0
-updated_at: 0
+updated_at: 1794854186.786551
 params:
 - key: color
   label: Colour
   control: color
-  default: '#ff5566'
+  default: '#ff6a3d'
 - key: floor
   label: Brightness floor
   help: Brightness when the music is silent; the band fills the rest.
@@ -16,7 +16,7 @@ params:
   min: 0.0
   max: 1.0
   step: 0.01
-  default: 0.4
+  default: 0.12
 - key: audio_band
   label: Brightness driver
   help: Which audio band drives the brightness.
@@ -26,14 +26,22 @@ params:
   - mid
   - high
   default: low
-- key: beat_punch
-  label: Beat punch
-  help: Extra flash on every beat, decaying over a quarter second.
+- key: band_depth
+  label: Band depth
+  help: How far the band can lift the brightness. 0 = the breath only.
   control: slider
   min: 0.0
   max: 1.0
   step: 0.01
-  default: 0.3
+  default: 0.5
+- key: beat_punch
+  label: Beat swell
+  help: Extra brightness on every beat, fading over about a second.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.15
 - key: breath
   label: Idle breath
   help: Depth of the slow breath that takes over when the band is quiet.
@@ -41,10 +49,20 @@ params:
   min: 0.0
   max: 1.0
   step: 0.01
-  default: 0.3
+  default: 0.5
+- key: tip_fade
+  label: Tip fade
+  help: How much dimmer the tips are than the hub. 0 = one even colour.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.35
 param_values:
-  color: '#ff5566'
-  floor: 0.4
+  color: '#ff6a3d'
+  floor: 0.12
   audio_band: low
-  beat_punch: 0.3
-  breath: 0.3
+  band_depth: 0.5
+  beat_punch: 0.15
+  breath: 0.5
+  tip_fade: 0.35

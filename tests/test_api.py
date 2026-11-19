@@ -38,7 +38,7 @@ def test_state_endpoint(client: TestClient):
 def test_topology_endpoint(client: TestClient):
     r = client.get("/topology")
     assert r.status_code == 200
-    assert r.json()["pixel_count"] == 1800
+    assert r.json()["pixel_count"] == sum(s["pixel_count"] for s in r.json()["strips"])
 
 
 def test_list_effects_includes_examples(client: TestClient):

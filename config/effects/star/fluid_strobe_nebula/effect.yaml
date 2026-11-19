@@ -1,0 +1,82 @@
+name: fluid_strobe_nebula
+summary: A liquid plasma field sampled along the legs, each leg its own slice; bass
+  swells the glow and a beat adds a soft white swell.
+source: agent
+created_at: 1779487625.890335
+updated_at: 1794855910.941014
+params:
+- key: flow_speed
+  label: Flow speed
+  help: Speed of the plasma motion.
+  control: slider
+  min: 0.05
+  max: 5.0
+  step: 0.05
+  default: 0.5
+- key: scale
+  label: Pattern scale
+  help: Higher = more, narrower waves on each leg.
+  control: slider
+  min: 0.2
+  max: 4.0
+  step: 0.05
+  default: 1.0
+- key: hue
+  label: Base hue
+  help: Where on the colour wheel the pattern starts (0 = red).
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.05
+- key: hue_range
+  label: Hue range
+  help: How much of the colour wheel the pattern spans.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.3
+- key: hue_drift
+  label: Hue drift
+  help: How fast the colours travel round the wheel. 0 = fixed colours.
+  control: slider
+  min: 0.0
+  max: 0.2
+  step: 0.005
+  default: 0.01
+  unit: cycles/s
+- key: bass_surge
+  label: Bass surge
+  help: How much of the brightness is driven by the bass. 0 = steady glow.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.35
+- key: strobe
+  label: Beat swell
+  help: White added on every beat. 0 = off.
+  control: slider
+  min: 0.0
+  max: 2.0
+  step: 0.01
+  default: 0.12
+- key: strobe_decay
+  label: Swell decay
+  help: How long the white takes to fade. Short = a hard strobe.
+  control: slider
+  min: 0.05
+  max: 1.5
+  step: 0.01
+  default: 0.5
+  unit: s
+param_values:
+  flow_speed: 0.5
+  scale: 1.0
+  hue: 0.05
+  hue_range: 0.3
+  hue_drift: 0.01
+  bass_surge: 0.35
+  strobe: 0.12
+  strobe_decay: 0.5

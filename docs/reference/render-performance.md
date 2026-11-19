@@ -102,6 +102,12 @@ thing to do on-site is read the `perf` block (see Runbook).
   for days keeps its own phase, `phase = (phase + ctx.dt * speed) % 1.0`, with one wrapped
   clock per wave term (a single clock scaled by 0.7 jumps each time it wraps). The library
   effects in `surface/examples/` do this.
+- **PREVIEW renders on far fewer ticks than LIVE** (only when a browser frame is due, then
+  every second one). Anything that lasts one tick has to be carried to the preview's next
+  render: elapsed time is summed, and a beat is held (`Runtime.render`). Without that a beat
+  effect in PREVIEW fired on one beat in five while the same effect on the LEDs caught all of
+  them. Pinned by
+  `tests/test_runtime.py::test_a_beat_between_two_preview_renders_still_reaches_the_preview`.
 - **A tight-loop benchmark understates the live cost.** The real loop sleeps between frames,
   the CPU clocks down, and the same effect measured 2–3× slower in the running server.
 - **`late_ms` on macOS is not evidence**: bare event-loop timers there fire 1–2 ms late and

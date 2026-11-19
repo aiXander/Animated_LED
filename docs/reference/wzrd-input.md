@@ -13,7 +13,7 @@ Audio swell is ledctl's own feature on the same output stage: LED brightness fol
 
 - `src/ledctl/wzrd/` — the whole WZRD module. `listener.py` (parse, validate, store the latest
   packet), `state.py` (`WzrdSettings`, and `WzrdState`: all smoothing), `stage.py` (`WzrdStage`,
-  the output hook: table bake, recolour, gains, status payload), `api.py` (`GET/PATCH /wzrd`),
+  the output hook: palette bake, the wall light, recolour, gains, status payload), `api.py` (`GET/PATCH /wzrd`),
   `__init__.py` (`mount_wzrd`, the only entry point).
 - `src/ledctl/api/server.py`, `create_app` — the one block that mounts the module when
   `wzrd_input.enabled` is true. Deleting `src/ledctl/wzrd/`, that block, and the import in
@@ -57,11 +57,17 @@ moves what `quiet` and `loud` mean here.
   envelope that pushes the recent peak toward full output, so any gain applied before it is
   cancelled within seconds. The hook's gain and the swell gain therefore multiply after the
   brightness step; the recolour runs first, on the effect's raw output.
-- **`spread` defaults to 1.** With the effect's own hue alone choosing the wall colour, an effect
-  that uses one or two hues shows one wall colour and can miss the main one. At 1 the wall's
-  palette lies along the strips in proportion to each colour's share, whatever effect runs.
+- **Where an LED is picks its wall colour; the effect supplies only brightness.** The stage
+  holds the *wall light*, one colour per LED, and two amounts combine it with the effect:
+  `colour` draws the effect's pattern in the wall light, `wash` crossfades to the wall light
+  itself. The `mapping` setting says which part of the wall an LED sees; `palette`, the only
+  one built, reads the wall's palette at `radius`, so each colour is as long as its share and
+  every leg is the same. Picking by the effect's own hue (the first design) showed one wall
+  colour under a one-hue effect and left a white or grey effect colourless: a cream wall gave
+  grey LEDs. `tint_white` off brings back that last part on purpose.
   Rejected: spreading the effect's hue histogram over the table (hard-edged colour blocks);
-  mapping brightness through the table (a full-brightness wash collapses to one colour).
+  mapping brightness through the table (a full-brightness wash collapses to one colour); a
+  multiply beside `wash` (it looked the same, for a second slider).
 - **Colours are smoothed premultiplied by weight**, and `white` weighted by level. Smoothing
   colours directly lets an empty bin's centre hue, or a faint bin's noise, bleed into the table.
 - **WZRD's masters are not smoothed**, so its BLACKOUT and FLASH land on the next LED frame.
@@ -104,11 +110,17 @@ moves what `quiet` and `loud` mean here.
   `status.level` is the raw wall level, the green marker on the panel's "wall range" slider.
 - **Wall level to LED brightness is operator-set, never automatic** (Xander's call: nothing
   may shift under him mid-show): `led_floor` at `wall_dark` or below, full at `wall_bright`,
-  a straight line between. Files saved under the old names (`follow_level` = 1 - `led_floor`,
-  `level_full` = `wall_bright`) are converted on load; without that, `load` falls back to
-  every default, `listen` off included. Pinned by
+  a straight line between.
+- **A settings key that is renamed or removed must be handled on load.** The model forbids
+  unknown keys and `load` answers a validation error with every default, `listen` off
+  included. Files saved under old names (`follow_level` = 1 - `led_floor`, `level_full` =
+  `wall_bright`) are converted, and the removed `spread` is dropped. Pinned by
   `tests/test_wzrd.py::test_settings_saved_under_the_old_level_names_still_load`.
-- The recolour cost is unmeasured on a Pi 4 (about 0.1 ms per leg on an M2).
+- `status.mapping_active` is the mapping actually shown. `rows`, `rings` and `bands` need
+  WZRD's picture, which is not on the wire, so it always reads `palette` and the panel says so
+  under the dropdown.
+- The recolour cost is unmeasured on a Pi 4 (about 0.01 ms per rendered output on an M2 at
+  1350 LEDs).
 
 ## Developing on one Mac
 

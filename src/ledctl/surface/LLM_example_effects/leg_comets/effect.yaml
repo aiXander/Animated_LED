@@ -1,0 +1,41 @@
+name: leg_comets
+summary: 'Comets that each own a leg: out from the hub to the tip with a fading tail,
+  then a hop to another leg. A beat gives them a short push.'
+source: agent
+created_at: 1794853542.926852
+updated_at: 1794854186.786551
+params:
+- key: palette
+  label: Palette
+  help: Each comet takes its own colour from it.
+  control: palette
+  default: candy
+- key: speed
+  label: Speed
+  help: 'Radius per second: 0.14 = hub to tip in seven seconds.'
+  control: slider
+  min: 0.02
+  max: 1.0
+  step: 0.01
+  default: 0.14
+- key: tail
+  label: Tail length
+  help: As a fraction of the radius.
+  control: slider
+  min: 0.03
+  max: 1.0
+  step: 0.01
+  default: 0.4
+- key: beat_push
+  label: Beat push
+  help: How hard a beat pushes the comets forward. 0 = steady.
+  control: slider
+  min: 0.0
+  max: 4.0
+  step: 0.1
+  default: 1.0
+param_values:
+  palette: candy
+  speed: 0.14
+  tail: 0.4
+  beat_push: 1.0

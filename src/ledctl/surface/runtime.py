@@ -26,6 +26,7 @@ import copy
 import hashlib
 import itertools
 import logging
+import math
 import re
 import time
 import traceback
@@ -45,6 +46,7 @@ from .base import (
     ParamView,
     RigInfo,
 )
+from .frames import PROMPT_FRAMES, rank_legs, strip_direction
 from .helpers import (
     LUT_SIZE,
     PI,
@@ -244,6 +246,11 @@ class Runtime:
         # integrates at 0.5× speed and effects appear to jump 2× faster the
         # moment they're promoted to live (which always renders full-rate).
         self._preview_dt_accum: float = 0.0
+        # A beat lasts one tick. The preview renders on far fewer ticks (the
+        # browser's frame rate, halved), so the beat is held until its next
+        # render; without this a beat effect in PREVIEW fires on one beat in
+        # five while the same effect on the LEDs catches them all.
+        self._preview_beat_accum: float = 0.0
         self._cf: CrossfadeState | None = None
         # Render scratch buffers — one accumulator per leg + one for crossfade.
         self._live_buf = np.zeros((self.n, 3), dtype=np.float32)
@@ -556,12 +563,17 @@ class Runtime:
     def _build_init_ctx(self) -> EffectInitContext:
         bbox_min = tuple(float(x) for x in self.topology.bbox_min.tolist())
         bbox_max = tuple(float(x) for x in self.topology.bbox_max.tolist())
+        legs = rank_legs(self.topology.strips)
         rig = RigInfo(
             bbox_min=bbox_min,
             bbox_max=bbox_max,
             target_fps=60.0,
             span_x_m=float(bbox_max[0] - bbox_min[0]),
             span_y_m=float(bbox_max[1] - bbox_min[1]),
+            n_legs=len(legs),
+            leg_angles=tuple(strip_direction(s) for s in legs),
+            leg_lengths_m=tuple(math.dist(s.start, s.end) for s in legs),
+            radius_m=float(self.topology.radius_m),
         )
         return EffectInitContext(
             n=self.n,
@@ -822,8 +834,11 @@ class Runtime:
         # would teleport stateful effects forward by that idle duration).
         if self.mode == "design":
             self._preview_dt_accum += dt
+            if audio.beat > self._preview_beat_accum:
+                self._preview_beat_accum = audio.beat
         else:
             self._preview_dt_accum = 0.0
+            self._preview_beat_accum = 0.0
         if self.mode == "design" and render_preview:
             self._preview_tick += 1
             do_preview = (
@@ -833,8 +848,13 @@ class Runtime:
             if do_preview:
                 preview_dt = self._preview_dt_accum
                 self._preview_dt_accum = 0.0
-                self._render_composition(self.preview, wall_t, preview_dt, t_eff, audio,
-                                         out=self._preview_buf)
+                preview_audio = audio
+                if self._preview_beat_accum != audio.beat:
+                    preview_audio = copy.copy(audio)
+                    preview_audio.beat = self._preview_beat_accum
+                self._preview_beat_accum = 0.0
+                self._render_composition(self.preview, wall_t, preview_dt, t_eff,
+                                         preview_audio, out=self._preview_buf)
                 if self.blackout:
                     self._preview_buf.fill(0.0)
                 self._apply_master_output(self._preview_buf, wall_t,
@@ -1096,12 +1116,12 @@ def _diagnostic_hint(exc: Exception) -> str:
     msg = str(exc)
     name = type(exc).__name__
     if name == "AttributeError":
-        # Most common: ctx.x / ctx.y / ctx.u_loop instead of ctx.frames.<name>
+        # Most common: ctx.radius / ctx.leg instead of ctx.frames.<name>
         if "'EffectFrameContext'" in msg or "'EffectInitContext'" in msg:
             return (
                 "Hint: the context doesn't have that attribute directly. "
-                "Per-LED frames live at `ctx.frames.<name>` (e.g. `ctx.frames.x`, "
-                "`ctx.frames.u_loop`, `ctx.frames.radius`). The 3D position array "
+                "Per-LED frames live at `ctx.frames.<name>` (e.g. `ctx.frames.radius`, "
+                "`ctx.frames.leg`). The 3D position array "
                 "is `ctx.pos` (shape (N, 3)). The audio bands are at "
                 "`ctx.audio.low / .mid / .high`. See COORDINATE FRAMES + RUNTIME "
                 "API in the system prompt for the full list."
@@ -1109,10 +1129,8 @@ def _diagnostic_hint(exc: Exception) -> str:
         if "unknown frame" in msg:
             # FrameMap.__getattr__ raises with this prefix.
             return (
-                "Hint: that frame doesn't exist. Available names are listed in "
-                "COORDINATE FRAMES (x/y/z, signed_x/y/z, u_loop, radius, angle, "
-                "side_top, side_bottom, axial_dist, axial_signed, corner_dist, "
-                "strip_id, chain_index, distance)."
+                "Hint: that frame doesn't exist. Use the names listed in "
+                f"COORDINATE FRAMES: {', '.join(PROMPT_FRAMES)}."
             )
         if "unknown param" in msg:
             # ParamView.__getattr__ raises with this prefix when an effect

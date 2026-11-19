@@ -11,7 +11,7 @@
 > with network audio on the Pi switched by `LEDCTL_AUDIO_SOURCE=network` in the Pi's `.env`;
 > onsets travel as single packets with no redundancy, and an event delay is built only if
 > rehearsal shows the LEDs leading the wall; WZRD's master brightness and saturation couple to
-> the LEDs, each switchable in the modal; `spread` defaults to 1; the render loop wakes on
+> the LEDs, each switchable in the modal; the render loop wakes on
 > onset packets only; the packet allowlist is built but empty at the gig; signal lost means
 > hold; Xander turns the public Tailscale Funnel off himself on the Pi day.
 
@@ -24,6 +24,9 @@ config.
 1. **Before pulling the new code, add `LEDCTL_PASSWORD=...` to the Pi's `.env`, with a new
    password, not the previous one.** Since the password moved out of the tracked config,
    ledctl refuses to start when the variable is missing, and the LEDs stay dark.
+   The same `.env` needs a working `OPENROUTER_API_KEY`: the Mac's key was replaced on
+   2026-11-16 and Xander copies the new one over by hand. Without it the chat panel on the Pi
+   fails; the LEDs are unaffected.
 2. **Switch to network audio:** add `LEDCTL_AUDIO_SOURCE=network` to the same `.env`. Removing
    the line returns the Pi to its own microphone and server.
 3. **Stop the network watchdog for the gig:** `sudo systemctl disable --now net-watchdog`.
@@ -49,7 +52,7 @@ config.
 7. **Frame rate, never measured on a Pi:** `engine.fps` holds 60 with audio flowing (the
    render loop now schedules each frame from when the previous one was due), and with
    `listen` on against off (the recolour cost on a Pi 4 is unknown; on the Mac it is about
-   0.1 ms). On the Mac the rate dipped to 55-57 when the machine was busy, with `listen` on
+   0.01 ms). On the Mac the rate dipped to 55-57 when the machine was busy, with `listen` on
    and off alike; watch whether the Pi shows the same.
 8. **Rehearsal settings:** the "wall range" handles around the level shown while typical content plays; the
    ledctl brightness master low enough that the LEDs do not wash out the projection; for the
@@ -69,6 +72,32 @@ config.
 *Done when* the LEDs follow WZRD's wall and its master sliders for 30 minutes with a steady
 60 fps and no drop in the `frames_sent` rate.
 
+## Open: the hub rig on site (needs Xander and the real rig)
+
+The rig is now a hub with three legs ([rig-geometry.md](../reference/rig-geometry.md)); all of
+it was built and watched in the simulator only.
+
+1. **Before the Pi's first `git pull`,** move its old Pi-only effect library aside and do the
+   performance setup: the pending blocks under "Hardware & on-site operations" in `CLAUDE.md`.
+   Nothing reaches the Pi until Xander has committed and pushed. Then read the `perf` block of
+   `/state`: no effect has ever been timed on the Pi 4 (on the Mac every library effect
+   renders in under 0.1 ms; the budget is 5 ms).
+2. **Lay the legs out and set each leg's `angle_deg`** (runbook in rig-geometry.md). The
+   angles in both configs are placeholders. Each leg is 15 m, so three straight legs need a
+   floor about 26 m across; Xander lays them organically, and a curved leg is entered as
+   straight.
+3. **Check one frame with the fourth output unplugged.** A 1350-pixel frame is expected to
+   work and was never sent to the firmware; the fix if it does not is in rig-geometry.md
+   ("The Gledopto is not reconfigured").
+4. **At gig brightness, look at white on the leg tips.** Orange tips mean voltage drop: lower
+   the brightness master or feed power at the tips. Power was designed for two rows fed from
+   the middle (`Hardware_setup.md`); a star moves every injection point.
+5. **With WZRD running, set the wall-light settings** ([wall-light.md](wall-light.md),
+   "Settings to try").
+
+*Done when* the playlist (the seven first-night effects) has run on the real rig for 30
+minutes at a steady 60 fps with WZRD driving the colours and nothing strobes.
+
 ## Open: not checked on the Mac
 
 - The mobile page on a real phone (it was checked in a desktop-width browser window).
@@ -85,11 +114,11 @@ config.
   walking up from its own path; `--no-fft` does not exist (switch the FFT off over the
   server's WebSocket once it answers); restart the server on exit with a backoff. Needs
   `LimitRTPRIO` and write access to the audio repo's `configs/` in `ledctl.service`.
-- A line in the LLM prompt (`surface/prompt.py`) while `listen` is on, saying that hues only
-  pick wall colours.
+- A line in the LLM prompt (`surface/prompt.py`) while `listen` is on, saying that the wall
+  replaces the effect's colours and only its brightness pattern shows.
 - Controls for `quiet` and `loud` in the UI; an audio-source switch in the UI.
 - Per-zone colours and the picture itself on the LEDs: planned in
-  [wall-light.md](wall-light.md), which also replaces `spread` with a `mapping` setting.
+  [wall-light.md](wall-light.md).
 
 ## Shipped
 

@@ -1,9 +1,15 @@
 entries:
-- name: center_color_comets
-  play_seconds: 5.0
-- name: audio_radial
-  play_seconds: 5.0
-- name: clockwise_flow
-  play_seconds: 5.0
-- name: circling_comet_hueshift_on_beat
-  play_seconds: 5.0
+- name: slow_breath_radial
+  play_seconds: 120.0
+- name: hub_ember
+  play_seconds: 120.0
+- name: tide
+  play_seconds: 120.0
+- name: aurora_drift
+  play_seconds: 120.0
+- name: leg_comets
+  play_seconds: 120.0
+- name: beat_rings
+  play_seconds: 120.0
+- name: pulse_mono
+  play_seconds: 120.0

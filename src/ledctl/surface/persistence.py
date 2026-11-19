@@ -1,11 +1,14 @@
 """Disk persistence for effects.
 
 Layout:
-    config/effects/<slug>/effect.py     ← Python source, real .py file
-    config/effects/<slug>/effect.yaml   ← metadata + param schema + current values
+    config/effects/star/<slug>/effect.py     ← Python source, real .py file
+    config/effects/star/<slug>/effect.yaml   ← metadata + param schema + current values
+
+`config/effects/double-line/` beside it is a frozen copy of the effects written
+for the old rectangle rig. Nothing loads it.
 
 Bundled examples live under `src/ledctl/surface/examples/<slug>/...` and
-copy themselves into `config/effects/` on first boot if not already present.
+copy themselves into the library on every start if not already present.
 """
 
 from __future__ import annotations
@@ -58,7 +61,7 @@ class StoredEffect:
 
 
 class EffectStore:
-    """Filesystem CRUD for `config/effects/`.
+    """Filesystem CRUD for one library folder (`config/effects/star/`).
 
     Pure I/O — no engine state. The runtime calls into this layer to load/save.
     """

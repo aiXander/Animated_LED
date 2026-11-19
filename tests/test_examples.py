@@ -1,18 +1,22 @@
-"""Each effect that ships in git (the seed folder and the shared library):
-load + fence-test + render 60 frames cleanly."""
+"""Each effect that ships in git (the seed folder, the live library and the
+examples the LLM prompt shows): install through the real compile pipeline, then
+render 60 frames cleanly, on a three-leg and on a four-leg rig. And the prompt
+itself describes the rig it is built for."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import numpy as np
+import pytest
 import yaml
 
 from ledctl.api.server import DEFAULT_EFFECTS_DIR
-from ledctl.config import load_config
+from ledctl.config import AppConfig
 from ledctl.masters import MasterControls
-from ledctl.surface import Runtime
+from ledctl.surface import Runtime, build_system_prompt
 from ledctl.surface.base import AudioView
+from ledctl.surface.prompt import LLM_EXAMPLES_DIR
 from ledctl.topology import Topology
 
 DEV = Path(__file__).resolve().parents[1] / "config" / "config.dev.yaml"
@@ -21,15 +25,23 @@ EXAMPLES_DIR = (
 )
 
 
-def _topo() -> Topology:
-    return Topology.from_config(load_config(DEV))
+def _topo(n_legs: int) -> Topology:
+    """The dev rig with its legs replaced by `n_legs` evenly spread spokes."""
+    raw = yaml.safe_load(DEV.read_text())
+    leg = raw["strips"][0]
+    raw["strips"] = [
+        {**leg, "id": f"leg_{i + 1}", "output": i + 1, "pixel_offset": i * leg["pixel_count"],
+         "geometry": {"type": "spoke", "angle_deg": 90 + i * 360 / n_legs}}
+        for i in range(n_legs)
+    ]
+    return Topology.from_config(AppConfig.model_validate(raw))
 
 
 def _bundled_examples() -> list[tuple[str, str, list[dict], dict]]:
-    """The seed folder plus the library in `config/effects/`: both are tracked,
-    and the library is what every device pulls."""
+    """The seed folder, the live library (`config/effects/star/`, what every
+    device pulls) and the prompt's examples (what the LLM copies from)."""
     out = []
-    for root in (EXAMPLES_DIR, DEFAULT_EFFECTS_DIR):
+    for root in (EXAMPLES_DIR, DEFAULT_EFFECTS_DIR, LLM_EXAMPLES_DIR):
         for sub in sorted(root.iterdir()):
             if not sub.is_dir():
                 continue
@@ -50,11 +62,13 @@ def _audio(beat: int = 0, low: float = 0.5) -> AudioView:
                      bpm=120.0, connected=True)
 
 
-def test_each_example_loads_and_renders_cleanly():
+@pytest.mark.parametrize("n_legs", [3, 4])
+def test_each_example_loads_and_renders_cleanly(n_legs):
     examples = _bundled_examples()
     assert examples, "no bundled examples found"
+    topo = _topo(n_legs)
+    assert topo.pixel_count == n_legs * 450
     for name, src, schema, values in examples:
-        topo = _topo()
         rt = Runtime(topo, MasterControls())
         rt.install_layer(
             "live", name=name.split("/")[-1], summary="bundled", source=src,
@@ -71,3 +85,16 @@ def test_each_example_loads_and_renders_cleanly():
             assert live.dtype == np.float32, name
             assert np.isfinite(live).all(), name
             assert live.min() >= -1e-6 and live.max() <= 1.0 + 1e-6, name
+
+
+@pytest.mark.parametrize("n_legs", [3, 4])
+def test_prompt_describes_the_hub_rig_it_is_built_for(n_legs):
+    """The LLM's picture of the rig is generated from the topology: the right
+    number of legs, no word left from the rectangle this rig replaced (in the
+    prose or in an example), and inside the size limit."""
+    prompt = build_system_prompt(topology=_topo(n_legs), runtime=None)
+    assert f"on {n_legs} legs" in prompt
+    assert f"leg {n_legs - 1}:" in prompt and f"leg {n_legs}:" not in prompt
+    for word in ("rectangle", " row", "u_loop", "side_", "axial_", "corner_dist"):
+        assert word not in prompt.lower(), word
+    assert len(prompt) <= 26_000

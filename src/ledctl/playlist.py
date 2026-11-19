@@ -2,7 +2,7 @@
 
 When started, an asyncio task walks the entries in order, each playing for
 its declared `play_seconds` before crossfading to the next. Effects come
-from the on-disk library (``config/effects/<name>/``). The playlist itself
+from the on-disk library (``config/effects/star/<name>/``). The playlist itself
 persists to ``config/playlist.yaml`` so it survives restarts.
 
 Out of scope for now: multiple playlists, manual jump-to-entry, shuffle.

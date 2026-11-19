@@ -7,16 +7,15 @@ Structure (single canonical home per topic — no restatements):
 
   ROLE                — your job + scope of authorship
   TOOL                — write_effect JSON shape + carry-forward rules
-  PHYSICAL RIG        — geometry + ASCII + 2D-plane caveat
-  INSTALL             — per-strip layout (from topology, live)
-  COORDINATE FRAMES   — ctx.frames.<name> reference
+  RIG                 — hub and legs, generated from the topology + the thin-legs rules
+  COORDINATE FRAMES   — ctx.frames.<name> reference (the hub-rig frames only)
   AUDIO INPUT         — ctx.audio.* + the canonical beat-vs-bands rule
   EFFECT CONTRACT     — code skeleton + ctx surface + sandbox rules
   RUNTIME API         — helpers / constants pre-injected into the module
   PARAM SCHEMA        — 0–8 operator controls + per-effect vs master
-  PERFORMANCE         — Pi budget, RULE 0 (no for loops), allocation, float32
+  PERFORMANCE         — Pi budget, RULE 0 (no for loops), the three habits, float32
   ANTI-PATTERNS       — concrete mistakes (no duplicates of rules above)
-  EXAMPLE EFFECTS     — complete gold-standard write_effect payloads
+  EXAMPLE EFFECTS     — complete gold-standard write_effect payloads, one per family
   CURRENT EFFECT      — current effect source + param values
   LAST EFFECT ERROR?  — only when the previous turn failed
 """
@@ -24,12 +23,13 @@ Structure (single canonical home per topic — no restatements):
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from .frames import FRAME_DESCRIPTIONS
+from .frames import FRAME_DESCRIPTIONS, PROMPT_FRAMES, rank_legs, strip_direction
 from .palettes import named_palette_names
 
 if TYPE_CHECKING:
@@ -72,28 +72,19 @@ TOOL — `write_effect` (once per turn; omit if the user is just chatting)
   - Operator-tuned `param_values` carry forward for matching `key`s — design defaults around
     the values listed in CURRENT EFFECT. Pick new keys when a knob's meaning changes.
   - Per-param `help` strings render as hover tooltips — one sentence for non-obvious knobs.
-  - ONE Effect per call. If a request needs several elements at once, blend them inside the one
-    Effect (see EFFECT CONTRACT).
 """
 
-PHYSICAL_RIG = """\
-PHYSICAL RIG
-1800 LEDs (WS2815, 60 LEDs/m) on metal scaffolding — a tall RECTANGLE: two parallel horizontal
-rows, ~30 m wide, ~1 m apart. Each row is two strips wired centre-out (4 × 450 LEDs).
-
-         (top-left)                       (top-right)
-   ◄─────── 450 LEDs ◄──┐    ┌──► 450 LEDs ───────►
-                        │ FEED │                              ▲ +y (up)
-   ◄─────── 450 LEDs ◄──┘    └──► 450 LEDs ───────►
-        (bottom-left)                    (bottom-right)       ─► +x (stage-right)
-
-Right-handed coords: +x = stage-right, +y = up, +z = audience. Origin = rig centre.
-`ctx.pos` is normalised so each axis is in [-1, 1].
-
-NOT A 2D PLANE. Every LED has y ∈ {+1, -1} — none in between. 2D particle physics that lets
-pixels roam in [-1, 1]² mostly fades to black. Either pin each particle's y to ±1 (drive
-motion along x), or work 1D: `u_loop` walks the rectangle clockwise, `chain_index` walks each
-strip, `signed_x` is the shared horizontal axis. `side_signed` masks rows (+1 top, -1 bottom).
+# The fixed half of the RIG section; `_rig_block` generates the half above it
+# from the topology, so the leg count is never typed here.
+RIG_RULES = """\
+NOT A 2D SURFACE. LEDs exist only on the K thin legs; between them there is nothing.
+  - Things TRAVEL ALONG A LEG (a leg index + a `radius`), HOP between legs, or are RINGS: a
+    function of `radius` alone, so the same on every leg.
+  - A 2-D field (plasma, noise) is only SAMPLED along the legs through `signed_x` / `signed_y`.
+    A particle roaming free in x/y lights almost nothing.
+  - K, N and the leg lengths change between gigs. NEVER hard-code them: read `ctx.n`,
+    `ctx.rig.n_legs`, `.leg_angles`, `.leg_lengths_m` (indexed by `leg`) and `.radius_m`
+    (metres at radius 1) in init().
 """
 
 EFFECT_CONTRACT = """\
@@ -110,50 +101,58 @@ are pre-injected. The single `Effect` subclass is extracted and instantiated.
 
 ctx surface (READ-ONLY — never mutate params / masters):
   ctx.n / ctx.t / ctx.wall_t / ctx.dt       sizes & times (dt clamped on hiccup)
-  ctx.pos                                   (N, 3) float32 in [-1, 1]
+  ctx.pos                                   (N, 3) float32: hub at 0, farthest LED at 1
   ctx.frames.<name>                         per-LED scalars — see COORDINATE FRAMES
   ctx.audio.<...>                           see AUDIO INPUT
   ctx.params.<key>                          operator-controlled, auto-updated between frames
   ctx.masters                               diagnostic view (do NOT write)
-  ctx.strips / ctx.rig                      topology, init-time only
+  ctx.rig / ctx.strips                      the rig as numbers (see RIG), init-time only
 
-  - `ctx.frames.x` (NOT `ctx.x` — raises AttributeError).
+  - `ctx.frames.radius` (NOT `ctx.radius` — raises AttributeError).
   - Runtime copies your return into its own buffer before masters, so `self.out` survives
     across frames — safe to carry state.
-  - No filesystem, no network, no `import`. ONE Effect per call; for multi-element requests,
-    blend inside one Effect.
+  - ONE Effect per call; for multi-element requests, blend inside one Effect.
 """
 
 PERFORMANCE_RULES = """\
 PERFORMANCE — Raspberry Pi target
-render() < 5 ms at N=1800. WATCHDOG: p95 over 5 ms for ~30 consecutive frames (~0.5 s @ 60 fps)
-→ the runtime DISABLES your effect (goes pitch BLACK). "Worked for a bit then went black" ≈ over
+render() < 5 ms. WATCHDOG: p95 over 5 ms for ~30 consecutive frames (~0.5 s @ 60 fps) → the
+runtime DISABLES your effect (goes pitch BLACK). "Worked for a bit then went black" ≈ over
 budget — vectorise harder.
 
   RULE 0 (ABSOLUTE) — NO Python `for` loop in render() over pixels or particles. NONE.
       Every per-pixel / per-particle calc = ONE vectorised numpy expression over
-      (N,) / (P,) / (P, N) / (N, 3). Forbidden in render():
-          for i in range(ctx.n)        | for px in self.particles
-          [f(i) for i in range(ctx.n)] | map(f, per_led)
-          np.vectorize                 | np.apply_along_axis
-      Loops in init() are fine. Tools: broadcasting, boolean masks, np.where, np.einsum,
-      np.add.at, the provided helpers.
+      (N,) / (P,) / (P, N) / (N, 3). Forbidden in render(): `for i in range(ctx.n)`,
+      `for p in self.particles`, comprehensions or `map` over LEDs, np.vectorize,
+      np.apply_along_axis. Loops in init() are fine. Tools: broadcasting, boolean masks,
+      np.where, np.matmul, np.add.at, the provided helpers.
 
-  PARTICLES — broadcast across BOTH axes; accumulate with einsum. Python per-particle loops
-  are fine at P≤8, marginal at P=16, blow the budget at P≥32. Canonical (P, N) pattern:
-      dx       = led_x[None, :] - parts_x[:, None]              # (P, N)
-      falloff  = np.maximum(0.0, 1.0 - np.abs(dx) / radius)      # (P, N)
-      colors   = hsv_to_rgb(parts_hue, 0.85, 1.0)                # (P, 3)
-      np.einsum('pn,pc->nc', falloff, colors, out=self.out)      # (N, 3) accumulate
-  Memory at P=100, N=1800: 720 KB float32 — fine.
+  THREE HABITS — every example follows them:
+  1. MOTION comes from your own wrapped phase, one per wave term:
+         self.ph = (self.ph + ctx.dt * speed) % 1.0
+     NEVER `ctx.t` in array maths: float32 loses its fraction bits as t grows and the motion
+     turns steppy after a few days of uptime.
+  2. COLOUR comes from a table built once (`named_palette(name)`, or hsv_to_rgb over an
+     arange in init) and read per frame with
+         np.take(lut, idx, axis=0, out=self.out, mode="wrap")     # or mode="clip"
+     Several times faster than hsv_to_rgb / palette_lerp over N every frame. When a separate
+     pattern sets the brightness, lift the table's dark tones once or the effect is near black:
+         lut = lut / np.maximum(lut.max(axis=1, keepdims=True), 0.3)
+  3. A BEAT drives a decaying envelope, never a one-frame flash (too short to see):
+         self.env = max(self.env * float(np.exp(-ctx.dt / tau)), float(ctx.audio.beat))
+
+  PARTICLES — a (P, N) falloff block, each particle masked to its own leg, summed with ONE
+  matmul (einsum is ~7x slower; a Python per-particle loop blows the budget at P>=32):
+      f = self.r[None, :] - self.p_pos[:, None]            # (P, N) distance along the leg
+      ...falloff in place...
+      f *= self.leg[None, :] == self.p_leg[:, None]         # (P, N) leg mask
+      np.matmul(f.T, self.p_col, out=self.out)              # (N, 3)
 
   - NO allocation in render(). Preallocate `self.out` + scratch in init. Use the `out=`
     parameter on numpy ufuncs and on the array helpers — hsv_to_rgb, palette_lerp, lerp,
     clip01, gauss, pulse, tri, wrap_dist ALL accept `out=` (hex_to_rgb does not).
-    Canonical colour fill: `hsv_to_rgb(hue, 1.0, 1.0, out=self.out)`.
   - Stay in float32. ctx arrays are float32; `np.empty(shape, dtype=np.float32)` for scratch.
     Mixing fp64 silently halves Pi throughput.
-  - No per-LED Python branches (`if some_led_x > 0`). Use `np.where`, mask multiply, `np.clip`.
 """
 
 ANTI_PATTERNS = """\
@@ -162,25 +161,17 @@ ANTI-PATTERNS — concrete mistakes
   - `self.out[mask] = colour * factor` for overlapping shapes → assignment OVERWRITES (last
     wins, no additive brightness). For sparkles / particles / blobs, accumulate additively:
         self.out += contribution            # then clip01(self.out) at the end
-  - 2D particle physics with y free in [-1, 1] → every LED has y ∈ {+1, -1}; particles drifting
-    toward y=0 light NOTHING. Pin y to ±1 or run 1D on `u_loop` / `signed_x`.
   - Iterative physics (repulsion / springs / flocking) without DAMPING → energy accumulates,
-    particles slam corners. Always include drag:
+    particles slam the leg ends. Always include drag:
         self.vel *= max(0.0, 1.0 - p.damping * ctx.dt)
     and `np.clip` velocity.
-  - Smoothing audio yourself (EMA, peak-follow, normalise) → already smoothed and auto-scaled
-    upstream; another smoother kills responsiveness.
   - Thresholding `ctx.audio.low > 0.6` to detect kicks → use `ctx.audio.beat` (see AUDIO INPUT).
   - `print(...)` → not in builtins. Use `log.warning(...)`.
   - Returning float64 → cast to float32, or fill `self.out` (already float32) in place.
   - Dunder access (`__class__`, `__globals__`, ...) → reserved.
-
-SHAPE GOTCHAS — "all input arrays must have the same shape"
-  - `np.stack([per_led_array, scalar])` mixes ndim → use `np.full_like(per_led_array, 0.5)`.
-  - `np.concatenate` on (N,) and (3,) → broadcast or reshape first.
-  - `hsv_to_rgb(per_led_h, scalar_s, scalar_v)` already returns (N, 3) — no manual broadcasting.
-  - `palette_lerp(stops, t_array)` returns `t.shape + (3,)`.
-  - When stuck, `np.broadcast_arrays(a, b, c)` returns views at a common shape.
+  - `np.stack([per_led_array, scalar])` mixes ndim ("all input arrays must have the same
+    shape") → use `np.full_like(per_led_array, 0.5)`. `hsv_to_rgb(per_led_h, scalar_s,
+    scalar_v)` already returns (N, 3) — no manual broadcasting.
 """
 
 
@@ -235,11 +226,8 @@ def _example_effects_block() -> str:
     if not examples:
         return "EXAMPLE EFFECTS — (none on disk; drop effects under src/ledctl/surface/LLM_example_effects/)"
     lines = [
-        "EXAMPLE EFFECTS — gold-standard COMPLETE `write_effect` payloads.",
-        "Mirror this shape every time: name + summary + params + code. Note the range of",
-        "archetypes (orbiting comet, stateful sparkles, plasma field, noise flicker, beat",
-        "envelope) — start from the one closest to the request instead of forcing everything",
-        "into a particle/comet mould.",
+        "EXAMPLE EFFECTS — gold-standard COMPLETE `write_effect` payloads. Mirror this shape",
+        "every time: name + summary + params + code. Start from the one closest to the request.",
     ]
     for i, ex in enumerate(examples, start=1):
         lines.append("")
@@ -257,31 +245,31 @@ def _example_effects_block() -> str:
     return "\n".join(lines)
 
 
-def _summarise_install(topology: Topology) -> str:
-    pmin = topology.bbox_min.tolist()
-    pmax = topology.bbox_max.tolist()
-    span_x = pmax[0] - pmin[0]
-    span_y = pmax[1] - pmin[1]
-    strip_lines = []
-    for s in topology.strips:
-        strip_lines.append(
-            f"  - {s.id}: {s.pixel_count} LEDs from "
-            f"{tuple(round(v, 2) for v in s.geometry.start)} to "
-            f"{tuple(round(v, 2) for v in s.geometry.end)}"
-            f"{' (reversed)' if s.reversed else ''}"
+def _rig_block(topology: Topology) -> str:
+    """The RIG section: the hub and its legs as the topology has them now,
+    then the fixed rules. Nothing about the layout is typed."""
+    legs = rank_legs(topology.strips)
+    density = sorted({s.leds_per_meter for s in legs})
+    per_m = f" ({density[0]:g} LEDs/m)" if len(density) == 1 else ""
+    lines = [
+        "RIG",
+        f"{topology.pixel_count} LEDs on {len(legs)} legs: straight LED strips{per_m} that all "
+        "start at one hub",
+        f"(the controller, the origin) and run outward. `radius` 1 = {topology.radius_m:.1f} m.",
+    ]
+    for i, s in enumerate(legs):
+        turn = strip_direction(s)
+        lines.append(
+            f"  leg {i}: {s.pixel_count} LEDs, {math.dist(s.start, s.end):.1f} m, "
+            f"angle {turn:.3f} ({turn * 360:.0f}°)"
         )
-    return (
-        f"INSTALL\n"
-        f"{topology.pixel_count} LEDs across {len(topology.strips)} strips, "
-        f"spanning ~{span_x:.1f} m × {span_y:.1f} m.\n"
-        + "\n".join(strip_lines)
-    )
+    return "\n".join(lines) + "\n\n" + RIG_RULES
 
 
 def _coordinate_frames_block() -> str:
-    out = ["COORDINATE FRAMES — accessible as ctx.frames.<name>"]
-    for name, desc in FRAME_DESCRIPTIONS.items():
-        out.append(f"  {name:<14} {desc}")
+    out = ["COORDINATE FRAMES — per-LED (N,) arrays at ctx.frames.<name>"]
+    for name in PROMPT_FRAMES:
+        out.append(f"  {name:<12} {FRAME_DESCRIPTIONS[name]}")
     return "\n".join(out)
 
 
@@ -295,14 +283,12 @@ def _audio_block(audio_state: AudioState | None) -> str:
         "  ctx.audio.low / .mid / .high  float ~[0, 1] — kick/sub | vocals/snare | hats/sibilance\n"
         "  ctx.audio.bands               dict {'low','mid','high'} — for select-param band choice\n"
         "  ctx.audio.beat                float in [0, 1]. 0 most frames; non-zero on a fresh onset.\n"
-        "                                *** DEFAULT TRIGGER for ALL discrete / rhythmic events:\n"
-        "                                kicks, flashes, sparkle spawns, particle bursts, on-beat\n"
-        "                                colour swaps — anything 'on the music'. Upstream onset\n"
-        "                                detector beats any band threshold (latency + precision).\n"
-        "                                Use as multiplier (`ctx.audio.beat * p.kick_amount`) or\n"
-        "                                rising-edge trigger (`if ctx.audio.beat > 0: spawn(...)`).\n"
-        "                                Only use low/mid/high for discrete events if the operator\n"
-        "                                explicitly asks for amplitude-following.\n"
+        "                                *** THE trigger for ALL discrete / rhythmic events (kicks,\n"
+        "                                sparkle spawns, bursts, on-beat colour swaps): the upstream\n"
+        "                                onset detector beats any band threshold. Feed it to a\n"
+        "                                decaying envelope (PERFORMANCE, habit 3) or use it as a\n"
+        "                                trigger (`if ctx.audio.beat > 0: spawn(...)`). low/mid/high\n"
+        "                                are for CONTINUOUS reactivity.\n"
         "  ctx.audio.beats_since_start   int monotonic counter (NOT scaled by reactivity)\n"
         "  ctx.audio.bpm                 float — tempo; 120.0 fallback when disconnected\n"
         "  ctx.audio.connected           bool — False = silent; bands will be 0.0\n\n"
@@ -313,8 +299,7 @@ def _audio_block(audio_state: AudioState | None) -> str:
 def _runtime_api_block() -> str:
     return (
         "RUNTIME API — in scope (no imports needed)\n"
-        "  np                        numpy module\n"
-        "  Effect                    base class — subclass exactly once\n"
+        "  np, Effect                numpy; the base class — subclass exactly once\n"
         "  hex_to_rgb(s)             '#ff8000' → (3,) float32 in [0, 1] (no out=)\n"
         "  hsv_to_rgb(h, s, v, out=None)   broadcasting; (...,) → (..., 3) float32\n"
         "  lerp(a, b, t, out=None)   a*(1-t) + b*t\n"
@@ -323,12 +308,9 @@ def _runtime_api_block() -> str:
         "  pulse(x, width=0.5, out=None)   cosine bump on [-width, +width], peak=1\n"
         "  tri(x, out=None)          triangle wave on [0, 1], peak at 0.5\n"
         "  wrap_dist(a, b, period=1, out=None)  shortest signed distance with wrap\n"
-        "  palette_lerp(stops, t, out=None)  multi-stop palette sample. `stops` is ONE of:\n"
-        "                              named_palette('fire')                       (baked LUT)\n"
-        "                              [(0.0,'#ff0000'), (1.0,'#00ff00')]          (pos, hex)\n"
-        "                              [(0.0,1,0,0), (1.0,0,1,0)]                  (pos, r, g, b)\n"
-        "                              ['#ff0000','#00ff00','#0000ff']             (bare, even)\n"
-        "                            Don't mix stop lengths in one list.\n"
+        "  palette_lerp(stops, t, out=None)  palette sample → t.shape + (3,). `stops` is ONE of:\n"
+        "                              named_palette('fire') | ['#ff0000','#00ff00'] (even) |\n"
+        "                              [(0.0,'#ff0000'), (1.0,'#00ff00')] | [(0.0,1,0,0), (1.0,0,1,0)]\n"
         "  named_palette(name)       (LUT_SIZE, 3) float32 LUT — names: "
         + ", ".join(named_palette_names()) + "\n"
         "  rng                       np.random.Generator, seeded by effect name\n"
@@ -348,15 +330,12 @@ def _param_schema_block() -> str:
         "  toggle      {default: bool}\n"
         "  palette     {default: name}                       named palette dropdown\n\n"
         "Read via `ctx.params.<key>` (auto-updates between frames). Declare only what's worth\n"
-        "hand-tuning. Operator tweaks for matching `key`s carry across regenerations — pick new\n"
-        "keys deliberately when a knob's meaning changes.\n\n"
-        "PER-EFFECT vs MASTER. Effect-local `brightness` / `speed` / `audio_intensity` shape THIS\n"
-        "effect; masters are GLOBAL post-processing on the final output. They compose cleanly\n"
-        "(your `speed` scales integrated time; master `speed` scales `ctx.dt`. Your `brightness`\n"
-        "attenuates this effect; master `brightness` runs on the final output. `audio_reactivity`\n"
-        "already pre-multiplies `ctx.audio.*`). If the request can only be honoured by a MASTER\n"
-        "change (\"brighter\" with master brightness already 1.0, \"less reactive\" with reactivity\n"
-        "high), TELL the operator which slider to move instead of re-emitting code.\n"
+        "hand-tuning.\n\n"
+        "PER-EFFECT vs MASTER. Your own `brightness` / `speed` knobs shape THIS effect. The\n"
+        "operator's masters (brightness, saturation, speed = scales `ctx.dt`, audio_reactivity =\n"
+        "pre-multiplies `ctx.audio.*`) are GLOBAL and you cannot set them. If a request can only\n"
+        "be honoured by a master (\"brighter\" with the effect already at full, \"less reactive\"),\n"
+        "TELL the operator which slider to move instead of re-emitting code.\n"
     )
 
 
@@ -432,8 +411,7 @@ def build_system_prompt(
     sections: list[str] = [
         ROLE,
         TOOL_BLOCK,
-        PHYSICAL_RIG,
-        _summarise_install(topology),
+        _rig_block(topology),
         _coordinate_frames_block(),
         _audio_block(audio_state),
         EFFECT_CONTRACT,

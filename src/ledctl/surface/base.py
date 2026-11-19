@@ -41,7 +41,7 @@ class FrameMap:
             return self._d[name]
         except KeyError as e:
             raise AttributeError(
-                f"unknown frame {name!r}; available: {sorted(self._d.keys())}"
+                f"unknown frame {name!r}"
             ) from e
 
     def __dir__(self) -> list[str]:
@@ -143,6 +143,11 @@ class RigInfo:
     target_fps: float
     span_x_m: float
     span_y_m: float
+    # The hub rig: K legs running outward from the origin.
+    n_legs: int
+    leg_angles: tuple[float, ...]     # indexed by `leg`; same unit as the `angle` frame
+    leg_lengths_m: tuple[float, ...]  # indexed by `leg`; first LED to last
+    radius_m: float                   # metres at `radius` = 1; a 1 m comet is 1 / radius_m
 
 
 @dataclass
@@ -150,7 +155,7 @@ class EffectInitContext:
     """Passed to `Effect.init` once per swap. Frozen-feel; do not mutate."""
 
     n: int
-    pos: np.ndarray              # (N, 3) float32 in [-1, 1]
+    pos: np.ndarray              # (N, 3) float32: hub at 0, farthest LED at distance 1
     frames: FrameMap
     strips: list[StripConfig]
     rig: RigInfo

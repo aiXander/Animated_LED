@@ -1,0 +1,59 @@
+name: hub_ember
+summary: A hot hub cooling toward the tips, slow noise drifting outward on every leg;
+  a beat pushes the heat further out.
+source: agent
+created_at: 1794853542.926852
+updated_at: 1794854186.786551
+params:
+- key: palette
+  label: Palette
+  help: Read from its dark end (cool) to its bright end (hot).
+  control: palette
+  default: ember
+- key: reach
+  label: Reach
+  help: How far out the heat gets before it is gone. 1 = the tips.
+  control: slider
+  min: 0.2
+  max: 2.0
+  step: 0.01
+  default: 1.2
+- key: drift
+  label: Drift speed
+  help: How fast the noise drifts outward.
+  control: slider
+  min: 0.0
+  max: 4.0
+  step: 0.05
+  default: 1.0
+- key: flicker
+  label: Flicker
+  help: Depth of the drifting noise.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.35
+- key: beat_swell
+  label: Beat swell
+  help: How far a beat pushes the heat outward.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.25
+- key: glow
+  label: Glow
+  help: Overall brightness.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.8
+param_values:
+  palette: ember
+  reach: 1.2
+  drift: 1.0
+  flicker: 0.35
+  beat_swell: 0.25
+  glow: 0.8

@@ -1,0 +1,77 @@
+name: slow_breath_radial
+summary: A slow breath swelling at the hub and rolling out to the tips, in drifting
+  palette colours. Nothing flashes.
+source: agent
+created_at: 1794853542.926852
+updated_at: 1794854186.786551
+params:
+- key: palette
+  label: Palette
+  control: palette
+  default: twilight
+- key: period
+  label: Breath length
+  help: Seconds for one breath.
+  control: slider
+  min: 3.0
+  max: 30.0
+  step: 0.5
+  default: 9.0
+  unit: s
+- key: waves
+  label: Breaths on a leg
+  help: How many breaths fit between hub and tip. 0 = the whole rig breathes together.
+  control: slider
+  min: 0.0
+  max: 2.0
+  step: 0.05
+  default: 0.5
+- key: floor
+  label: Brightness floor
+  help: Brightness when breathed out.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.08
+- key: peak
+  label: Brightness peak
+  help: Brightness at the top of a breath.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.7
+- key: bass_lift
+  label: Bass lift
+  help: How much bass raises the peak.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.2
+- key: colour_spread
+  label: Colour spread
+  help: How much of the palette lies along a leg at once.
+  control: slider
+  min: 0.0
+  max: 2.0
+  step: 0.01
+  default: 0.35
+- key: colour_drift
+  label: Colour drift
+  help: Palette turns per minute.
+  control: slider
+  min: 0.0
+  max: 6.0
+  step: 0.1
+  default: 1.0
+param_values:
+  palette: twilight
+  period: 9.0
+  waves: 0.5
+  floor: 0.08
+  peak: 0.7
+  bass_lift: 0.2
+  colour_spread: 0.35
+  colour_drift: 1.0

@@ -1,0 +1,69 @@
+name: tide
+summary: Water rising from the hub along every leg and falling back, foam at its edge;
+  the legs run out of step like waves on a shore.
+source: agent
+created_at: 1794853542.926852
+updated_at: 1794854186.786551
+params:
+- key: palette
+  label: Palette
+  help: The pale end is the foam.
+  control: palette
+  default: ocean
+- key: period
+  label: Tide length
+  help: Seconds for the water to rise and fall once.
+  control: slider
+  min: 4.0
+  max: 40.0
+  step: 0.5
+  default: 14.0
+  unit: s
+- key: low_tide
+  label: Low tide
+  help: How far out the water stays at its lowest.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.15
+- key: high_tide
+  label: High tide
+  help: How far out the water reaches. 1 = the tips.
+  control: slider
+  min: 0.0
+  max: 1.2
+  step: 0.01
+  default: 0.9
+- key: leg_offset
+  label: Leg offset
+  help: How far out of step the legs are. 0 = all legs together.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.35
+- key: body
+  label: Water glow
+  help: Brightness of the water behind the foam.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.4
+- key: bass_push
+  label: Bass push
+  help: How far bass pushes the water out.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.3
+param_values:
+  palette: ocean
+  period: 14.0
+  low_tide: 0.15
+  high_tide: 0.9
+  leg_offset: 0.35
+  body: 0.4
+  bass_push: 0.3

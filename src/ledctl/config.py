@@ -1,3 +1,4 @@
+import math
 import os
 from pathlib import Path
 from typing import Literal
@@ -92,6 +93,19 @@ class LineGeometry(BaseModel):
     end: Vec3
 
 
+class SpokeGeometry(BaseModel):
+    """A leg running straight out from the hub (the origin) in the x-y plane."""
+
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["spoke"]
+    angle_deg: float = Field(..., description="Direction: 0 = +x, counter-clockwise.")
+    length_m: float | None = Field(
+        None, gt=0,
+        description="First LED to last. Default: (pixel_count - 1) / leds_per_meter.",
+    )
+    offset_m: float = Field(0.0, ge=0, description="First LED's distance from the hub.")
+
+
 class StripConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
@@ -100,8 +114,35 @@ class StripConfig(BaseModel):
     pixel_offset: int = Field(..., ge=0)
     pixel_count: int = Field(..., gt=0)
     leds_per_meter: float = Field(30.0, gt=0)
-    geometry: LineGeometry
+    geometry: LineGeometry | SpokeGeometry = Field(..., discriminator="type")
     reversed: bool = False
+
+    # The endpoints in metres, for either geometry type. They live here, not on
+    # the geometry, because a spoke's default length needs `pixel_count`.
+
+    @property
+    def start(self) -> Vec3:
+        return self._endpoints()[0]
+
+    @property
+    def end(self) -> Vec3:
+        return self._endpoints()[1]
+
+    def _endpoints(self) -> tuple[Vec3, Vec3]:
+        g = self.geometry
+        if isinstance(g, LineGeometry):
+            return g.start, g.end
+        length = g.length_m
+        if length is None:
+            length = (self.pixel_count - 1) / self.leds_per_meter
+        a = math.radians(g.angle_deg)
+        # Rounded to a micrometre so 90 degrees gives x = 0.0, not 9e-16.
+        dx, dy = round(math.cos(a), 9), round(math.sin(a), 9)
+
+        def at(d: float) -> Vec3:
+            return (round(d * dx, 6) + 0.0, round(d * dy, 6) + 0.0, 0.0)  # + 0.0: no -0.0
+
+        return at(g.offset_m), at(g.offset_m + length)
 
 
 class SimTransportConfig(BaseModel):

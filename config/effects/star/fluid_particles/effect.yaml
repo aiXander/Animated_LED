@@ -1,0 +1,77 @@
+name: fluid_particles
+summary: Soft colour blobs drifting in and out along the legs and through the hub;
+  bass inflates them and every beat gives them a shove.
+source: user
+created_at: 1779849600.0
+updated_at: 1794855910.941014
+params:
+- key: count
+  label: Particles
+  control: int_slider
+  min: 2
+  max: 24
+  step: 1
+  default: 12
+- key: palette
+  label: Palette
+  help: Particle colours are spread over this palette.
+  control: palette
+  default: rainbow
+- key: speed
+  label: Speed
+  help: 'How fast the blobs travel: at 1 a blob takes 10 to 30 s along a leg.'
+  control: slider
+  min: 0.0
+  max: 4.0
+  step: 0.1
+  default: 1.0
+- key: damping
+  label: Damping
+  help: How quickly a beat's shove dies away into the steady drift.
+  control: slider
+  min: 0.0
+  max: 3.0
+  step: 0.05
+  default: 1.55
+- key: particle_size
+  label: Particle size
+  help: Radius of each blob (1.0 = a whole leg).
+  control: slider
+  min: 0.01
+  max: 0.4
+  step: 0.005
+  default: 0.14
+- key: audio_size_boost
+  label: Bass size boost
+  help: How much the bass inflates the blobs.
+  control: slider
+  min: 0.0
+  max: 3.0
+  step: 0.1
+  default: 1.4
+- key: kick_impulse
+  label: Kick impulse
+  help: Random shove given to every blob on each beat.
+  control: slider
+  min: 0.0
+  max: 4.0
+  step: 0.1
+  default: 1.2
+- key: intensity
+  label: Intensity
+  help: Blob brightness; above 1 the cores go white.
+  control: slider
+  min: 0.0
+  max: 2.0
+  step: 0.05
+  default: 0.7
+param_values:
+  count: 12
+  palette: rainbow
+  speed: 1.0
+  damping: 1.55
+  particle_size: 0.14
+  audio_size_boost: 1.4
+  kick_impulse: 1.2
+  intensity: 0.7
+starred: false

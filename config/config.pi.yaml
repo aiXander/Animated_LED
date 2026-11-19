@@ -19,74 +19,39 @@ controllers:
     port: 4048
     pixel_count: 1800
 strips:
-- id: top_left
+# The hub rig: the Gledopto is the origin and each strip is one leg running
+# outward from it. `angle_deg` is the leg's direction in the x-y plane (0 = +x,
+# counter-clockwise). These three angles are placeholders until the room is
+# measured: solo each pixel range, see which leg lights, set its angle.
+- id: leg_1
   controller: gledopto_main
   output: 1
-  pixel_offset: 1350
-  pixel_count: 450
-  leds_per_meter: 30.0
-  geometry:
-    type: line
-    start:
-    - 0.0
-    - 0.5
-    - 0.0
-    end:
-    - -15.0
-    - 0.5
-    - 0.0
-  reversed: false
-- id: top_right
-  controller: gledopto_main
-  output: 2
   pixel_offset: 0
   pixel_count: 450
   leds_per_meter: 30.0
-  geometry:
-    type: line
-    start:
-    - 0.0
-    - 0.5
-    - 0.0
-    end:
-    - 15.0
-    - 0.5
-    - 0.0
-  reversed: false
-- id: bottom_left
+  geometry: {type: spoke, angle_deg: 90}
+- id: leg_2
+  controller: gledopto_main
+  output: 2
+  pixel_offset: 450
+  pixel_count: 450
+  leds_per_meter: 30.0
+  geometry: {type: spoke, angle_deg: 210}
+- id: leg_3
   controller: gledopto_main
   output: 3
   pixel_offset: 900
   pixel_count: 450
   leds_per_meter: 30.0
-  geometry:
-    type: line
-    start:
-    - 0.0
-    - -0.5
-    - 0.0
-    end:
-    - -15.0
-    - -0.5
-    - 0.0
-  reversed: false
-- id: bottom_right
-  controller: gledopto_main
-  output: 4
-  pixel_offset: 450
-  pixel_count: 450
-  leds_per_meter: 30.0
-  geometry:
-    type: line
-    start:
-    - 0.0
-    - -0.5
-    - 0.0
-    end:
-    - 15.0
-    - -0.5
-    - 0.0
-  reversed: false
+  geometry: {type: spoke, angle_deg: 330}
+# A fourth leg: plug in the last output, uncomment, and give all four an angle.
+# - id: leg_4
+#   controller: gledopto_main
+#   output: 4
+#   pixel_offset: 1350
+#   pixel_count: 450
+#   leds_per_meter: 30.0
+#   geometry: {type: spoke, angle_deg: 0}
 transport:
   # `multi` fans every frame to both the browser simulator (so the operator UI
   # at :8000 keeps showing a live preview) and the Gledopto over DDP. Switch

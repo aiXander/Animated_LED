@@ -53,9 +53,10 @@ class Topology:
 
     leds: list[LEDInfo]
     positions: np.ndarray  # (N, 3) float32, metres
-    normalised_positions: np.ndarray  # (N, 3) float32, in [-1, 1] per axis
-    bbox_min: np.ndarray  # (3,) float32
-    bbox_max: np.ndarray  # (3,) float32
+    normalised_positions: np.ndarray  # (N, 3) float32: positions / radius_m
+    bbox_min: np.ndarray  # (3,) float32, metres
+    bbox_max: np.ndarray  # (3,) float32, metres
+    radius_m: float  # distance of the farthest LED from the origin (the hub)
     pixel_count: int
     strips: list[StripConfig]
     # Named coordinate frames precomputed at build time (see
@@ -77,8 +78,8 @@ class Topology:
         leds: list[LEDInfo | None] = [None] * total
 
         for strip in cfg.strips:
-            start = np.asarray(strip.geometry.start, dtype=np.float32)
-            end = np.asarray(strip.geometry.end, dtype=np.float32)
+            start = np.asarray(strip.start, dtype=np.float32)
+            end = np.asarray(strip.end, dtype=np.float32)
             n = strip.pixel_count
             # local_index 0 is the first LED in the data chain.
             # Without reversed: local_index 0 -> start, local_index n-1 -> end.
@@ -111,11 +112,13 @@ class Topology:
 
         bbox_min = positions.min(axis=0)
         bbox_max = positions.max(axis=0)
-        center = (bbox_min + bbox_max) / 2.0
-        extent = (bbox_max - bbox_min) / 2.0
-        # Avoid divide-by-zero on flat axes (e.g. all z=0 in a 2D layout).
-        safe_extent = np.where(extent == 0, 1.0, extent).astype(np.float32)
-        normalised = ((positions - center) / safe_extent).astype(np.float32)
+        # One uniform scale about the origin (the hub): the hub stays at 0 and
+        # angles stay true for any number of legs. A per-axis fit to the
+        # bounding box would put the hub of a 3-leg star off-centre.
+        radius_m = float(np.sqrt((positions.astype(np.float64) ** 2).sum(axis=1)).max())
+        if radius_m <= 0.0:
+            radius_m = 1.0
+        normalised = (positions / radius_m).astype(np.float32)
 
         leds_clean = [led for led in leds if led is not None]
         derived = _build_derived(
@@ -130,6 +133,7 @@ class Topology:
             normalised_positions=normalised,
             bbox_min=bbox_min.astype(np.float32),
             bbox_max=bbox_max.astype(np.float32),
+            radius_m=radius_m,
             pixel_count=total,
             strips=list(cfg.strips),
             derived=derived,

@@ -79,7 +79,7 @@ scp ~/.ssh/id_ed25519 xander@****:/home/xander/.ssh
 
 ![ledctl browser UI — LED simulator, layer stack, masters, chat panel](docs/ui-screenshot.jpg)
 
-Python control layer for a 1800-LED festival install (4 × 450 WS2815 strips fed by a centre-mounted Gledopto / WLED via DDP). Mac-first dev with a browser simulator; same code ships to the Pi at the venue with a one-line config flip.
+Python control layer for a WS2815 LED install: up to four 450-LED strips ("legs") running outward from a Gledopto / WLED controller, fed via DDP. Mac-first dev with a browser simulator; same code ships to the Pi at the venue with a one-line config flip.
 
 Design docs in repo root:
 - `Hardware_setup.md` — hardware/electrical build (gear, power injection, waterproofing, signal integrity)
@@ -575,7 +575,7 @@ curl -s localhost:8000/agent/sessions/$SID | jq
 
 Two views, one process:
 
-- **`/`** — live simulator. Hover an LED → tooltip with `global_index`, `strip_id`, `local_index`. Click → solo it red (calibration mode); click again or hit "clear" in the banner to release.
+- **`/`** — live simulator. Click (or tap) an LED → solo it (calibration mode); the banner shows its global index and the simulator rings it. Click it again or hit ✕ in the banner to release.
 - **`/editor`** — drag strip endpoints on a 2D canvas, edit numeric fields in the side panel, "preview diff" before "save & reload". Saving PUTs `/config`, which validates the new layout (overlap detection, controller-capacity check), writes the YAML to disk (with a `.bak` of the previous version), and hot-swaps the engine topology — current layer specs are preserved across the swap, even if `pixel_count` changes.
 
 `scripts/calibrate.py` drives `/calibration/walk` from a terminal so the operator on the ladder gets a printed running log of which `global_index` is lit and which strip it belongs to:
@@ -592,17 +592,17 @@ The walk runs server-side; the script is purely a label printer + lifecycle mana
 
 ## Coordinate convention
 
-Per roadmap §6 item 2 (locked):
-- `+x` = stage-right, `+y` = up, `+z` = out toward audience (right-handed)
-- Origin `(0, 0, 0)` = centre of the scaffolding (15 m horizontally, midway between top and bottom rows)
-- Effects work in **normalised** coords (`x, y ∈ [-1, 1]`) derived from the topology bounding box
+The rig is a hub (the Gledopto, at the origin) with three or four legs running outward. Full detail: `docs/reference/rig-geometry.md`.
 
-Strip semantics in `config.yaml`:
-- `geometry.start` = position of the **first LED in the data chain** (`local_index=0`, the LED nearest the controller output)
-- `geometry.end` = position of the last LED in the chain
-- `reversed: true` swaps that mapping (use it when a strip ends up mounted backwards)
+- Origin `(0, 0, 0)` = the Gledopto. x-y = the plane the legs lie in (what the simulator draws); z = height off it
+- Effects work in **normalised** coords: metres divided by the distance of the farthest LED, so the hub is at 0 and nothing lies farther out than 1
 
-For centre-feed all 4 chain heads sit at `x=0`, so the dev/pi configs use `start: [0, …], end: [±15, …]` and no `reversed` flags.
+Strip geometry in the config, one of:
+- `{type: spoke, angle_deg: 90}` = a leg from the hub at that angle (0 = `+x`, counter-clockwise); optional `length_m`, `offset_m`
+- `{type: line, start: [x, y, z], end: [x, y, z]}` = any straight strip; `start` is the **first LED in the data chain** (`local_index=0`)
+- `reversed: true` puts the first LED at the far end instead (a strip mounted backwards)
+
+The dev and Pi configs hold three spokes at placeholder angles.
 
 ---
 
@@ -627,7 +627,7 @@ For centre-feed all 4 chain heads sit at `x=0`, so the dev/pi configs use `start
 ## Test surface
 
 - `tests/test_config.py` — dev/pi YAML loads, overlap/over-capacity rejection
-- `tests/test_topology.py` — 1800 LEDs total, bbox spans 30×1 m, normalised in [-1,1], `reversed` semantics
+- `tests/test_topology.py` — LED placement, `reversed` semantics, and the hub-rig frames for three and four legs
 - `tests/test_ddp.py` — packet count, PUSH-only-on-last, payload round-trip, single-packet frame still has PUSH
 - `tests/test_surface_primitives.py` — registry + every primitive (wave, radial, noise2d, sparkles, lfo, audio_band, palette_*, palette_lookup, solid, mix, mul, add, screen, max, min, remap, threshold, trail, clamp, range_map, position, gradient, constant); palette LUT correctness; sparkle reproducible with a seed; type checking (palette in scalar slot, leaf must be rgb_field, unknown kind / extra param)
 - `tests/test_mixer.py` — blend modes (normal, add, screen, multiply), opacity lerp, blackout zeros output, crossfade transitions on wall_t (not effective_t), master output stage (saturation pull + brightness gain)

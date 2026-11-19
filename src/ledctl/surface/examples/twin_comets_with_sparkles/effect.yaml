@@ -1,42 +1,42 @@
 name: twin_comets_with_sparkles
-summary: Two comets (one per row, each its own colour) shedding fading sparkle trails;
-  kicks throw a sparkle burst around each head.
+summary: Two comets, each its own colour, running out along a leg and on to the next,
+  shedding fading sparkle trails; kicks throw a sparkle burst around each head.
 source: bundled
 created_at: 0
-updated_at: 0
+updated_at: 1794855910.941014
 params:
 - key: leader_color
-  label: Top comet colour
+  label: Leader colour
   control: color
   default: '#ff2020'
 - key: follower_color
-  label: Bottom comet colour
+  label: Follower colour
   control: color
   default: '#1040ff'
 - key: lead_offset
-  label: "Top\u2013bottom lead"
-  help: How far the bottom comet trails the top one (fraction of the rig width).
+  label: Lead
+  help: How far the follower trails the leader (fraction of a leg).
   control: slider
   min: 0.0
-  max: 0.5
+  max: 0.9
   step: 0.01
-  default: 0.1667
+  default: 0.22
 - key: speed
   label: Comet speed
-  help: Rig crossings per second.
+  help: Legs run per second.
   control: slider
-  min: 0.05
+  min: 0.02
   max: 2.0
   step: 0.01
-  default: 0.4
-  unit: cycles/s
+  default: 0.12
+  unit: legs/s
 - key: sparkle_decay
   label: Sparkle fade time
   control: slider
   min: 0.1
   max: 5.0
   step: 0.05
-  default: 1.5
+  default: 3.0
   unit: s
 - key: sparkle_density
   label: Sparkle density
@@ -49,12 +49,12 @@ params:
   default: 0.25
 - key: head_size
   label: Comet head size
-  help: Width of the glowing head (fraction of the rig width).
+  help: Width of the glowing head (fraction of a leg).
   control: slider
   min: 0.005
-  max: 0.1
-  step: 0.001
-  default: 0.03
+  max: 0.2
+  step: 0.005
+  default: 0.06
 - key: audio_band
   label: Head brightness driver
   help: Which audio band drives the brightness.
@@ -63,13 +63,13 @@ params:
   - low
   - mid
   - high
-  default: low
+  default: mid
 param_values:
   leader_color: '#ff2020'
   follower_color: '#1040ff'
-  lead_offset: 0.1667
-  speed: 0.4
-  sparkle_decay: 1.5
+  lead_offset: 0.22
+  speed: 0.12
+  sparkle_decay: 3.0
   sparkle_density: 0.25
-  head_size: 0.03
-  audio_band: low
+  head_size: 0.06
+  audio_band: mid

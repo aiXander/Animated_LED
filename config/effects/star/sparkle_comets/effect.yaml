@@ -1,0 +1,76 @@
+name: sparkle_comets
+summary: Comets leaving the hub leg after leg with twinkling glitter trails; beats
+  lift soft white glints across the rig.
+source: agent
+created_at: 1778351762.362926
+updated_at: 1794855910.941014
+params:
+- key: speed
+  label: Speed
+  help: 1 = hub to tip in two seconds.
+  control: slider
+  min: 0.0
+  max: 10.0
+  step: 0.05
+  default: 0.3
+- key: comets
+  label: Comets per leg
+  control: int_slider
+  min: 1
+  max: 6
+  step: 1
+  default: 1
+- key: trail_length
+  label: Trail length
+  help: Higher = longer, slower-fading trails.
+  control: slider
+  min: 1.0
+  max: 10.0
+  step: 0.1
+  default: 5.8
+- key: palette
+  label: Palette
+  help: Laid once over all the legs, leg after leg.
+  control: palette
+  default: rainbow
+- key: sparkle
+  label: Glitter
+  help: 0 = smooth trails. 1 = trails made entirely of twinkling points.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.7
+- key: twinkle_speed
+  label: Twinkle speed
+  help: How fast the glitter flickers.
+  control: slider
+  min: 0.5
+  max: 30.0
+  step: 0.5
+  default: 3.0
+- key: bass_pulse
+  label: Bass pulse
+  help: How far the brightness dips between bass hits. 0 = steady.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.01
+  default: 0.3
+- key: beat_burst
+  label: Beat glints
+  help: Brightness of the white glints lifted on every beat. 0 = off.
+  control: slider
+  min: 0.0
+  max: 2.0
+  step: 0.05
+  default: 0.2
+param_values:
+  speed: 0.3
+  comets: 1
+  trail_length: 5.8
+  palette: rainbow
+  sparkle: 0.7
+  twinkle_speed: 3.0
+  bass_pulse: 0.3
+  beat_burst: 0.2

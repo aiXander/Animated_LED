@@ -153,6 +153,9 @@
       border-bottom: 1px solid var(--line);
       height: 17vh; min-height: 120px;
     }
+    /* A star (viz.js sets data-rig-layout from /topology) is drawn to scale,
+       so it gets a near-square box instead of the strip's short band. */
+    :root[data-rig-layout="star"] #sim { height: min(80vw, 36vh); }
     #canvas { display: block; width: 100%; height: 100%; }
     #cal-banner {
       position: absolute; top: 0.4rem; left: 0.5rem;
@@ -701,7 +704,7 @@
       <h3>Save current effect</h3>
       <label for="save-name">Effect name (snake_case)</label>
       <input type="text" id="save-name" placeholder="my_cool_effect" maxlength="40" autocomplete="off">
-      <div class="hint">Saved as <code>config/effects/&lt;name&gt;/</code>.</div>
+      <div class="hint">Saved as <code>config/effects/star/&lt;name&gt;/</code>.</div>
       <div class="err" id="save-err"></div>
       <div class="actions">
         <button id="save-cancel" class="ghost">cancel</button>

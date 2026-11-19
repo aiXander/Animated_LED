@@ -22,10 +22,19 @@ const toPos = (v) => Math.sqrt(Math.max(0, Math.min(1, v)));
 const toVal = (p) => p * p;
 // [key, label, min, max, step, tooltip]
 const SLIDERS_LOOK = [
-  ["colour", "colour", 0, 1, 0.01, "How far the LED colours move to the wall's colours."],
-  ["spread", "spread", 0, 1, 0.01,
-    "How much of the wall's palette is laid out along the strips. 0 = the effect's own hue picks the wall colour."],
+  ["colour", "colour", 0, 1, 0.01, "How far the effect's pattern is drawn in the wall's colours. The effect keeps its own brightness."],
+  ["wash", "wash", 0, 1, 0.01, "How much of the wall's own light replaces the effect. 0 = the effect only; 1 = the effect is gone."],
 ];
+// Which part of the wall each LED sees. [value, label]
+const MAPPING = ["mapping", "mapping", [
+  ["palette", "palette: hub to tip"],
+  ["rows", "rows: bottom to top"],
+  ["rings", "rings: centre to edge"],
+  ["bands", "bands: one per leg"],
+], "Which part of the wall each LED sees. 'palette' lays the wall's colours from the hub to the tip of every leg, " +
+   "each as long as its share. The other three read WZRD's picture; until WZRD sends it they show 'palette'."];
+const SWITCH_TINT = ["tint_white", "tint the effect's white",
+  "On: white and grey in the effect take the wall's colour too. Off: they stay white."];
 const SLIDERS_TIME = [
   ["colour_smoothing_s", "colour smooth", 0, 5, 0.05, "Seconds for the LED colours to follow a change on the wall."],
   ["level_attack_s", "level attack", 0, 1, 0.01, "0 = the LEDs flash on the same frame the wall does."],
@@ -47,6 +56,10 @@ const CSS = `
 .wz-panel { display: flex; flex-direction: column; gap: 0.55rem; font-size: 0.8rem; color: var(--dim); }
 .wz-panel .wz-row { font-size: inherit; color: inherit; display: grid; grid-template-columns: 7.2rem 1fr 2.8rem; gap: 0.6rem; align-items: center; margin: 0; }
 .wz-panel .wz-row input[type="range"] { width: 100%; }
+.wz-panel .wz-row select { grid-column: 2 / 4; width: 100%; font: inherit; color: var(--text);
+  background: #050505; border: 1px solid #4a4d5a; border-radius: 4px; padding: 0.25rem 0.4rem; }
+.wz-note { margin: -0.3rem 0 0 7.8rem; font-size: 0.72rem; color: var(--warn); }
+.wz-note:empty { display: none; }
 .wz-panel .wz-row .wz-val { color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
 .wz-panel .wz-switch { font-size: inherit; display: flex; align-items: center; gap: 0.6rem; margin: 0; color: var(--text); cursor: pointer; }
 .wz-panel .wz-switch input { width: 1.1rem; height: 1.1rem; margin: 0; accent-color: var(--accent-strong); }
@@ -87,7 +100,7 @@ const CSS = `
 const controls = {};   // settings key -> { set(value), busy() }
 const stats = {};      // status id -> node
 const holdUntil = {};  // settings key -> timestamp: ignore server echoes until then
-let wallRange = null, errNode = null;
+let wallRange = null, errNode = null, mappingNote = null;
 let pending = null, timer = null;
 
 function send(patch) {
@@ -127,6 +140,26 @@ function addSlider(root, [key, label, min, max, step, tip]) {
     set: (v) => { input.value = v; setText(val, Number(v).toFixed(2)); },
     busy: () => document.activeElement === input,
   };
+}
+
+function addSelect(root, [key, label, options, tip]) {
+  const row = document.createElement("label");
+  row.className = "wz-row"; row.title = tip;
+  const name = document.createElement("span"); name.textContent = label;
+  const input = document.createElement("select");
+  for (const [value, text] of options) {
+    const o = document.createElement("option"); o.value = value; o.textContent = text;
+    input.appendChild(o);
+  }
+  input.addEventListener("change", () => send({ [key]: input.value }));
+  const note = document.createElement("div"); note.className = "wz-note";
+  row.append(name, input);
+  root.append(row, note);
+  controls[key] = {
+    set: (v) => { if (input.value !== v) input.value = v; },
+    busy: () => document.activeElement === input,
+  };
+  return note;
 }
 
 function addSwitch(root, [key, label, tip], main) {
@@ -203,7 +236,9 @@ export function mountWzrdPanel(container) {
   wallRange = addWallRange(root);
   addSlider(root, FLOOR);
   addSep(root);
+  mappingNote = addSelect(root, MAPPING);
   SLIDERS_LOOK.forEach((s) => addSlider(root, s));
+  addSwitch(root, SWITCH_TINT, false);
   SWITCHES_COUPLE.forEach((s) => addSwitch(root, s, false));
   SLIDERS_TIME.forEach((s) => addSlider(root, s));
   addSep(root);
@@ -252,6 +287,11 @@ export function applyWzrd(w) {
     st.connected && st.max_gap_ms > 30 ? "warn" : "");
   setStat("drop", String(st.dropped ?? 0), st.dropped ? "warn" : "");
   if (wallRange) wallRange.setNow(st.level || 0);
+  if (mappingNote) {
+    const shown = st.mapping_active;
+    setText(mappingNote, shown && s.mapping && shown !== s.mapping
+      ? `no picture from WZRD: showing ${shown}` : "");
+  }
   if (errNode && st.error) setText(errNode, st.error);
 
   if (s.listen) {

@@ -1,14 +1,20 @@
 # Wall light: how WZRD's picture drives the LEDs
 
-> **Status: design, nothing built.** Replaces the colour-mapping package (P5) of
-> [hub-rig.md](hub-rig.md) and depends on its geometry core (frames `radius` and `leg`).
+> **Status: WL1 is built (the `palette` mapping, `colour` / `wash` / `tint_white`, the
+> settings and the panel controls). Open: WL2 (WZRD sends its picture, in the WZRD repo), WL3
+> (the three picture mappings) and WL4 (docs).** The geometry it reads (frames `radius` and
+> `leg`): [reference/rig-geometry.md](../reference/rig-geometry.md).
 > How the WZRD input works today: [reference/wzrd-input.md](../reference/wzrd-input.md).
 > Xander's brief (2026-11-16): make the LEDs feel as much as possible like they follow the
 > visuals, with a mapping that is simple, general and works for any future visual or effect;
 > selectable modes, the default one identical on every leg. What he settled and the one choice
 > still open are under "Decisions for Xander". This repo is public: no hostnames or addresses in this file.
 
-## What is wrong today (measured, not guessed)
+## What was wrong, and what is still wrong (measured, not guessed)
+
+Of the three causes below, WL1 removed the second (a white effect now takes the wall's
+colour). The first and the third need the picture: the `palette` mapping still has only the
+one global `white` number and no idea where on the wall the light is.
 
 Two WZRD shaders showed the gap. Both were pushed through WZRD's extractor maths
 (`led_out::extract`) and ledctl's real `WzrdStage` in a throwaway script.
@@ -33,7 +39,7 @@ and `led_floor` 0.5 with `wall_bright` 0.25 (then named `follow_level` / `level_
 
 ## The design
 
-**One buffer, two sliders, one dropdown.** Each frame the stage builds the *wall light*: one
+**One buffer, two sliders, one dropdown.** Each frame the stage holds the *wall light*: one
 colour per LED, "what the wall shines on this LED". Two amounts say how the effect and the
 wall light combine, and `mapping` says which part of the wall each LED sees.
 
@@ -43,11 +49,10 @@ E'(i)   = E(i)  + colour * (max(E(i)) * tint(i) - E(i))     # effect keeps its b
 out(i)  = E'(i) + wash   * (wall(i) - E'(i))                # crossfade to the wall itself
 ```
 
-- `colour` (exists): the effect's pattern, drawn in the wall's colours.
-- `wash` (new, default 0): the wall's own light on the LEDs. At 1 the effect is gone.
-- Everything after this is unchanged: the saturation and brightness masters, then the gain
-  `led_floor + (1 - led_floor) * clip((level - wall_dark) / (wall_bright - wall_dark))` times
-  WZRD's brightness.
+Built in `WzrdStage.recolour` for the `palette` mapping, where every entry's largest channel
+is already 1, so one array (`_wall`) serves as both `wall` and `tint`. A picture mapping has
+dim cells, so WL3 keeps the two apart. Everything after the recolour is unchanged: the
+saturation and brightness masters, then the gain that follows the wall level.
 
 `wall(i)` is **relative**: converted from linear light with the output gamma, scaled so its
 brightest LED is 1 (98th percentile, with a floor of `0.08 * wall_bright` so a black wall fades
@@ -66,16 +71,13 @@ any angles work.
 | `rings` | the picture from its centre (hub) to its edge (tip), averaged round the ring; every leg identical | the picture |
 | `bands` | the picture cut into K vertical bands, one per leg in left-to-right order, bottom (hub) to top (tip) | the picture |
 
-`palette` is today's baked table (`bake_table`, kept) read at `radius`. The picture modes read
-a 32 x 18 grid that WZRD already computes and does not send (contract W1). With no grid
-arriving, a picture mode behaves as `palette` and the modal says so.
+`palette` is the baked table (`bake_table`) read at `radius`. The picture modes read a 32 x 18
+grid that WZRD already computes and does not send (contract W1). With no grid arriving, a
+picture mode behaves as `palette` and the panel says so under the dropdown; the stage reports
+the mapping in use as `status.mapping_active`, which is hard-coded to `palette` until WL3.
 
-**What changes for the operator.** `spread` goes (its job is the mapping). `mapping` and `wash`
-come. An effect's own hue no longer picks the wall colour, its position does; an effect's white
-takes the wall's colour too (cause 2 above), unless the `tint_white` switch is off: then the
-first line of the formula becomes `E + colour * (min(E) + (max(E) - min(E)) * tint - E)`,
-which is today's rule and leaves white as white. Automatic: exposure of the wall light, the
-fallback to `palette`, hold on lost signal.
+**Still automatic in WL3, not built:** exposure of the wall light. Hold on lost signal and the
+fallback to `palette` exist.
 
 **Time.** The grid is smoothed like the palette, by the same `colour_smoothing_s`; no new time
 setting. Lost signal holds the last picture (settled 2026-11-13). A hard cut dissolves over the
@@ -130,23 +132,19 @@ cannot build the picture modes before this lands.
   Check row 0 is the top of the projected picture with a top/bottom test pattern.
 - Not asked for: a finer grid, motion vectors, per-cell contrast (see Later).
 
-**W2: settings** (`WzrdSettings`, persisted as now). Add `mapping: palette|rows|rings|bands`
-(default `palette`), `wash: 0..1` (default 0) and `tint_white: bool` (default on, a switch in
-the modal); remove `spread`. Trap: a saved `config/wzrd_input.yaml` still has `spread`,
-the model forbids unknown keys, and `WzrdSettings.load` answers a validation error by falling
-back to every default, `listen` off included. Drop the old key on load.
+**W2: settings. Built:** `mapping`, `wash` and `tint_white` are in `WzrdSettings`; `spread` is
+gone and dropped from old files on load.
 
 ## Work packages
 
-**WL1: the stage on today's packets** (ledctl only; needs the `radius` frame from hub-rig G1;
-this is what the first night needs). Replace the hue lookup in `WzrdStage.recolour` with the
-formula above, `wall(i)` from the palette table read at `radius`; W2; a dropdown and a `wash`
-slider in `web/lib/wzrd.js` (it has sliders and switches only). Until this lands the hub rig
-lays the palette along `u_loop`, which on a star is an arbitrary order. *Done when*
-`tests/test_wzrd.py::test_output_stage_recolours_and_follows_wzrd_masters` pins the new maths
-(a white effect takes the wall's colour; `listen` off leaves the output untouched), the mode
-survives a restart, and `scripts/fake_wzrd.py` shows the palette running hub to tip on 3 and 4
-legs.
+**WL1: the stage on today's packets. Built.** `WzrdStage` (`src/ledctl/wzrd/stage.py`) lays
+the wall's palette from hub to tip on every leg and combines it with the effect by the
+formula above; the panel (`src/web/lib/wzrd.js`) has the mapping dropdown, the `wash` slider
+and the `tint_white` switch. One change from the design: `bake_table` now lays the palette on
+a line (entry 0 at the hub, the ends not blurred into each other) instead of round the hue
+circle, because nothing looks it up by hue any more and the circle put a sliver of the first
+colour at every tip. Watched with `scripts/fake_wzrd.py` on 3 and 4 legs.
+Done — see [reference/wzrd-input.md](../reference/wzrd-input.md).
 
 **WL2: WZRD sends the grid** (WZRD repo; independent of WL1). W1, its unit test next to
 `worker_sends_both_contract_messages`, section 2.15 updated.
@@ -163,8 +161,8 @@ give the "New" column of the table above on 3 and 4 legs, a test extends
 `test_cled_packets_are_parsed_or_dropped` with grid packets (bad size, half a frame), and the
 copy of the contract in `reference/wzrd-input.md` matches WZRD's.
 
-**WL4: docs.** `reference/wzrd-input.md` (contract copy, the "why" of position-not-hue, the
-SliceStrobe recipe below as a runbook entry); close this plan.
+**WL4: docs.** `reference/wzrd-input.md` has the "why" of position-not-hue since WL1. Left:
+the contract copy, the SliceStrobe recipe below as a runbook entry; close this plan.
 
 ## Settings to try (no code)
 

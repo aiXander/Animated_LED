@@ -8,8 +8,11 @@ are kept here.
 
 ## What this is
 
-A real-time controller for an **1800-LED festival install** (4 × 450 WS2815 strips on a metal
-scaffolding rectangle, centre-fed via DDP into a Gledopto/WLED controller). The defining idea
+A real-time controller for a **WS2815 LED install**: up to four 450-LED strips fed via DDP by
+one Gledopto/WLED controller. The rig is a **hub rig**: the Gledopto at the origin and three or
+four strips ("legs") running outward from it (the configs hold three, 1350 LEDs). It replaced a
+rectangle of two 30 m rows; the prompt, the simulator and every library effect are on the hub
+rig. The defining idea
 of the current design ("surface v2", now on `main`): **the LLM authors a Python `Effect`
 subclass per chat turn**, and the operator stacks effects Resolume-style into a *composition*
 and crossfades them live. There is no typed primitive graph any more.
@@ -20,6 +23,9 @@ logs / hostname to know whether you're on the Pi or the Mac before acting.
 
 ## Documentation map
 
+- `docs/reference/rig-geometry.md` — open it when touching the `strips` block of a config,
+  `topology.py`, `surface/frames.py` or `ctx.rig`, when writing an effect for the hub rig, or
+  when laying the legs out in a new room.
 - `docs/reference/wzrd-input.md` — open it when touching `src/ledctl/wzrd/`, the audio bridge's
   network mode, the master output stage's hook, the audio swell, or when the LEDs do not follow
   WZRD's wall.
@@ -90,7 +96,8 @@ into LIVE* and no way to change it — author the preview layer clean and self-c
 3. `init(ctx)` against the real topology, **≤200 ms**
 4. **30-frame fence test** (synthetic audio, `beat=1` every 6th frame) — wrong shape/dtype,
    NaN/Inf, or any exception rejects the install
-5. on success: install into the selected preview layer + persist to `config/effects/<slug>/`
+5. on success: install into the selected preview layer. Only the operator's save
+   (`POST /preview/save`) writes it to the library
 
 On failure at any stage the tool result is `{ok: false, error, details}` with a diagnostic
 hint; the next turn's prompt embeds it under **LAST EFFECT ERROR** so the LLM self-corrects.
@@ -98,9 +105,8 @@ Up to `agent.retry_on_tool_error` (=2) auto-retries happen inside one chat turn 
 failure surfaces to the operator.
 
 **Param auto-merge.** When a new layer installs, operator-tuned `param_values` for any `key`
-that matches the prior layer's schema carry forward. So "regenerate but keep my colour" is
-mechanical — the LLM is told this and picks new keys deliberately when a knob's meaning
-changes.
+that matches the prior layer's schema carry forward. The LLM is told this and picks new keys
+when a knob's meaning changes.
 
 **Masters are read-only to the LLM.** The prompt does *not* surface master values as writable.
 When a request can only be honoured by a master move ("brighter" while master brightness is
@@ -118,33 +124,32 @@ Rebuilt every turn by `build_system_prompt(...)`. Single canonical home per topi
 restatements. Section order:
 
 ```
-ROLE → TOOL → PHYSICAL RIG → INSTALL (live from topology) → COORDINATE FRAMES →
-AUDIO INPUT → EFFECT CONTRACT → RUNTIME API → PARAM SCHEMA → PERFORMANCE →
-ANTI-PATTERNS → EXAMPLE EFFECTS → CURRENT PREVIEW LAYER → [LAST EFFECT ERROR]
+ROLE → TOOL → RIG (generated from the topology) → COORDINATE FRAMES → AUDIO INPUT →
+EFFECT CONTRACT → RUNTIME API → PARAM SCHEMA → PERFORMANCE → ANTI-PATTERNS →
+EXAMPLE EFFECTS → CURRENT EFFECT → [LAST EFFECT ERROR]
 ```
 
-- **CURRENT PREVIEW LAYER** shows *only the selected preview layer's* source + param schema +
+- **CURRENT EFFECT** shows *only the selected preview layer's* source + param schema +
   current values. Other preview layers and all of LIVE are deliberately hidden — showing them
   tempts the LLM to "preserve" surrounding state instead of authoring its own layer cleanly.
 - **EXAMPLE EFFECTS** are rendered as **complete `write_effect` payloads** (name + summary +
   params + code) from `src/ledctl/surface/LLM_example_effects/<slug>/{effect.py, effect.yaml}`
-  on every build — the yaml sidecar (persistence format) supplies name/summary/params (drop a
-  new pair there → it shows up next turn). Five archetypes deliberately span distinct families:
-  orbiting comet (`rainbow_comet`), stateful sparkles (`twin_comets_with_sparkles`), plasma
-  field (`fluid_strobe_nebula`), noise-flicker wash (`fire_wash`), beat envelope (`beat_breath`).
-  These are **separate** from the `surface/examples/` library seed (below) and live outside
-  `config/effects/` so the operator can't delete them from the library UI and break the prompt.
+  on every build. There are four, each a byte copy of its library effect: rings on the beat
+  (`beat_rings`), particles that hop legs (`leg_comets`), a noise wash (`hub_ember`), a
+  rotating beam (`leg_sweep`). They live outside `config/effects/` so the operator can't
+  delete them from the library UI and break the prompt.
+- **Size limit: 26,000 characters** for the built prompt, pinned by `tests/test_examples.py`.
+  A fifth example does not fit.
 
-**Token-budget reminder.** The prose blocks (`PHYSICAL_RIG`, `EFFECT_CONTRACT`,
-`PERFORMANCE_RULES`, `ANTI_PATTERNS`), the example effects, and per-field `help` strings are
-the dominant cost. Keep them tight when editing.
+The prose blocks (`RIG_RULES`, `EFFECT_CONTRACT`, `PERFORMANCE_RULES`, `ANTI_PATTERNS`) and
+the examples dominate the cost.
 
 ---
 
 # Effects
 
 A *layer* is one Python `Effect` subclass (LLM-authored, or hand-written and saved). Each is
-its own module under `config/effects/<slug>/{effect.py, effect.yaml}` — real Python, diffable
+its own module under `config/effects/star/<slug>/{effect.py, effect.yaml}` — real Python, diffable
 and SSH-editable on the Pi.
 
 ## The Effect contract
@@ -167,7 +172,7 @@ returning `self.out` and trusting state survives across frames is safe.
 | field | meaning |
 | --- | --- |
 | `ctx.n` / `ctx.t` / `ctx.wall_t` / `ctx.dt` | sizes & times (`dt` clamped at 2× frame interval on a hiccup) |
-| `ctx.pos` | `(N, 3)` float32 in `[-1, 1]` |
+| `ctx.pos` | `(N, 3)` float32: metres / distance of the farthest LED, hub at 0 |
 | `ctx.frames.<name>` | per-LED scalar arrays — see COORDINATE FRAMES |
 | `ctx.audio.<...>` | audio bands / beat / bpm — see AUDIO CONTRACT |
 | `ctx.params.<key>` | operator-controlled values, auto-updated between frames (writes are no-op + warning) |
@@ -191,16 +196,17 @@ accepts an `out=` for allocation-free writes; `hex_to_rgb` does not (cached scal
 
 ## Coordinate frames (`surface/frames.py`)
 
-Effects address named per-LED scalars via `ctx.frames.<name>`; `build_system_prompt` emits the
-full list with one-line descriptions from `FRAME_DESCRIPTIONS`. Cartesian (`x/y/z`,
-`signed_x/y/z`), radial (`radius`, `angle`), row masks (`side_top/_bottom/_signed`), per-strip
-(`strip_id`, `chain_index`), and the headline frame **`u_loop`** — a clockwise arc-position
-around the rectangle in `[0, 1]` from top-centre. Motion along `u_loop` reads as motion *around
-the rig* regardless of strip count or reversal.
+Effects address named per-LED scalars via `ctx.frames.<name>`; the prompt lists the hub-rig frames
+(`PROMPT_FRAMES`):
+**`radius`** (0 at the hub, 1 at the farthest LED), `chain_index` (fraction along the LED's own
+leg), `leg` / `leg_phase` / `angle` (which leg) and `signed_x` / `signed_y`; a new effect reads
+only these. The older names (`u_loop`, `side_*`, `axial_*`, `x/y/z`, …) are still computed
+and hidden from the LLM; on a star most are an arbitrary order. Definitions:
+`docs/reference/rig-geometry.md`.
 
-**Geometry caveat the prompt hammers:** this is **not a 2D plane** — every LED has `y ∈ {+1, -1}`,
-none in between. 2D particle physics that lets pixels roam `[-1, 1]²` mostly fades to black.
-Pin `y` to ±1 and drive motion along `x`, or work 1D on `u_loop` / `chain_index` / `signed_x`.
+**Geometry caveat:** this is **not a 2D plane**. LEDs exist only on K thin legs, so a 2D field
+is sampled along them and a free-roaming 2D particle lights almost nothing. Things travel
+along a leg, hop between legs, or are rings (a function of `radius` alone).
 
 ## Audio contract (effect-side)
 
@@ -275,7 +281,8 @@ params, blend, opacity, enabled, consecutive_failures, perf}`. Blend modes (`BLE
 `Runtime.render(*, wall_t, dt, t_eff, audio) → (live_buf, sim_buf)`:
 - LIVE always renders. A crossfade renders the previous composition too and blends by
   `alpha = elapsed/duration` on `wall_t` (so the speed master doesn't slow promotes).
-- PREVIEW renders only in **design mode**, at half FPS by default (`preview_half_rate`).
+- PREVIEW renders only in **design mode**, at half FPS by default (`preview_half_rate`); a
+  skipped tick's time and beat carry to its next render.
 - **Master output stage** per leg: saturation pull toward Rec.709 luminance → brightness gain
   (≤1 multiplicative; >1 uses an adaptive headroom envelope tracking recent peak, 0.5 s release
   half-life) → clip `[0, 1]`. Calibration override runs *after* this stage.
@@ -291,7 +298,7 @@ A single playlist drives the LIVE composition unattended. When started, an async
 the entries in order, each playing `play_seconds` (min 5 s, default 120 s) before crossfading
 to the next, **looping forever**; only `stop()` exits. Per-iteration errors (missing/bad
 effect) are logged and skipped, never killing the task. Effects come from the on-disk library
-(`config/effects/<name>/`); the playlist persists to `config/playlist.yaml` and survives
+(`config/effects/star/<name>/`); the playlist persists to `config/playlist.yaml` and survives
 restarts. Out of scope (per operator): multiple playlists, jump-to-entry, shuffle.
 
 API: `GET /playlist`, `PUT /playlist` (replace entries), `POST /playlist/start`,
@@ -303,12 +310,13 @@ The landing page `/` hosts the operator UI: **Design / Live mode toggle**, simul
 per-slot composition decks (layers with blend/opacity/enabled), masters, chat panel, and the
 Effect Knobs panel for the selected layer. In **design mode** the LED leg ships LIVE's
 encoding while the sim leg shows PREVIEW; `transport/pause` blocks only the LED leg, `sim/pause`
-only the sim leg.
+only the sim leg. The simulator draws the legs to scale in a near-square box (a strip-like
+layout such as the old rectangle keeps a stretched band view); tapping an LED solos it.
 
 **Two front-ends, one API.** The desktop console (`web/index.html` + `web/lib/main-desktop.js`)
 is the wide two-column layout. Phones get a dedicated portrait UI at **`/m`**
 (`web/index-mobile.html` + `web/lib/main-mobile.js`): sticky header (status / DESIGN-LIVE
-segmented toggle / overflow menu), LED sim strip with a compact audio HUD, a context action bar
+segmented toggle / overflow menu), LED sim with a compact audio HUD, a context action bar
 (Promote/Pull in design, LIVE status in live), and a **bottom tab bar** (Layers · Knobs · Chat ·
 Output) over bottom-sheets for menu/library/playlist/colour/palette. `GET /` 307-redirects
 phone-class User-Agents to `/m` (iPad excluded; `?view=desktop` forces desktop, `?view=mobile`
@@ -319,25 +327,28 @@ in behavioural sync** (debounce windows, optimistic deck updates, chat-epoch wip
 
 ## Persistence & examples — three distinct directories
 
-- `config/effects/` — **the library, tracked in git and shared by every device** (Mac, Pi):
+- `config/effects/star/` — **the library, tracked in git and shared by every device** (Mac, Pi):
   effect code, knob schema and the saved knob values, which are the shared defaults. Everything
   the operator or the LLM does in the UI (tuning a knob, save, rename, delete, star) ends up
   in files here and shows up in `git status`. Those changes are the operator's tuning: commit
   them when asked to share them, otherwise leave them alone, and never revert them to tidy
-  the tree. `tests/test_examples.py` loads and renders every effect in it.
+  the tree. Move library files with plain `mv` / `cp -R` and ledctl stopped, never `git mv`
+  (it stages). Stop ledctl before committing a tuning session. Rewriting an effect replaces
+  its saved values on every device: carry a tuned value over where the knob's `key` keeps its
+  meaning. `tests/test_examples.py` installs and renders every effect on three legs and on
+  four. Beside it, `config/effects/double-line/` is a frozen copy of twelve effects as they
+  were on the rectangle: never loaded or edited.
 - `src/ledctl/surface/examples/` — bundled **seed**: `pulse_mono`, `audio_radial`,
   `palette_wash_with_kick_sparkles`, `twin_comets_with_sparkles`. On every start, any of the
   four missing from the library is copied in (`install_examples_if_missing()`; it never
-  overwrites), so an empty library still boots and deleting one of them does not stick. A new
-  effect goes into the library, not here. On boot the runtime loads `pulse_mono` into
+  overwrites), so an empty library still boots and deleting one of them does not stick. A
+  changed seed is written to both folders, byte-identical. A new effect goes into the
+  library, not here. On boot the runtime loads `pulse_mono` into
   both slots; if that fails the slot stays empty (implicit black layer).
-- `src/ledctl/surface/LLM_example_effects/` — **prompt** gold-standard sources shown verbatim
-  to the LLM (`fluid_strobe_nebula`, `rainbow_comet`, `twin_comets_with_sparkles`). Never copied
-  to the library; can't be deleted from the UI.
+- `src/ledctl/surface/LLM_example_effects/` — the **prompt's** four examples (above).
 
-On disk each saved effect is `config/effects/<slug>/effect.py` + `effect.yaml` (`{name, summary,
-source: 'agent'|'user', created_at, updated_at, params, param_values, starred}`). The v1
-`config/presets/*.yaml` files are **no longer loaded** — left on disk for reference only.
+`effect.yaml` holds `{name, summary, source: 'agent'|'user'|'bundled', created_at, updated_at,
+params, param_values, starred}`. The v1 `config/presets/*.yaml` files are no longer loaded.
 
 ---
 
@@ -356,8 +367,9 @@ clock, governor, throttling) are the `perf` key of `/state`, shown in the fps pi
 and the Output tab (mobile).
 
 **Key modules:**
-- `topology.py` — spatial model of all 1800 LEDs; normalised positions in `[-1, 1]` per axis
-  from `config` strip geometries; derives the named `ctx.frames.*` arrays.
+- `topology.py` — spatial model of every LED from the config's strip geometries (`line` or
+  `spoke`); positions normalised about the origin with one scale; derives the named
+  `ctx.frames.*` arrays. See `docs/reference/rig-geometry.md`.
 - `masters.py` — operator-owned `MasterControls` (`brightness ∈ [0,2]`, `speed`,
   `audio_reactivity`, `saturation`, `audio_swell` = brightness follows loudness, 0 = off); surfaced to effects read-only as `ctx.masters`.
 - `surface/` — the v2 runtime (see above). Base classes in `base.py`; sandbox in `sandbox.py`;
@@ -420,22 +432,26 @@ per the undo checklist in `Mac_direct_setup.md`, then delete this line.
 
 **⚠️ Pending, on the Pi, BEFORE its next `git pull` (not done as of 2026-11-16):** move the
 Pi onto the shared effect library. The Pi's `config/effects/` is still its old untracked,
-Pi-only library, sitting at the paths git now tracks. Xander's decision: the library from git
-replaces it. Confirm `hostname` says you are on the Pi, then:
+Pi-only library, in the folder where git now keeps `star/` and `double-line/`. Xander's
+decision: the library from git replaces it. Confirm `hostname` says you are on the Pi, then:
 ```bash
 cd /home/xander/audio_LED/Animated_LED
 sudo systemctl stop ledctl
 git status --short                                # tracked files changed on the Pi?
 mv config/effects ~/effects_pi_only_$(date +%F)   # set aside, not deleted
 git pull
-ls config/effects                                 # the library from git
+ls config/effects/star                            # the library from git
 sudo systemctl start ledctl
 ```
 If `git pull` refuses because a tracked file was changed on the Pi (likely `config/playlist.yaml`
 or `config/config.pi.yaml`), show Xander that file's `git diff` and let him choose between
-keeping it and `git restore <file>`. Afterwards the playlist needs rebuilding in the UI: entries
-that name Pi-only effects are skipped. The folder in `~` holds effects that exist nowhere else
-and is Xander's to delete. Then delete this block.
+keeping it and `git restore <file>`. The playlist from git plays the seven first-night effects;
+if the Pi's own file is kept, its entries that name Pi-only effects are skipped. The folder in `~` holds effects that exist nowhere else
+and is Xander's to delete. **At the same setup Xander copies the `OPENROUTER_API_KEY` line from
+the Mac's `.env` into the Pi's `.env` by hand** (the key was replaced on 2026-11-16; without
+it chat fails on the Pi, the LEDs are unaffected). The same pull brings the three-leg hub geometry in
+`config/config.pi.yaml`: from then on the Pi sends 1350 pixels a frame and the rectangle
+install cannot be driven. Then delete this block.
 
 Physical build detail (gear, power, soldering, WS2815 backup-data line) is in
 `Hardware_setup.md`. Phone/network access routes are in `reach_the_pi.md`. The essentials:
@@ -492,17 +508,12 @@ the Pi, then run these (each is safe to repeat):
 
 When all three check out, delete this block.
 
-**Strip mapping** (verified 1:1 with the operator UI via `/calibration/solo`; don't edit either
-side without re-running the calibration sequence). All four WLED outputs: WS281x, RGB, length
-450, Reversed OFF. ledctl strips all `reversed: false`, all wired controller-at-centre
-(logical pixel 0 = centre):
-
-| ledctl `id` | `pixel_offset` | physical quadrant |
-| --- | --- | --- |
-| top_right | 0 | top-right |
-| bottom_right | 450 | bottom-right |
-| bottom_left | 900 | bottom-left |
-| top_left | 1350 | top-left |
+**Strip mapping.** All four WLED outputs: WS281x, RGB, length 450, Reversed OFF; the Gledopto
+is not reconfigured per layout. In ledctl each strip is one leg, `reversed: false`, logical
+pixel 0 at the hub: `leg_1` at `pixel_offset` 0, `leg_2` at 450, `leg_3` at 900 (`leg_4`, 1350,
+is commented out in both configs). The three `angle_deg` values are **placeholders, not yet
+calibrated against a real floor**: which physical leg each pixel range is has to be found on
+site with `/calibration/solo` (runbook in `docs/reference/rig-geometry.md`).
 
 **DDP debug recipe** when LEDs show WLED's own preset instead of ledctl content:
 0. `ip -br addr show eth0` — must read `UP` with `10.0.0.1/24`. `NO-CARRIER`/`DOWN` (and no
@@ -525,9 +536,10 @@ The `/transport/{pause,resume}` flag stops DDP while keeping the simulator live;
 ~2.5 s realtime timeout the Gledopto resumes its own preset — instant A/B between "Pi drives"
 and "Gledopto drives" with no restart.
 
-**Coordinate convention.** Right-handed: `+x` = stage-right, `+y` = up, `+z` = toward audience.
-Origin = centre of scaffolding. `ctx.pos` normalised so each axis ∈ `[-1, 1]`;
-`ctx.frames.x/y/z` are the same data rescaled to `[0, 1]`.
+**Coordinate convention.** Origin = the Gledopto (the hub). x-y = the plane the legs lie in,
+which the simulator draws (a floor rig is seen from above; point `+y` at the projection wall);
+z = height off that plane. `ctx.pos` is metres divided by the distance of the farthest LED, one
+scale for all axes; `ctx.frames.x/y/z` are the same data rescaled to `[0, 1]`.
 
 ## Deploy artefacts
 

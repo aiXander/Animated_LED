@@ -11,20 +11,28 @@
 import { loadTopology } from "./state.js";
 import { setText } from "./util.js";
 
-// STRIP_THICKNESS used to be a fixed 12 device-px which was fine for a
-// roughly-square canvas but looks lost in a wide 15vh strip — the rig is
-// 30:1, so faithful aspect-ratio projection wastes most of the vertical
-// space. We now stretch x and y independently to fill the canvas (the sim
-// is a HUD, not a to-scale model) and derive strip thickness from the
-// per-row vertical share so each strip visually fills its half of the rig.
-const LED_WIDTH_SCALE = 1.0;
-// Strip thickness as a fraction of each row's vertical share. The strips are
-// physically 1D lines, so keep this slim — anything fat reads as a band with
-// width. ~0.53 is a third thinner than the old 0.8.
+// Two views, chosen from the rig's bounding box (metres, from /topology):
+//   - "star": x and y on one scale, so legs at any angle draw where they
+//     are. The hub rig, and any layout that is not strip-like.
+//   - "strip": a layout longer than STRIP_LIKE_ASPECT times its width (the
+//     old rectangle of two 30 m rows is 30:1). Drawn to scale it would be a
+//     hairline, so x and y stretch independently to fill the canvas and each
+//     row is a thick band. The sim is a HUD there, not a map.
+// The view is published as <html data-rig-layout="star|strip">; each page's
+// CSS sizes its canvas box from it (near-square for a star).
+const STRIP_LIKE_ASPECT = 6;
+// Strip view: band thickness as a fraction of each row's share of the canvas.
 const STRIP_THICKNESS_FRAC = 0.53;
+// Star view: leg thickness as a fraction of the canvas's short side, clamped
+// (CSS px). The legs are 1D lines; anything fat reads as a band with width.
+const STAR_THICKNESS_FRAC = 0.012;
+const STAR_THICKNESS_MIN = 3;
+const STAR_THICKNESS_MAX = 7;
 const HOVER_DOT = 8;
-// Margins as a fraction of the canvas extent — keeps a tiny breathing
-// gap at either end of the rig regardless of viewport width.
+// Side of the ring drawn round a calibration-lit LED (CSS px). On a star one
+// LED is about one device px long, too small to find without it.
+const CAL_RING = 12;
+// Breathing gap at the canvas edges, as a fraction of the canvas extent.
 const HORIZONTAL_MARGIN_FRAC = 0.05;
 const VERTICAL_MARGIN_FRAC = 0.05;
 
@@ -46,11 +54,13 @@ export function bindViz({
   let ledRects = null;
   let bboxMin = [0, 0, 0];
   let bboxMax = [1, 1, 1];
+  let stripLike = false;
   let lastFrame = null;
   let projected = null;
   let mouseX = -1, mouseY = -1;
   let mouseAbsX = 0, mouseAbsY = 0;
   let mySolo = null;
+  let calLit = null;   // global indices lit by calibration, ringed in draw()
   let canvasW = 1, canvasH = 1;
   let canvasDpr = 1;
 
@@ -59,14 +69,20 @@ export function bindViz({
     if (statusEngine) { statusEngine.textContent = txt; statusEngine.className = cls; }
   }
 
+  // The backing store must hold exactly the device pixels the canvas covers.
+  // One pixel off and the browser rescales the whole bitmap, which blends
+  // neighbouring LEDs however carefully the rects were rounded. The CSS box
+  // is rarely a whole number of device px (vh heights, the star's
+  // aspect-ratio box), so take the browser's own count where it reports one.
+  let devBox = null;   // [w, h] in device px, from the ResizeObserver below
   function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
     canvasDpr = dpr;
     const rect = canvas.getBoundingClientRect();
-    canvasW = Math.max(1, Math.floor(rect.width));
-    canvasH = Math.max(1, Math.floor(rect.height));
-    canvas.width = Math.floor(canvasW * dpr);
-    canvas.height = Math.floor(canvasH * dpr);
+    canvas.width = Math.max(1, devBox ? devBox[0] : Math.round(rect.width * dpr));
+    canvas.height = Math.max(1, devBox ? devBox[1] : Math.round(rect.height * dpr));
+    canvasW = canvas.width / dpr;
+    canvasH = canvas.height / dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     reproject();
   }
@@ -81,25 +97,32 @@ export function bindViz({
   function reproject() {
     if (!leds.length) { projected = null; return; }
     const dpr = canvasDpr;
-    // Strip thickness derives from the per-row vertical share (kept slim — the
-    // strips are 1D lines). Computed before projection so we can reserve room
-    // for it in the vertical padding and avoid clipping the outermost rows.
-    const rows = _approxRowCount();
-    const perRowPx = canvasH / Math.max(1, rows);
-    const thickCss = Math.max(2, Math.floor(perRowPx * STRIP_THICKNESS_FRAC));
+    const dx = bboxMax[0] - bboxMin[0];
+    const dy = bboxMax[1] - bboxMin[1];
+    // Thickness first: it is reserved in the padding so the outermost LEDs
+    // sit fully inside the canvas.
+    let thickCss, padX, padY, sx, sy;
+    if (stripLike) {
+      // Bands run along the long axis; thickness comes from each band's share
+      // of the short one, and only that axis needs room for it.
+      const alongX = dx >= dy;
+      const share = (alongX ? canvasH : canvasW) / _bandCount(alongX ? 1 : 0);
+      thickCss = Math.max(2, Math.floor(share * STRIP_THICKNESS_FRAC));
+      padX = canvasW * HORIZONTAL_MARGIN_FRAC + (alongX ? 0 : thickCss / 2);
+      padY = canvasH * VERTICAL_MARGIN_FRAC + (alongX ? thickCss / 2 : 0);
+      sx = Math.max(1, canvasW - 2 * padX) / (dx || 1);
+      sy = Math.max(1, canvasH - 2 * padY) / (dy || 1);
+    } else {
+      thickCss = Math.min(STAR_THICKNESS_MAX, Math.max(STAR_THICKNESS_MIN,
+        Math.round(Math.min(canvasW, canvasH) * STAR_THICKNESS_FRAC)));
+      padX = canvasW * HORIZONTAL_MARGIN_FRAC + thickCss / 2;
+      padY = canvasH * VERTICAL_MARGIN_FRAC + thickCss / 2;
+      sx = sy = Math.min(
+        Math.max(1, canvasW - 2 * padX) / (dx || 1),
+        Math.max(1, canvasH - 2 * padY) / (dy || 1),
+      );
+    }
     const thickDev = Math.max(1, Math.round(thickCss * dpr));
-    const halfThickDev = (thickDev / 2) | 0;
-
-    const ww = canvasW * (1 - 2 * HORIZONTAL_MARGIN_FRAC);
-    // Pad vertically by the margin AND half the strip thickness so the top and
-    // bottom rows sit fully inside the canvas with a small breathing gap.
-    const vPad = canvasH * VERTICAL_MARGIN_FRAC + thickCss / 2;
-    const hh = Math.max(1, canvasH - 2 * vPad);
-    const dx = bboxMax[0] - bboxMin[0] || 1;
-    const dy = bboxMax[1] - bboxMin[1] || 1;
-    // Stretch axes independently — the sim is a HUD, not a faithful map.
-    const sx = ww / dx;
-    const sy = hh / dy;
     const cx = canvasW / 2;
     const cy = canvasH / 2;
     const ox = (bboxMin[0] + bboxMax[0]) / 2;
@@ -114,90 +137,78 @@ export function bindViz({
       const off = strip.pixel_offset;
       const n = strip.pixel_count;
       if (n === 0) return;
-      const sx = projected[off * 2];
-      const sy = projected[off * 2 + 1];
-      const ex = projected[(off + n - 1) * 2];
-      const ey = projected[(off + n - 1) * 2 + 1];
-      const ddx = ex - sx;
-      const ddy = ey - sy;
-      const horizontal = Math.abs(ddx) >= Math.abs(ddy);
-      if (horizontal) {
-        const yTopDev = Math.round(sy * dpr) - halfThickDev;
-        const stepF = n > 1 ? ddx / (n - 1) : (ddx >= 0 ? 1 : -1);
-        const halfStepCss = stepF / 2;
-        let prevBoundDev = Math.round((sx - halfStepCss) * dpr);
-        for (let i = 0; i < n; i++) {
-          const nextCss = (i < n - 1)
-            ? (sx + stepF * (i + 0.5))
-            : (sx + stepF * (n - 1) + halfStepCss);
-          const nextBoundDev = Math.round(nextCss * dpr);
-          const slotW = Math.abs(nextBoundDev - prevBoundDev);
-          const slotL = Math.min(prevBoundDev, nextBoundDev);
-          let xL, w;
-          if (LED_WIDTH_SCALE >= 0.999) {
-            xL = slotL; w = Math.max(1, slotW);
-          } else {
-            w = Math.max(1, Math.round(slotW * LED_WIDTH_SCALE));
-            xL = slotL + ((slotW - w) >> 1);
-          }
-          const idx = (off + i) * 4;
-          ledRects[idx]     = xL;
-          ledRects[idx + 1] = yTopDev;
-          ledRects[idx + 2] = w;
-          ledRects[idx + 3] = thickDev;
-          prevBoundDev = nextBoundDev;
-        }
-      } else {
-        const xLeftDev = Math.round(sx * dpr) - halfThickDev;
-        const stepF = n > 1 ? ddy / (n - 1) : (ddy >= 0 ? 1 : -1);
-        const halfStepCss = stepF / 2;
-        let prevBoundDev = Math.round((sy - halfStepCss) * dpr);
-        for (let i = 0; i < n; i++) {
-          const nextCss = (i < n - 1)
-            ? (sy + stepF * (i + 0.5))
-            : (sy + stepF * (n - 1) + halfStepCss);
-          const nextBoundDev = Math.round(nextCss * dpr);
-          const slotH = Math.abs(nextBoundDev - prevBoundDev);
-          const slotT = Math.min(prevBoundDev, nextBoundDev);
-          let yT, h;
-          if (LED_WIDTH_SCALE >= 0.999) {
-            yT = slotT; h = Math.max(1, slotH);
-          } else {
-            h = Math.max(1, Math.round(slotH * LED_WIDTH_SCALE));
-            yT = slotT + ((slotH - h) >> 1);
-          }
-          const idx = (off + i) * 4;
-          ledRects[idx]     = xLeftDev;
-          ledRects[idx + 1] = yT;
-          ledRects[idx + 2] = thickDev;
-          ledRects[idx + 3] = h;
-          prevBoundDev = nextBoundDev;
-        }
-      }
+      _layStrip(
+        off, n,
+        projected[off * 2], projected[off * 2 + 1],
+        projected[(off + n - 1) * 2], projected[(off + n - 1) * 2 + 1],
+        thickDev, dpr,
+      );
     });
   }
 
-  // Count unique y-bands among strips — used to size strip thickness so the
-  // sim fills its viz strip vertically regardless of how many parallel rows
-  // the rig has. Two close-by y values count as one band.
-  function _approxRowCount() {
+  // One strip from (ax, ay) to (bx, by) in CSS px, at any angle, as n
+  // axis-aligned rects in DEVICE px. The strip is tiled along whichever
+  // canvas axis it runs closer to: there each LED owns the slot between two
+  // rounded bounds, so neighbours share an exact integer edge. Across that
+  // axis each rect is centred on the strip's line and rounded on its own,
+  // which gives a diagonal strip a staircase of whole pixels. Every edge is
+  // an integer on purpose: a fractional edge is anti-aliased by the canvas
+  // and blends neighbouring LEDs' colours
+  // (LED_color_debug/BLOCKY_COLORS_INVESTIGATION.md). Do not draw a leg with
+  // a rotated transform or a stroked line.
+  function _layStrip(off, n, ax, ay, bx, by, thickDev, dpr) {
+    const alongX = Math.abs(bx - ax) >= Math.abs(by - ay);
+    const a0 = alongX ? ax : ay;            // along the tiling axis
+    const c0 = alongX ? ay : ax;            // across it
+    const dA = alongX ? bx - ax : by - ay;
+    const dC = alongX ? by - ay : bx - ax;
+    const stepA = n > 1 ? dA / (n - 1) : 1;
+    const stepC = n > 1 ? dC / (n - 1) : 0;
+    // A rect's extent across the tiling axis is longer than the strip is
+    // thick by 1/cos(tilt); widen it so every leg looks equally thick.
+    const tilt = dA !== 0 ? Math.hypot(dA, dC) / Math.abs(dA) : 1;
+    const across = Math.max(1, Math.round(thickDev * tilt));
+    const half = across >> 1;
+    let prevBound = Math.round((a0 - stepA / 2) * dpr);
+    for (let i = 0; i < n; i++) {
+      const nextBound = Math.round((a0 + stepA * (i + 0.5)) * dpr);
+      const lo = Math.min(prevBound, nextBound);
+      // Under one device px per LED the slot rounds to 0: draw 1 px and let
+      // the next LED paint over it.
+      const size = Math.max(1, Math.abs(nextBound - prevBound));
+      const cLo = Math.round((c0 + stepC * i) * dpr) - half;
+      const idx = (off + i) * 4;
+      ledRects[idx]     = alongX ? lo : cLo;
+      ledRects[idx + 1] = alongX ? cLo : lo;
+      ledRects[idx + 2] = alongX ? size : across;
+      ledRects[idx + 3] = alongX ? across : size;
+      prevBound = nextBound;
+    }
+  }
+
+  // Strip view only: how many parallel bands the strips form across the
+  // layout's short axis (`axis`: 0 = x, 1 = y). Sizes the band thickness so
+  // the bands fill the canvas however many rows the rig has. Two strips
+  // closer than 1 cm count as one band.
+  function _bandCount(axis) {
     if (!strips.length) return 1;
-    const ys = strips.map((s) => 0.5 * (s.start[1] + s.end[1]));
-    ys.sort((a, b) => a - b);
+    const mids = strips.map((s) => 0.5 * (s.start[axis] + s.end[axis]));
+    mids.sort((a, b) => a - b);
     let bands = 1;
-    for (let i = 1; i < ys.length; i++) {
-      if (Math.abs(ys[i] - ys[i - 1]) > 0.01) bands += 1;
+    for (let i = 1; i < mids.length; i++) {
+      if (Math.abs(mids[i] - mids[i - 1]) > 0.01) bands += 1;
     }
     return bands;
   }
 
-  function pickLED() {
-    if (!projected || mouseX < 0) return -1;
+  // Nearest LED centre within 10 CSS px of (px, py), canvas-relative; -1 if none.
+  function pickLED(px, py) {
+    if (!projected || px < 0) return -1;
     const radius = 10, r2 = radius * radius;
     let best = -1, bestD = r2;
     for (let i = 0; i < leds.length; i++) {
-      const dx = projected[i * 2] - mouseX;
-      const dy = projected[i * 2 + 1] - mouseY;
+      const dx = projected[i * 2] - px;
+      const dy = projected[i * 2 + 1] - py;
       const d2 = dx * dx + dy * dy;
       if (d2 < bestD) { bestD = d2; best = i; }
     }
@@ -220,8 +231,19 @@ export function bindViz({
         ctx.fillRect(ledRects[idx], ledRects[idx + 1], ledRects[idx + 2], ledRects[idx + 3]);
       }
       ctx.setTransform(canvasDpr, 0, 0, canvasDpr, 0, 0);
+      if (calLit) {
+        ctx.strokeStyle = "#fbbf24";
+        ctx.lineWidth = 1;
+        for (const gid of calLit) {
+          if (gid < 0 || gid >= n) continue;
+          ctx.strokeRect(
+            projected[gid * 2] - CAL_RING / 2, projected[gid * 2 + 1] - CAL_RING / 2,
+            CAL_RING, CAL_RING,
+          );
+        }
+      }
       if (tooltip) {
-        const hit = pickLED();
+        const hit = pickLED(mouseX, mouseY);
         if (hit >= 0) {
           const x = projected[hit * 2], y = projected[hit * 2 + 1];
           ctx.strokeStyle = "#fbbf24";
@@ -266,16 +288,12 @@ export function bindViz({
     });
   }
 
-  // Tap / click → solo that LED via /calibration/solo. Works on both
-  // desktop (precise hit via pickLED with mouseX) and touch (we set
-  // mouseX from the tap location).
+  // Tap / click → solo that LED via /calibration/solo. Picks from the
+  // click's own position, never from the hover state: both pages run without
+  // a tooltip, so nothing else would update it between taps.
   canvas.addEventListener("click", async (e) => {
-    if (mouseX < 0) {
-      const r = canvas.getBoundingClientRect();
-      mouseX = e.clientX - r.left;
-      mouseY = e.clientY - r.top;
-    }
-    const hit = pickLED();
+    const r = canvas.getBoundingClientRect();
+    const hit = pickLED(e.clientX - r.left, e.clientY - r.top);
     if (hit < 0) return;
     const gid = leds[hit].global_index;
     if (mySolo === gid) {
@@ -302,6 +320,16 @@ export function bindViz({
   if (window.ResizeObserver && root) {
     new ResizeObserver(requestReproject).observe(root);
   }
+  if (window.ResizeObserver) {
+    try {
+      new ResizeObserver((entries) => {
+        const box = entries[0].devicePixelContentBoxSize;
+        if (!box || !box[0]) return;
+        devBox = [box[0].inlineSize, box[0].blockSize];
+        requestReproject();
+      }).observe(canvas, { box: "device-pixel-content-box" });
+    } catch (e) { /* Safari has no device-pixel-content-box: rounding stays */ }
+  }
 
   async function reloadTopology() {
     const topo = await loadTopology();
@@ -309,6 +337,12 @@ export function bindViz({
     strips = topo.strips || [];
     bboxMin = topo.bbox_min;
     bboxMax = topo.bbox_max;
+    const dx = bboxMax[0] - bboxMin[0];
+    const dy = bboxMax[1] - bboxMin[1];
+    stripLike = Math.max(dx, dy) > STRIP_LIKE_ASPECT * Math.min(dx, dy);
+    // The page's CSS resizes the canvas box on this; the ResizeObserver then
+    // reprojects into the new box.
+    document.documentElement.dataset.rigLayout = stripLike ? "strip" : "star";
     if (pixelCountEl) pixelCountEl.textContent = topo.pixel_count;
     reproject();
   }
@@ -350,6 +384,7 @@ export function bindViz({
 
   // Drive the calibration banner from /ws/state snapshots.
   function applyCalibration(cal) {
+    calLit = !cal ? null : (cal.mode === "solo" ? cal.indices : [cal.current]);
     if (!calBanner) return;
     if (cal) {
       calBanner.style.display = "block";
