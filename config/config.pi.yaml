@@ -76,11 +76,13 @@ audio_server:
   autostart: true
   # Absolute path required: systemd doesn't inherit the user shell PATH,
   # so a bare "audio-server" silently fails to resolve under ledctl.service.
-  # --no-fft: boot with the FFT worker off (we only consume L/M/H + beat over
-  # OSC, so the FFT/spectrum path is dead weight). Forced off every boot even if
-  # someone toggled it on in the UI (which persists to the audio server's
-  # configs/main.yaml). The operator can still flip it back on live from the UI.
-  command: ["/home/xander/.local/bin/audio-server", "--no-fft"]
+  # The Rust engine (rust-engine branch, built on the Pi with
+  # `cd engine && cargo build --release -p server`). The Python engine is
+  # still installed as /home/xander/.local/bin/audio-server (same CLI) if the
+  # Rust one misbehaves. FFT is off in that repo's configs/main.yaml (we only
+  # consume L/M/H + beat over OSC); `--no-fft` would force it off at every
+  # boot instead, even after someone turns it on in the audio UI.
+  command: ["/home/xander/audio_LED/Realtime_PyAudio_FFT/engine/target/release/audio-server"]
   # Resolved relative to this YAML file's directory: from <repo>/config/ this
   # points at <repo>/../Realtime_PyAudio_FFT, the sibling clone of the
   # audio-feature server. Launching the subprocess with that as cwd means

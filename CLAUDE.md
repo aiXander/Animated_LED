@@ -430,12 +430,12 @@ the Gledopto's WLED Wi-Fi settings were changed (a phone hotspot was entered) wh
 drive it from the Mac. As soon as the Pi is back on the ethernet cable, clear them and verify DDP
 per the undo checklist in `Mac_direct_setup.md`, then delete this line.
 
-**Updating the Pi.** The Pi has no GitHub key, and its global git config rewrites every
-`https://github.com/` URL to SSH, so a plain `git pull` fails with "Permission denied
-(publickey)". The repo is public: pull over HTTPS with the global config skipped, then refresh
-dependencies (ledctl stopped, as for any library change):
+**Updating the Pi.** The Pi's repo talks to GitHub over HTTPS with a personal access token
+limited to this repo (git's `store` helper, `~/.git-credentials`, mode 600), so plain
+`git pull` and `git push` work. Pull with ledctl stopped, as for any library change, then
+refresh dependencies:
 ```bash
-GIT_CONFIG_GLOBAL=/dev/null git pull --ff-only https://github.com/aiXander/Animated_LED.git main
+git pull --ff-only
 ~/.local/bin/uv pip install -q -e .
 ```
 The Pi's `.env` holds `LEDCTL_PASSWORD` and `OPENROUTER_API_KEY`; without the password ledctl

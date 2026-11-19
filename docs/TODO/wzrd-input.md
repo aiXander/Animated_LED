@@ -64,10 +64,9 @@ config.
    the wall, build the event delay under "Later".
 9. **Xander turns the public Tailscale Funnel off for the gig** (`tailscale funnel status`
    shows what is public). An agent never does this.
-10. **While there, read only:** `journalctl -u ledctl | grep audio-server`. The Pi config
-    starts its server with `--no-fft`, a flag that exists nowhere in the audio repo's history;
-    if the installed server rejects it, standalone audio is already dead and the spawn fix
-    under "Later" becomes urgent for standalone nights.
+10. **While there, read only:** `journalctl -u ledctl | grep audio-server`, to confirm the
+    Rust audio server (spawned with no arguments since 2026-11-19, FFT off in its own
+    `configs/main.yaml`) runs on the Pi; it had never run on Linux before.
 
 *Done when* the LEDs follow WZRD's wall and its master sliders for 30 minutes with a steady
 60 fps and no drop in the `frames_sent` rate.
@@ -109,11 +108,11 @@ minutes at a steady 60 fps with WZRD driving the colours and nothing strobes.
 - **Event delay.** `audio_server.event_delay_ms` (default 0): the listener timestamps each
   onset and `Engine._build_audio_view` releases it when due. Build it only if rehearsal shows
   the LEDs leading the wall.
-- **Audio-server spawn fixes for standalone mode with the current server:** the binary is
-  `<audio repo>/engine/target/release/audio-server` with no arguments and finds its config by
-  walking up from its own path; `--no-fft` does not exist (switch the FFT off over the
-  server's WebSocket once it answers); restart the server on exit with a backoff. Needs
-  `LimitRTPRIO` and write access to the audio repo's `configs/` in `ledctl.service`.
+- **Audio-server spawn fixes for standalone mode:** ledctl now spawns
+  `<audio repo>/engine/target/release/audio-server` (built on the Pi) with no arguments; the
+  binary finds its config by walking up from its own path, and both engines accept an optional
+  `--no-fft`. Still open: restart the server on exit with a backoff, and `LimitRTPRIO` in
+  `ledctl.service` (without it the Rust workers fall back to nice −5 instead of `SCHED_FIFO`).
 - A line in the LLM prompt (`surface/prompt.py`) while `listen` is on, saying that the wall
   replaces the effect's colours and only its brightness pattern shows.
 - Controls for `quiet` and `loud` in the UI; an audio-source switch in the UI.
