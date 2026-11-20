@@ -1,0 +1,72 @@
+name: leg_direction
+summary: 'Calibration aid: soft balls of light roll along every leg, so you can see
+  which way each strip runs and, with leg colours on, which strip is which.'
+source: bundled
+created_at: 1795118400.0
+updated_at: 1795118400.0
+params:
+- key: color
+  label: Colour
+  help: Ball colour when leg colours are off.
+  control: color
+  default: '#ffd9a0'
+- key: leg_colors
+  label: Leg colours
+  help: Tint each strip by config order. leg_1 red, leg_2 green, leg_3 blue, leg_4 yellow.
+  control: toggle
+  default: false
+- key: direction
+  label: Direction
+  help: Outward = hub to tip, the way pixel numbers count up.
+  control: select
+  options: [outward, inward, bounce]
+  default: outward
+- key: seconds
+  label: Seconds per pass
+  help: How long a ball takes from the hub to the tip.
+  control: slider
+  min: 1.0
+  max: 12.0
+  step: 0.5
+  default: 4.0
+  unit: s
+- key: balls
+  label: Balls per leg
+  control: int_slider
+  min: 1
+  max: 6
+  default: 1
+- key: lit
+  label: Lit fraction
+  help: How much of the leg the balls cover. 0.7 = 30% of the leg is dark.
+  control: slider
+  min: 0.1
+  max: 1.0
+  step: 0.05
+  default: 0.7
+- key: softness
+  label: Softness
+  help: How much of each ball is gradient. 1 = all gradient, 0 = hard edges.
+  control: slider
+  min: 0.0
+  max: 1.0
+  step: 0.05
+  default: 1.0
+- key: floor
+  label: Background glow
+  help: Brightness of the dark part, so the whole leg stays faintly visible.
+  control: slider
+  min: 0.0
+  max: 0.5
+  step: 0.01
+  default: 0.0
+param_values:
+  color: '#ffd9a0'
+  leg_colors: false
+  direction: outward
+  seconds: 4.0
+  balls: 1
+  lit: 0.7
+  softness: 1.0
+  floor: 0.0
+starred: false

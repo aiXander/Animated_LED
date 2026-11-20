@@ -13,7 +13,7 @@ controllers:
 strips:
 # The hub rig: the Gledopto is the origin and each strip is one leg running
 # outward from it. `angle_deg` is the leg's direction in the x-y plane (0 = +x,
-# counter-clockwise). These three angles are placeholders until the room is
+# counter-clockwise). These four angles are placeholders until the room is
 # measured: solo each pixel range, see which leg lights, set its angle.
 - id: leg_1
   controller: gledopto_main
@@ -28,22 +28,21 @@ strips:
   pixel_offset: 450
   pixel_count: 450
   leds_per_meter: 30.0
-  geometry: {type: spoke, angle_deg: 210}
+  geometry: {type: spoke, angle_deg: 180}
 - id: leg_3
   controller: gledopto_main
   output: 3
   pixel_offset: 900
   pixel_count: 450
   leds_per_meter: 30.0
-  geometry: {type: spoke, angle_deg: 330}
-# A fourth leg: plug in the last output, uncomment, and give all four an angle.
-# - id: leg_4
-#   controller: gledopto_main
-#   output: 4
-#   pixel_offset: 1350
-#   pixel_count: 450
-#   leds_per_meter: 30.0
-#   geometry: {type: spoke, angle_deg: 0}
+  geometry: {type: spoke, angle_deg: 270}
+- id: leg_4
+  controller: gledopto_main
+  output: 4
+  pixel_offset: 1350
+  pixel_count: 450
+  leds_per_meter: 30.0
+  geometry: {type: spoke, angle_deg: 0}
 transport:
   mode: simulator
   sim:

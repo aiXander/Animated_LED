@@ -5,6 +5,7 @@ composition + persistence routes."""
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -304,3 +305,21 @@ def test_config_write_back_keeps_the_auth_block(tmp_path, monkeypatch):
         r = c.put("/config", params={"password": "s3cret"}, json={"strips": got["strips"]})
         assert r.status_code == 200
     assert load_config(path).auth.resolved_password() == "s3cret"
+
+
+def test_restart_restores_what_live_was_showing(tmp_path):
+    """A power cut mid-gig must come back to the LIVE effect the operator left
+    on, not to the boot default: the saver writes `live.yaml`, the next boot
+    reads it."""
+    effects = tmp_path / "effects"
+    with TestClient(create_app(load_config(DEV), effects_dir=effects)) as c:
+        r = c.post("/effects/audio_radial/load_live", json={"blend": "add", "opacity": 0.5})
+        assert r.status_code == 200
+        deadline = time.time() + 5.0
+        while not (tmp_path / "live.yaml").exists() and time.time() < deadline:
+            time.sleep(0.1)
+    with TestClient(create_app(load_config(DEV), effects_dir=effects)) as c:
+        layers = c.get("/state").json()["live"]["layers"]
+    assert [(lay["name"], lay["blend"], lay["opacity"]) for lay in layers] == [
+        ("audio_radial", "add", 0.5)
+    ]

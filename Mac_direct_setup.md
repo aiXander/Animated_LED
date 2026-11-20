@@ -25,6 +25,9 @@ Once the Pi is back on the 15 m ethernet cable:
 
 What the SSID field held before 2026-11-16 is unknown (possibly empty).
 
+Do it in the UI form: on 2026-11-19 a `POST /json/cfg` with `"ssid": ""` returned success but
+WLED 0.15.3 silently kept the old SSID.
+
 ## Lessons, if the Mac ever has to drive the Gledopto again
 
 - **WLED's fallback hotspot:** SSID `WLED-AP`, password `wled1234`, address `4.3.2.1`. ledctl can

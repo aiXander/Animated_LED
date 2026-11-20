@@ -55,7 +55,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .. import yamlio
+from .. import live_state, yamlio
 from ..audio import AudioBridge
 from ..config import AppConfig, AudioServerConfig, StripConfig
 from ..engine import Engine
@@ -310,17 +310,32 @@ def create_app(
     store.install_examples_if_missing()
     playlist = Playlist.load(default_playlist_path(config_dir))
 
-    # Boot defaults: try to load `pulse_mono` into both slots; if that fails
-    # for any reason, fall back to a single black layer.
-    def _safe_install(slot: str, name: str) -> None:
+    # Boot: LIVE comes back to what it showed before the restart
+    # (`config/live.yaml`), else `pulse_mono`; PREVIEW starts on `pulse_mono`.
+    # A layer that fails to load is skipped; an empty slot renders black.
+    def _safe_install(slot: str, name: str, *, blend: str = "normal",
+                      opacity: float = 1.0) -> bool:
         try:
             kwargs = _load_layer_from_store(store, name)
-            runtime.install_layer(slot, **kwargs, blend="normal", opacity=1.0)
+            runtime.install_layer(slot, **kwargs, blend=blend, opacity=opacity,
+                                  replace=False)
+            return True
         except Exception:
-            log.exception("could not install %r into %s; slot stays empty", name, slot)
+            log.exception("could not install %r into %s; skipped", name, slot)
+            return False
 
-    if store.exists("pulse_mono"):
+    live_path = config_dir / live_state.FILENAME
+    saved_live = live_state.load(live_path) or {}
+    for entry in saved_live.get("layers") or []:
+        if _safe_install("live", str(entry.get("name")),
+                         blend=entry.get("blend", "normal"),
+                         opacity=float(entry.get("opacity", 1.0))):
+            runtime.live.layers[-1].enabled = bool(entry.get("enabled", True))
+    if runtime.live.layers:
+        runtime.live.select(int(saved_live.get("selected") or 0))
+    elif store.exists("pulse_mono"):
         _safe_install("live", "pulse_mono")
+    if store.exists("pulse_mono"):
         _safe_install("preview", "pulse_mono")
     # Boot is a hard cut — no crossfade from black on first frame.
     runtime._cf = None
@@ -350,6 +365,12 @@ def create_app(
         gc.freeze()
         await engine.start()
         playlist.attach(runtime, store, value_saver)
+        if saved_live.get("playlist_running") and playlist.entries:
+            playlist.start()
+        live_saver = asyncio.create_task(
+            live_state.watch(live_path, lambda: live_state.snapshot(runtime, playlist)),
+            name="ledctl-live-saver",
+        )
         broadcaster = asyncio.create_task(
             _state_broadcaster(
                 state_fanout, _full_state_payload, lambda: sim.target_fps,
@@ -360,8 +381,13 @@ def create_app(
         try:
             yield
         finally:
+            # Cancel the saver before stopping the playlist, so shutdown does
+            # not record "playlist stopped" and the next boot resumes it.
+            live_saver.cancel()
             playlist.stop()
             broadcaster.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await live_saver
             with contextlib.suppress(asyncio.CancelledError):
                 await broadcaster
             await state_fanout.close()

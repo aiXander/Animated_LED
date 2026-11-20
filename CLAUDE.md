@@ -10,7 +10,7 @@ are kept here.
 
 A real-time controller for a **WS2815 LED install**: up to four 450-LED strips fed via DDP by
 one Gledopto/WLED controller. The rig is a **hub rig**: the Gledopto at the origin and three or
-four strips ("legs") running outward from it (the configs hold three, 1350 LEDs). It replaced a
+four strips ("legs") running outward from it (the dev config holds four, 1800 LEDs; the Pi config three, as `leg_3` is not wired on site). It replaced a
 rectangle of two 30 m rows; the prompt, the simulator and every library effect are on the hub
 rig. The defining idea
 of the current design ("surface v2", now on `main`): **the LLM authors a Python `Effect`
@@ -339,12 +339,19 @@ in behavioural sync** (debounce windows, optimistic deck updates, chat-epoch wip
   four. Beside it, `config/effects/double-line/` is a frozen copy of twelve effects as they
   were on the rectangle: never loaded or edited.
 - `src/ledctl/surface/examples/` — bundled **seed**: `pulse_mono`, `audio_radial`,
-  `palette_wash_with_kick_sparkles`, `twin_comets_with_sparkles`. On every start, any of the
-  four missing from the library is copied in (`install_examples_if_missing()`; it never
+  `palette_wash_with_kick_sparkles`, `twin_comets_with_sparkles`, and the calibration aid
+  `leg_direction` (soft balls rolling hub → tip on every leg). On every start, any seed
+  missing from the library is copied in (`install_examples_if_missing()`; it never
   overwrites), so an empty library still boots and deleting one of them does not stick. A
   changed seed is written to both folders, byte-identical. A new effect goes into the
-  library, not here. On boot the runtime loads `pulse_mono` into
-  both slots; if that fails the slot stays empty (implicit black layer).
+  library, not here.
+- **Boot state.** LIVE comes back to what it showed before the restart: `live_state.py`
+  rewrites `config/live.yaml` (gitignored runtime state: LIVE's layers as library names +
+  blend/opacity/enabled, and whether the playlist was running) within ~2 s of any change,
+  and boot restores it, resuming the playlist if it was running. With no file, or no
+  restorable layer (an unsaved agent effect), LIVE boots `pulse_mono`; PREVIEW always does.
+  Masters come from the config's `masters:` block; `PATCH /masters` with `persist: true`
+  writes them but re-dumps the whole YAML, dropping its comments.
 - `src/ledctl/surface/LLM_example_effects/` — the **prompt's** four examples (above).
 
 `effect.yaml` holds `{name, summary, source: 'agent'|'user'|'bundled', created_at, updated_at,
@@ -469,8 +476,10 @@ phone-controllable smart plug for a remote power-cycle.
 
 **Strip mapping.** All four WLED outputs: WS281x, RGB, length 450, Reversed OFF; the Gledopto
 is not reconfigured per layout. In ledctl each strip is one leg, `reversed: false`, logical
-pixel 0 at the hub: `leg_1` at `pixel_offset` 0, `leg_2` at 450, `leg_3` at 900 (`leg_4`, 1350,
-is commented out in both configs). The three `angle_deg` values are **placeholders, not yet
+pixel 0 at the hub: `leg_1` at `pixel_offset` 0, `leg_2` at 450, `leg_3` at 900, `leg_4` at 1350.
+The dev config enables all four; `config.pi.yaml` comments out `leg_3` (output 3 is not wired
+on site; a strip on an output ledctl does not drive keeps showing WLED's own preset). The
+four `angle_deg` values (90/180/270/0) are **placeholders, not yet
 calibrated against a real floor**: which physical leg each pixel range is has to be found on
 site with `/calibration/solo` (runbook in `docs/reference/rig-geometry.md`).
 
@@ -481,6 +490,13 @@ site with `/calibration/solo` (runbook in `docs/reference/rig-geometry.md`).
    Re-seating the cable is enough — NetworkManager reattaches `10.0.0.1` with no reboot — but the
    Gledopto will still need a manual `curl http://10.0.0.2/reset`, because `gledopto-reboot.service`
    already fired 8 s after ledctl started, i.e. while the link was still down.
+   `UP` with **no address** (carrier present, `nmcli dev status` shows eth0 `disconnected`) =
+   the static profile is missing or inactive and NetworkManager's DHCP fallback "Wired
+   connection 1" keeps timing out. The profile is `gledopto-eth` (recreated 2026-11-19):
+   `sudo nmcli con up gledopto-eth`, or if `nmcli con show` lacks it:
+   `sudo nmcli con add type ethernet ifname eth0 con-name gledopto-eth ipv4.method manual
+   ipv4.addresses 10.0.0.1/24 ipv4.never-default yes ipv6.method disabled
+   connection.autoconnect-priority 100`. Then `curl http://10.0.0.2/reset`.
 1. `curl 'localhost:8000/transport?password=CHANGE_ME'` — confirm `frames_sent` is climbing.
 2. `sudo tcpdump -i any -n 'host 10.0.0.2 and udp port 4048' -c 20` — confirm packets leave.
 3. `ping -c 3 10.0.0.2` (`arp` isn't installed on the Pi; use `ip neigh` if you need the MAC).

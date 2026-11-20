@@ -89,7 +89,8 @@ def test_output_stage_recolours_and_follows_wzrd_masters():
     # half, blue on the outer half, whatever colour the effect drew there.
     radius = topo.derived["radius"]
     inner, outer = radius < 0.4, radius > 0.6
-    assert {int(x) for x in topo.derived["leg"][inner]} == {0, 1, 2}
+    legs = topo.derived["leg"]
+    assert set(legs[inner].astype(int)) == set(legs.astype(int))   # every leg has an inner half
     lit = frame.max(axis=1) > 0                              # red, cyan and white alike
     cyan = np.arange(n) % 4 == 1
 

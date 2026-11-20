@@ -21,7 +21,7 @@ controllers:
 strips:
 # The hub rig: the Gledopto is the origin and each strip is one leg running
 # outward from it. `angle_deg` is the leg's direction in the x-y plane (0 = +x,
-# counter-clockwise). These three angles are placeholders until the room is
+# counter-clockwise). These four angles are placeholders until the room is
 # measured: solo each pixel range, see which leg lights, set its angle.
 - id: leg_1
   controller: gledopto_main
@@ -36,22 +36,22 @@ strips:
   pixel_offset: 450
   pixel_count: 450
   leds_per_meter: 30.0
-  geometry: {type: spoke, angle_deg: 210}
-- id: leg_3
-  controller: gledopto_main
-  output: 3
-  pixel_offset: 900
-  pixel_count: 450
-  leds_per_meter: 30.0
-  geometry: {type: spoke, angle_deg: 330}
-# A fourth leg: plug in the last output, uncomment, and give all four an angle.
-# - id: leg_4
+  geometry: {type: spoke, angle_deg: 180}
+# leg_3 (output 3) is not wired on site: uncomment to re-enable it.
+# - id: leg_3
 #   controller: gledopto_main
-#   output: 4
-#   pixel_offset: 1350
+#   output: 3
+#   pixel_offset: 900
 #   pixel_count: 450
 #   leds_per_meter: 30.0
-#   geometry: {type: spoke, angle_deg: 0}
+#   geometry: {type: spoke, angle_deg: 270}
+- id: leg_4
+  controller: gledopto_main
+  output: 4
+  pixel_offset: 1350
+  pixel_count: 450
+  leds_per_meter: 30.0
+  geometry: {type: spoke, angle_deg: 0}
 transport:
   # `multi` fans every frame to both the browser simulator (so the operator UI
   # at :8000 keeps showing a live preview) and the Gledopto over DDP. Switch
@@ -112,7 +112,7 @@ agent:
   debug_logging: true
   retry_on_tool_error: 2
 masters:
-  brightness: 1.0
+  brightness: 2.0
   speed: 1.0
-  audio_reactivity: 1.0
+  audio_reactivity: 0.0
   saturation: 1.0
