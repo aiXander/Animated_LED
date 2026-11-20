@@ -313,3 +313,25 @@ class DeferredValueSaver:
                     self.store.save_values(name, values)
                 except Exception:
                     log.exception("could not save param values for %r", name)
+
+
+async def install_from_library(
+    runtime: Any, store: EffectStore, value_saver: DeferredValueSaver | None,
+    slot: str, name: str, **place: Any,
+) -> None:
+    """Load library effect `name` into `slot` ("live" crossfades, "preview"
+    cuts). `place` is `install_layer_async`'s blend / opacity / index / replace.
+
+    The one path for the load endpoints, the playlist and the MIDI pads: the
+    file read and the compile run on worker threads, so the render loop keeps
+    ticking. Raises FileNotFoundError (not in the library) or the compile's
+    EffectCompileError / ValueError.
+    """
+    if value_saver is not None:
+        # Knob tuning from the last few seconds may not be on disk yet.
+        await value_saver.flush_async()
+    stored = await asyncio.to_thread(store.load, name)
+    await runtime.install_layer_async(
+        slot, name=stored.name, summary=stored.summary, source=stored.source,
+        param_schema=stored.param_schema, param_values=stored.param_values, **place,
+    )

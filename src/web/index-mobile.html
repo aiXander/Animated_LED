@@ -577,6 +577,25 @@
             </div>
           </div>
           <div class="out-section">
+            <h4>Master effects</h4>
+            <div class="master-row" title="White sparks over the effect, with a burst on every beat. 0 = off.">
+              <div class="top"><span class="nm">sparkle</span><span class="value" id="v-spk">0.00</span></div>
+              <input id="m-spk" type="range" min="0" max="1" step="0.01">
+            </div>
+            <div class="master-row" title="Stretches of LEDs freeze, jump, swap colours or drop out. 0 = off.">
+              <div class="top"><span class="nm">glitch</span><span class="value" id="v-gli">0.00</span></div>
+              <input id="m-gli" type="range" min="0" max="1" step="0.01">
+            </div>
+            <div class="master-row" title="The whole rig flashes: 2 times a second at the low end, 11 at the top. 0 = off.">
+              <div class="top"><span class="nm">strobe</span><span class="value" id="v-stb">0.00</span></div>
+              <input id="m-stb" type="range" min="0" max="1" step="0.01">
+            </div>
+            <div class="master-row" title="Moving light leaves a tail that fades slowly. 0 = off.">
+              <div class="top"><span class="nm">trails</span><span class="value" id="v-trl">0.00</span></div>
+              <input id="m-trl" type="range" min="0" max="1" step="0.01">
+            </div>
+          </div>
+          <div class="out-section">
             <h4>Frame rates</h4>
             <div class="fps-grid">
               <div class="fps-cell">
@@ -624,6 +643,7 @@
           <button class="menu-item" id="mi-library"><span class="ic">📚</span><span class="grow">Library</span></button>
           <button class="menu-item" id="mi-playlist"><span class="ic">▶</span><span class="grow">Playlist</span><span class="state" id="mi-playlist-state"></span></button>
           <button class="menu-item" id="mi-wzrd" style="display:none"><span class="ic">🪄</span><span class="grow">WZRD input</span><span class="state" id="mi-wzrd-state"></span></button>
+          <button class="menu-item" id="mi-midi"><span class="ic">🎛</span><span class="grow">AKAI controller</span><span class="state" id="mi-midi-state"></span></button>
           <button class="menu-item" id="mi-save"><span class="ic">💾</span><span class="grow">Save current effect</span></button>
           <div class="menu-sep"></div>
           <button class="menu-item" id="mi-ddp"><span class="ic">📡</span><span class="grow">Pi LED control</span><span class="state" id="mi-ddp-state"></span></button>
@@ -662,6 +682,15 @@
         <button id="pl-stop" class="ghost">stop</button>
         <button id="pl-start" class="primary">▶ start</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ===== MIDI controller sheet (contents built by lib/midi.js, shared with desktop) ===== -->
+  <div id="sheet-midi" class="sheet-back">
+    <div class="sheet">
+      <div class="grip"></div>
+      <h3>AKAI APC mini</h3>
+      <div class="sheet-scroll" id="midi-panel"></div>
     </div>
   </div>
 

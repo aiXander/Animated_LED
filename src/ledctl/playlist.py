@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import yamlio
-from .surface.persistence import DeferredValueSaver, EffectStore
+from .surface.persistence import DeferredValueSaver, EffectStore, install_from_library
 from .surface.runtime import Runtime
 
 log = logging.getLogger(__name__)
@@ -166,26 +166,10 @@ class Playlist:
         store = self._store
         if runtime is None or store is None:
             return
-        if self._value_saver is not None:
-            # Knob tuning from the last few seconds may not be on disk yet,
-            # and a short step comes back round before the batched write.
-            await self._value_saver.flush_async()
         try:
-            stored = await asyncio.to_thread(store.load, name)
+            await install_from_library(runtime, store, self._value_saver, "live", name)
         except FileNotFoundError:
             log.warning("playlist: effect %r missing from library; skipping", name)
-            return
-        try:
-            await runtime.install_layer_async(
-                "live",
-                name=stored.name,
-                summary=stored.summary,
-                source=stored.source,
-                param_schema=stored.param_schema,
-                param_values=stored.param_values,
-                blend="normal",
-                opacity=1.0,
-            )
         except Exception:
             log.exception("playlist: failed to install %r", name)
 

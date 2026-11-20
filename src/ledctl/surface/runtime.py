@@ -63,6 +63,7 @@ from .helpers import (
     tri,
     wrap_dist,
 )
+from .master_fx import MasterFx
 from .palettes import named_palette_names
 from .sandbox import EffectCompileError, compile_effect
 
@@ -273,6 +274,11 @@ class Runtime:
         self.output_hook = None
         # Loudness-driven gain, set by the engine each tick (1.0 = no effect).
         self.swell_gain: float = 1.0
+        # Master effects (sparkle, glitch, strobe, trails), one per output.
+        self._fx_live = MasterFx(self.n, seed=1)
+        self._fx_preview = MasterFx(self.n, seed=2)
+        # Held by an operator control: every LED at full while True.
+        self.flash: bool = False
 
     # ---- composition pickers ---- #
 
@@ -820,7 +826,8 @@ class Runtime:
 
         if self.blackout:
             self._live_buf.fill(0.0)
-        self._apply_master_output(self._live_buf, wall_t, update_envelope=True)
+        self._apply_master_output(self._live_buf, wall_t, update_envelope=True,
+                                  fx=self._fx_live, dt=dt, beat=audio.beat)
         if self.calibration is not None:
             self._apply_calibration(self._live_buf, wall_t)
 
@@ -858,7 +865,8 @@ class Runtime:
                 if self.blackout:
                     self._preview_buf.fill(0.0)
                 self._apply_master_output(self._preview_buf, wall_t,
-                                          update_envelope=False)
+                                          update_envelope=False, fx=self._fx_preview,
+                                          dt=preview_dt, beat=preview_audio.beat)
                 if self.calibration is not None:
                     self._apply_calibration(self._preview_buf, wall_t)
             # When skipping, return the previously-rendered buffer — the
@@ -870,7 +878,8 @@ class Runtime:
     # ---- master output stage ---- #
 
     def _apply_master_output(
-        self, rgb: np.ndarray, wall_t: float, *, update_envelope: bool = True
+        self, rgb: np.ndarray, wall_t: float, *, update_envelope: bool = True,
+        fx: MasterFx | None = None, dt: float = 0.0, beat: float = 0.0,
     ) -> None:
         # The order of gains is the design. Brightness above 1 pushes the recent
         # peak toward full output, so a gain applied BEFORE the envelope is
@@ -902,6 +911,10 @@ class Runtime:
             gain = min(target / peak, _MAX_ADAPTIVE_GAIN)
             if gain != 1.0:
                 rgb *= gain
+        if fx is not None and not self.blackout:
+            # After the brightness step (they sit on what the room sees) and
+            # before the wall and swell gains, which dim them with the rest.
+            fx.apply(rgb, m, dt, beat, level=min(bright, 1.0), flash=self.flash)
         if post_gain != 1.0:
             rgb *= post_gain
         np.clip(rgb, 0.0, 1.0, out=rgb)
@@ -950,6 +963,8 @@ class Runtime:
         self._cf_buf = np.zeros((self.n, 3), dtype=np.float32)
         self._layer_scratch = np.zeros((self.n, 3), dtype=np.float32)
         self._grey = np.zeros(self.n, dtype=np.float32)
+        self._fx_live = MasterFx(self.n, seed=1)
+        self._fx_preview = MasterFx(self.n, seed=2)
         if self.output_hook is not None:
             self.output_hook.resize(new_topology)
         for slot in ("live", "preview"):

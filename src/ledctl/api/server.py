@@ -75,7 +75,7 @@ from ..surface import (
     Runtime,
 )
 from ..surface.palettes import NAMED_STOPS, named_palette_names
-from ..surface.persistence import DeferredValueSaver, write_atomic
+from ..surface.persistence import DeferredValueSaver, install_from_library, write_atomic
 from ..topology import Topology
 from ..transports.ddp import DDPTransport
 from ..transports.simulator import SimulatorTransport
@@ -129,6 +129,10 @@ class MastersPatchRequest(BaseModel):
     audio_reactivity: float | None = Field(None, ge=0.0, le=3.0)
     saturation: float | None = Field(None, ge=0.0, le=1.0)
     audio_swell: float | None = Field(None, ge=0.0, le=1.0)
+    sparkle: float | None = Field(None, ge=0.0, le=1.0)
+    glitch: float | None = Field(None, ge=0.0, le=1.0)
+    strobe: float | None = Field(None, ge=0.0, le=1.0)
+    trails: float | None = Field(None, ge=0.0, le=1.0)
     persist: bool = False
 
 
@@ -260,12 +264,7 @@ def _build_audio_bridge(cfg: AudioServerConfig) -> AudioBridge | None:
 
 
 def _masters_from_config(cfg: AppConfig) -> MasterControls:
-    m = cfg.masters
-    return MasterControls(
-        brightness=m.brightness, speed=m.speed,
-        audio_reactivity=m.audio_reactivity, saturation=m.saturation,
-        audio_swell=m.audio_swell,
-    )
+    return MasterControls(**cfg.masters.model_dump())
 
 
 def _load_layer_from_store(store: EffectStore, name: str) -> dict[str, Any]:
@@ -827,47 +826,28 @@ def create_app(
             sess.reset()
         app.state.chat_epoch = int(getattr(app.state, "chat_epoch", 0)) + 1
 
-    @app.post("/effects/{name}/load_preview")
-    async def load_preview(name: str, body: LoadEffectRequest | None = None) -> dict:
+    async def _load_from_library(slot: str, name: str, body: LoadEffectRequest | None) -> None:
         body = body or LoadEffectRequest()
-        # Tuning from the last few seconds may not be on disk yet.
-        await value_saver.flush_async()
         try:
-            kwargs = await asyncio.to_thread(_load_layer_from_store, store, name)
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from e
-        try:
-            # Compile + fence test run on a worker thread; the render loop
-            # keeps ticking meanwhile.
-            await runtime.install_layer_async(
-                "preview", **kwargs,
+            await install_from_library(
+                runtime, store, value_saver, slot, name,
                 blend=body.blend, opacity=body.opacity,
                 index=body.layer_index, replace=not body.add_layer,
             )
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
         except (EffectCompileError, ValueError) as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+
+    @app.post("/effects/{name}/load_preview")
+    async def load_preview(name: str, body: LoadEffectRequest | None = None) -> dict:
+        await _load_from_library("preview", name, body)
         _wipe_agent_history()
         return {"loaded": "preview", "name": name, "snapshot": runtime.snapshot()}
 
     @app.post("/effects/{name}/load_live")
     async def load_live(name: str, body: LoadEffectRequest | None = None) -> dict:
-        body = body or LoadEffectRequest()
-        # Tuning from the last few seconds may not be on disk yet.
-        await value_saver.flush_async()
-        try:
-            kwargs = await asyncio.to_thread(_load_layer_from_store, store, name)
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from e
-        try:
-            # Compile + fence test run on a worker thread; the render loop
-            # keeps ticking meanwhile.
-            await runtime.install_layer_async(
-                "live", **kwargs,
-                blend=body.blend, opacity=body.opacity,
-                index=body.layer_index, replace=not body.add_layer,
-            )
-        except (EffectCompileError, ValueError) as e:
-            raise HTTPException(status_code=422, detail=str(e)) from e
+        await _load_from_library("live", name, body)
         return {"loaded": "live", "name": name, "snapshot": runtime.snapshot()}
 
     # ---- mode + active snapshot ---- #
@@ -1281,6 +1261,13 @@ def create_app(
             pass
         finally:
             state_fanout.discard(websocket)
+
+    # MIDI control surface (after the WebSocket auth helper it shares).
+    from ..midi import mount_midi
+    app.state.midi = mount_midi(
+        app, engine=engine, runtime=runtime, playlist=playlist, store=store,
+        value_saver=value_saver, config_dir=config_dir, ws_auth=_ws_auth_or_close,
+    )
 
     return app
 

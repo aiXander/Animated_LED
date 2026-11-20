@@ -4,6 +4,15 @@
 
 export const $ = (id) => document.getElementById(id);
 
+// The four master effects: [slider id, value id, masters key]. Both pages
+// carry these sliders; this list binds and refreshes them.
+export const FX_MASTERS = [
+  ["m-spk", "v-spk", "sparkle"],
+  ["m-gli", "v-gli", "glitch"],
+  ["m-stb", "v-stb", "strobe"],
+  ["m-trl", "v-trl", "trails"],
+];
+
 export function escapeHtml(s) {
   return (s || "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",

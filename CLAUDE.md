@@ -29,6 +29,9 @@ logs / hostname to know whether you're on the Pi or the Mac before acting.
 - `docs/reference/wzrd-input.md` — open it when touching `src/ledctl/wzrd/`, the audio bridge's
   network mode, the master output stage's hook, the audio swell, or when the LEDs do not follow
   WZRD's wall.
+- `docs/reference/midi-input.md` — open it when touching `src/ledctl/midi/`, the master
+  effects (`surface/master_fx.py`), the AKAI drawing in the UI, or when the controller's pads
+  or faders do not act on the LEDs.
 - `docs/reference/render-performance.md` — open it when the LEDs lag or drop frames, or before
   adding anything that runs on the event loop (a request handler, the engine tick, a
   WebSocket push, an OSC handler); it holds the "LEDs lag" runbook.
@@ -321,7 +324,7 @@ segmented toggle / overflow menu), LED sim with a compact audio HUD, a context a
 Output) over bottom-sheets for menu/library/playlist/colour/palette. `GET /` 307-redirects
 phone-class User-Agents to `/m` (iPad excluded; `?view=desktop` forces desktop, `?view=mobile`
 forces mobile); the PWA manifest `start_url` is `/m`. Both front-ends share the view-agnostic
-modules `web/lib/{viz,state,util}.js` and hit the identical HTTP/WS API — **keep the two `main-*.js`
+modules `web/lib/{viz,state,util,wzrd,midi}.js` and hit the identical HTTP/WS API — **keep the two `main-*.js`
 in behavioural sync** (debounce windows, optimistic deck updates, chat-epoch wipe, merging
 `/ws/state` messages) when changing either. `web/audio-meter.js` is an unused legacy orphan.
 
@@ -378,7 +381,9 @@ and the Output tab (mobile).
   `spoke`); positions normalised about the origin with one scale; derives the named
   `ctx.frames.*` arrays. See `docs/reference/rig-geometry.md`.
 - `masters.py` — operator-owned `MasterControls` (`brightness ∈ [0,2]`, `speed`,
-  `audio_reactivity`, `saturation`, `audio_swell` = brightness follows loudness, 0 = off); surfaced to effects read-only as `ctx.masters`.
+  `audio_reactivity`, `saturation`, `audio_swell` = brightness follows loudness, 0 = off, and
+  the master effects `sparkle`, `glitch`, `strobe`, `trails`, 0 = off; ranges in `BOUNDS`);
+  the first five are surfaced to effects read-only as `ctx.masters`.
 - `surface/` — the v2 runtime (see above). Base classes in `base.py`; sandbox in `sandbox.py`;
   param schema in `schema.py`; tool handler in `tool.py`; prompt in `prompt.py`; on-disk CRUD
   in `persistence.py`.
@@ -395,6 +400,9 @@ and the Output tab (mobile).
 - `wzrd/` — optional WZRD input (wall colours, level and masters from a projection tool, applied
   through `Runtime.output_hook`); `osc.py` holds what its listener shares with the audio one.
   See `docs/reference/wzrd-input.md`.
+- `midi/` — MIDI control: a sender on the Mac (WZRD's LEDs mode, or `scripts/midi_relay.py`)
+  forwards the Akai APC mini's raw messages over `/ws/midi`; ledctl maps them to effects,
+  masters and actions and sends the pad lights back. See `docs/reference/midi-input.md`.
 - `agent/` — `session.py` (in-memory `SessionStore`, `history_max`-capped buffer, rate limit,
   `reset_all_buffers()`) + `client.py` (lazy OpenAI-compatible OpenRouter wrapper).
 - `api/server.py` — FastAPI app + the dual-mode operator UI. `api/auth.py` — optional
@@ -422,6 +430,8 @@ changing `transport.mode`; everything above the transport layer is identical.
   `GET/PUT /config` (PUT hot-swaps topology), `POST /calibration/{solo,walk,stop}`,
   `GET /audio/{state,ui}`.
 - **WZRD input:** `GET/PATCH /wzrd` (settings + link status; also the `wzrd` key in `/state`).
+- **MIDI control:** `GET /midi`, `PUT /midi/bindings`, `POST /midi/reset`, WebSocket `/ws/midi`
+  (also the `midi` key in `/state`).
 - **Agent:** `POST /agent/chat`, `GET/DELETE /agent/sessions/{id}`, `GET/PATCH /agent/config`.
 - **WebSockets:** `/ws/frames` (sim canvas), `/ws/state` (UI panels) — both honour `?password=`.
   `/ws/state` sends the compositions (`live`, `preview`) only on connect, after a mutating

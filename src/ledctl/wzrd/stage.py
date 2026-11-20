@@ -73,12 +73,14 @@ class WzrdStage:
 
     # ---- settings ----
 
-    def update_settings(self, patch: dict[str, Any]) -> WzrdSettings:
+    def update_settings(self, patch: dict[str, Any], save: bool = True) -> WzrdSettings:
         """Validate, apply and persist a partial settings change. Raises
-        pydantic's ValidationError on an unknown key or an out-of-range value."""
+        pydantic's ValidationError on an unknown key or an out-of-range value.
+        `save=False` leaves the file to the caller (a MIDI fader sends a
+        change per frame; it writes once the fader rests)."""
         new = WzrdSettings.model_validate({**self.settings.model_dump(), **patch})
         self.settings = new
-        if self.settings_path is not None:
+        if save and self.settings_path is not None:
             new.save(self.settings_path)
         return new
 

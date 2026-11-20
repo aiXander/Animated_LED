@@ -12,8 +12,9 @@
 // Desktop (index.html + main-desktop.js) is untouched.
 
 import { bindViz } from "./viz.js";
-import { $, perfSummary, setText } from "./util.js";
+import { $, FX_MASTERS, perfSummary, setText } from "./util.js";
 import { applyWzrd, mountWzrdPanel } from "./wzrd.js";
+import { applyMidi, mountMidiPanel } from "./midi.js";
 
 // ---------------- state ----------------
 let state = null;
@@ -140,6 +141,15 @@ $("btn-menu").addEventListener("click", () => openSheet("sheet-menu"));
 $("mi-library").addEventListener("click", () => { closeSheet("sheet-menu"); openLibrary(); });
 $("mi-playlist").addEventListener("click", () => { closeSheet("sheet-menu"); openPlaylist(); });
 $("mi-save").addEventListener("click", () => { closeSheet("sheet-menu"); openSaveModal(); });
+// MIDI controller sheet (view shared with the desktop UI: lib/midi.js).
+mountMidiPanel($("midi-panel"));
+$("mi-midi").addEventListener("click", () => { closeSheet("sheet-menu"); openSheet("sheet-midi"); });
+function updateMidi(m) {
+  const link = applyMidi(m);
+  $("mi-midi").style.display = link ? "" : "none";
+  if (link) setText($("mi-midi-state"), link.connected ? "connected" : "");
+}
+
 // WZRD input sheet (panel shared with the desktop UI: lib/wzrd.js).
 mountWzrdPanel($("wzrd-panel"));
 $("mi-wzrd").addEventListener("click", () => { closeSheet("sheet-menu"); openSheet("sheet-wzrd"); });
@@ -179,6 +189,7 @@ function bindMasters() {
     ["m-aud", "v-aud", "audio_reactivity"],
     ["m-sat", "v-sat", "saturation"],
     ["m-swl", "v-swl", "audio_swell"],
+    ...FX_MASTERS,
   ];
   for (const [sliderId, valId, key] of map) {
     $(sliderId).addEventListener("input", (e) => {
@@ -1073,6 +1084,10 @@ function applyState() {
     setText($("v-sat"), m.saturation?.toFixed?.(2) ?? "1.00");
     if (document.activeElement !== $("m-swl")) $("m-swl").value = m.audio_swell ?? 0;
     setText($("v-swl"), (m.audio_swell ?? 0).toFixed(2));
+    for (const [sliderId, valId, key] of FX_MASTERS) {
+      if (document.activeElement !== $(sliderId)) $(sliderId).value = m[key] ?? 0;
+      setText($(valId), (m[key] ?? 0).toFixed(2));
+    }
   }
   if (typeof state.crossfade_seconds === "number" && document.activeElement !== $("m-cf")) {
     $("m-cf").value = state.crossfade_seconds; setText($("v-cf"), state.crossfade_seconds.toFixed(2));
@@ -1097,6 +1112,7 @@ function applyState() {
   applyDdp(state.ddp);
   updatePlaylistStatus(state.playlist);
   updateWzrd(state.wzrd);
+  updateMidi(state.midi);
   // live composition summary in the action bar
   const live = state.live;
   setText($("comp-summary"), live?.layers?.length ? `${live.layers.length} layer${live.layers.length === 1 ? "" : "s"}` : "—");

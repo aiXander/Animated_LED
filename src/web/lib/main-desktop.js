@@ -9,8 +9,9 @@
 //   - Token usage (input/output) printed after every assistant turn
 
 import { bindViz } from "./viz.js";
-import { $, perfSummary, setText } from "./util.js";
+import { $, FX_MASTERS, perfSummary, setText } from "./util.js";
 import { applyWzrd, mountWzrdPanel } from "./wzrd.js";
+import { applyMidi, mountMidiPanel } from "./midi.js";
 
 // --- state ---
 let state = null;
@@ -110,6 +111,7 @@ function bindMasters() {
     ["m-aud", "v-aud", "audio_reactivity"],
     ["m-sat", "v-sat", "saturation"],
     ["m-swl", "v-swl", "audio_swell"],
+    ...FX_MASTERS,
   ];
   for (const [sliderId, valId, key] of map) {
     const slider = $(sliderId);
@@ -456,10 +458,26 @@ document.addEventListener("keydown", (e) => {
     closeRenameModal();
     closePlaylistModal();
     closeWzrdModal();
+    closeMidiModal();
     closeColorPopover();
     closeCodeModal();
   }
 });
+
+// ---- MIDI controller modal (view shared with the mobile UI: lib/midi.js) ---- //
+mountMidiPanel($("midi-panel"));
+function closeMidiModal() { $("midi-modal").classList.remove("open"); }
+$("btn-midi").addEventListener("click", () => $("midi-modal").classList.add("open"));
+$("midi-close").addEventListener("click", closeMidiModal);
+$("midi-modal").addEventListener("click", (e) => {
+  if (e.target.id === "midi-modal") closeMidiModal();
+});
+function updateMidi(m) {
+  const link = applyMidi(m);
+  $("btn-midi").style.display = link ? "" : "none";
+  // Green while a controller (WZRD in its LEDs mode, or the relay) is connected.
+  if (link) $("btn-midi").style.color = link.connected ? "var(--ok)" : "";
+}
 
 // ---- WZRD input modal (panel shared with the mobile UI: lib/wzrd.js) ---- //
 mountWzrdPanel($("wzrd-panel"));
@@ -1731,6 +1749,10 @@ function applyState() {
     setText($("v-sat"), m.saturation?.toFixed?.(2) ?? "1.00");
     if (document.activeElement !== $("m-swl")) $("m-swl").value = m.audio_swell ?? 0;
     setText($("v-swl"), (m.audio_swell ?? 0).toFixed(2));
+    for (const [sliderId, valId, key] of FX_MASTERS) {
+      if (document.activeElement !== $(sliderId)) $(sliderId).value = m[key] ?? 0;
+      setText($(valId), (m[key] ?? 0).toFixed(2));
+    }
     setText($("v-spd"), m.speed?.toFixed?.(2) ?? "1.00");
     setText($("v-aud"), m.audio_reactivity?.toFixed?.(2) ?? "1.00");
   }
@@ -1762,6 +1784,7 @@ function applyState() {
   applyDdp(state.ddp);
   updatePlaylistStatus(state.playlist);
   updateWzrd(state.wzrd);
+  updateMidi(state.midi);
 
   viz.applyCalibration(state.calibration);
   renderDeck();

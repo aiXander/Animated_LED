@@ -468,6 +468,10 @@ class MastersConfig(BaseModel):
     audio_reactivity: float = Field(1.0, ge=0.0, le=3.0)
     saturation: float = Field(1.0, ge=0.0, le=1.0)
     audio_swell: float = Field(0.0, ge=0.0, le=1.0)
+    sparkle: float = Field(0.0, ge=0.0, le=1.0)
+    glitch: float = Field(0.0, ge=0.0, le=1.0)
+    strobe: float = Field(0.0, ge=0.0, le=1.0)
+    trails: float = Field(0.0, ge=0.0, le=1.0)
 
 
 class AudioSwellConfig(BaseModel):

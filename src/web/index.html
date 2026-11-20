@@ -622,6 +622,7 @@
         <button id="btn-playlist" title="Manage and start the playlist">▶ playlist</button>
         <button id="btn-wzrd" style="display:none"
                 title="WZRD input: the LEDs take colours, level and masters from the projection"><span class="wz-dot" id="wzrd-dot"></span>WZRD</button>
+        <button id="btn-midi" title="The AKAI controller: what every pad, button and fader does, and where you change it">🎛 AKAI</button>
         <a id="btn-audio" href="#" target="_blank" rel="noopener" class="ghost"
            style="display:inline-block; padding:0.3rem 0.7rem;">🎙 audio</a>
       </div>
@@ -698,6 +699,22 @@
           <div class="row"><span>crossfade</span>
             <input id="m-cf" type="range" min="0" max="10" step="0.05">
             <span class="value" id="v-cf">1.00</span></div>
+          <div class="row" title="White sparks over the effect, with a burst on every beat. 0 = off.">
+            <span>sparkle</span>
+            <input id="m-spk" type="range" min="0" max="1" step="0.01">
+            <span class="value" id="v-spk">0.00</span></div>
+          <div class="row" title="Stretches of LEDs freeze, jump, swap colours or drop out. 0 = off.">
+            <span>glitch</span>
+            <input id="m-gli" type="range" min="0" max="1" step="0.01">
+            <span class="value" id="v-gli">0.00</span></div>
+          <div class="row" title="The whole rig flashes: 2 times a second at the low end, 11 at the top. 0 = off.">
+            <span>strobe</span>
+            <input id="m-stb" type="range" min="0" max="1" step="0.01">
+            <span class="value" id="v-stb">0.00</span></div>
+          <div class="row" title="Moving light leaves a tail that fades slowly. 0 = off.">
+            <span>trails</span>
+            <input id="m-trl" type="range" min="0" max="1" step="0.01">
+            <span class="value" id="v-trl">0.00</span></div>
         </div>
 
         <div class="layer-pane">
@@ -805,6 +822,17 @@
         <button id="pl-close" class="ghost">close</button>
         <button id="pl-stop" class="ghost">stop</button>
         <button id="pl-start" class="primary">▶ start playlist</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MIDI controller modal (contents built by lib/midi.js, shared with /m) -->
+  <div id="midi-modal" class="modal-back" role="dialog" aria-labelledby="midi-modal-title">
+    <div class="modal mk-modal">
+      <h3 id="midi-modal-title">AKAI APC mini</h3>
+      <div id="midi-panel"></div>
+      <div class="actions">
+        <button id="midi-close" class="ghost">close</button>
       </div>
     </div>
   </div>
