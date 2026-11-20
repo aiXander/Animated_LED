@@ -21,16 +21,17 @@ one strip entry in the config.
 - `src/ledctl/api/server.py`: `/topology` (metres, plus each strip's `start` and `end`, which
   the simulator draws from) and `_strips_to_yaml_dicts`, the writer behind `PUT /config`.
 - `src/web/lib/viz.js`: the simulator's drawing, shared by `/` and `/m`. It publishes the view
-  it chose as `<html data-rig-layout="star|strip">`; the CSS of `web/index.html` and
-  `web/index-mobile.html` sizes the canvas box from that.
+  it chose as `<html data-rig-layout="lotus|strip">` and the lotus's width:height as
+  `--rig-aspect`; the CSS of `web/index.html` and `web/index-mobile.html` sizes the canvas box
+  from those.
 - `config/config.dev.yaml`, `config/config.pi.yaml`: the `strips` block.
 - `config/effects/star/`: the library, every effect written on these frames;
   `config/effects/double-line/` is the frozen rectangle version of twelve of them.
 
 ## The model
 
-**Axes.** Origin = the Gledopto. x-y = the plane the legs lie in, which the simulator draws (a
-floor rig is seen from above; point +y at the projection wall). z = height off that plane.
+**Axes.** Origin = the Gledopto. x-y = the plane the legs lie in (a floor rig is seen from
+above; point +y at the projection wall). z = height off that plane.
 
 **A spoke** is a strip written as `geometry: {type: spoke, angle_deg: 90}`: 0 = +x,
 counter-clockwise. `length_m` defaults to `(pixel_count - 1) / leds_per_meter`; `offset_m` is
@@ -74,10 +75,15 @@ arbitrary order.
 - **A leg is one straight line.** A leg that bends on the floor is entered as straight: leg
   and distance survive the bend, only Cartesian effects and the simulator picture drift.
   Polyline legs are not built; build them only if one of those two needs a real bend.
-- **The simulator draws to scale unless the bounding box is longer than 6 times its width.**
-  Past that the layout is strip-like and x and y stretch separately into thick bands: the
-  rectangle is 30:1 and to scale would be a hairline. The threshold is far from both rigs (a
-  star of three or four legs is near 1:1), so only a nearly straight layout crosses it.
+- **The simulator draws a hub rig as a lotus, not to scale.** Drawn to scale a star is a
+  near-square that costs a lot of screen height. The lotus puts the hub at the bottom centre
+  and splits the legs left and right (by the side their real direction points to; a leg
+  straight up or down goes to the emptier side). On each side the leg nearest horizontal lies
+  flat and the others fan upward evenly, up to a max angle the operator sets with a slider on
+  the sim (5–90°, kept per browser in `localStorage`). Each LED keeps its real distance from
+  the hub, so only the angles are schematic. Four legs at 90° draw the two upper legs on top
+  of each other. A layout whose bounding box is longer than 6 times its width (the old 30:1
+  rectangle) is strip-like instead: x and y stretch separately into thick bands.
 - **The Gledopto is not reconfigured per layout.** WLED keeps four outputs of 450 pixels and
   the controller entry stays at 1800. Three legs is the last output unplugged and its strip
   left out of the config; ledctl then sends 1350 pixels a frame. Each DDP packet carries its

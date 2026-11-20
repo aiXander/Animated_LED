@@ -313,8 +313,9 @@ The landing page `/` hosts the operator UI: **Design / Live mode toggle**, simul
 per-slot composition decks (layers with blend/opacity/enabled), masters, chat panel, and the
 Effect Knobs panel for the selected layer. In **design mode** the LED leg ships LIVE's
 encoding while the sim leg shows PREVIEW; `transport/pause` blocks only the LED leg, `sim/pause`
-only the sim leg. The simulator draws the legs to scale in a near-square box (a strip-like
-layout such as the old rectangle keeps a stretched band view); tapping an LED solos it.
+only the sim leg. The simulator draws a hub rig as a **lotus**: hub at the bottom centre, legs
+fanning left and right up to a max angle set by a slider on the sim (a strip-like layout such
+as the old rectangle keeps a stretched band view); tapping an LED solos it.
 
 **Two front-ends, one API.** The desktop console (`web/index.html` + `web/lib/main-desktop.js`)
 is the wide two-column layout. Phones get a dedicated portrait UI at **`/m`**
@@ -458,6 +459,10 @@ git pull --ff-only
 The Pi's `.env` holds `LEDCTL_PASSWORD` and `OPENROUTER_API_KEY`; without the password ledctl
 refuses to start.
 
+**Connecting everything on site:** `bash scripts/rig_connect.sh` in the WZRD repo (on the Mac) walks through each
+hop (Mac → Pi → Gledopto, WZRD's wall colours, the AKAI, audio), says what to change when one
+is down and re-checks. Start there before debugging a hop by hand.
+
 Physical build detail (gear, power, soldering, WS2815 backup-data line) is in
 `Hardware_setup.md`. Phone/network access routes are in `reach_the_pi.md`. The essentials:
 
@@ -524,8 +529,8 @@ The `/transport/{pause,resume}` flag stops DDP while keeping the simulator live;
 ~2.5 s realtime timeout the Gledopto resumes its own preset — instant A/B between "Pi drives"
 and "Gledopto drives" with no restart.
 
-**Coordinate convention.** Origin = the Gledopto (the hub). x-y = the plane the legs lie in,
-which the simulator draws (a floor rig is seen from above; point `+y` at the projection wall);
+**Coordinate convention.** Origin = the Gledopto (the hub). x-y = the plane the legs lie in
+(a floor rig is seen from above; point `+y` at the projection wall);
 z = height off that plane. `ctx.pos` is metres divided by the distance of the farthest LED, one
 scale for all axes; `ctx.frames.x/y/z` are the same data rescaled to `[0, 1]`.
 

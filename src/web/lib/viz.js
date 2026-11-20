@@ -12,29 +12,41 @@ import { loadTopology } from "./state.js";
 import { setText } from "./util.js";
 
 // Two views, chosen from the rig's bounding box (metres, from /topology):
-//   - "star": x and y on one scale, so legs at any angle draw where they
-//     are. The hub rig, and any layout that is not strip-like.
+//   - "lotus": the hub rig as a schematic, not a map. The hub sits at the
+//     bottom centre and the legs split between the left and the right; on
+//     each side the first leg lies flat and the others fan upward, evenly up
+//     to a max angle the operator sets with a slider over the sim (kept per
+//     browser). Each LED keeps its real distance from the hub. A leg goes to
+//     the side its real direction points to (a leg straight up or down goes
+//     to the emptier side), and the leg nearest horizontal lies flat. Wide
+//     and low, so it costs far less height than the rig drawn to scale.
 //   - "strip": a layout longer than STRIP_LIKE_ASPECT times its width (the
 //     old rectangle of two 30 m rows is 30:1). Drawn to scale it would be a
 //     hairline, so x and y stretch independently to fill the canvas and each
 //     row is a thick band. The sim is a HUD there, not a map.
-// The view is published as <html data-rig-layout="star|strip">; each page's
-// CSS sizes its canvas box from it (near-square for a star).
+// The view is published as <html data-rig-layout="lotus|strip">, the lotus's
+// width:height as the CSS variable --rig-aspect; each page's CSS sizes its
+// canvas box from them.
 const STRIP_LIKE_ASPECT = 6;
 // Strip view: band thickness as a fraction of each row's share of the canvas.
 const STRIP_THICKNESS_FRAC = 0.53;
-// Star view: leg thickness as a fraction of the canvas's short side, clamped
+// Lotus view: leg thickness as a fraction of the canvas's short side, clamped
 // (CSS px). The legs are 1D lines; anything fat reads as a band with width.
-const STAR_THICKNESS_FRAC = 0.012;
-const STAR_THICKNESS_MIN = 3;
-const STAR_THICKNESS_MAX = 7;
+const LOTUS_THICKNESS_FRAC = 0.012;
+const LOTUS_THICKNESS_MIN = 3;
+const LOTUS_THICKNESS_MAX = 7;
 const HOVER_DOT = 8;
-// Side of the ring drawn round a calibration-lit LED (CSS px). On a star one
+// Side of the ring drawn round a calibration-lit LED (CSS px). In the lotus one
 // LED is about one device px long, too small to find without it.
 const CAL_RING = 12;
 // Breathing gap at the canvas edges, as a fraction of the canvas extent.
 const HORIZONTAL_MARGIN_FRAC = 0.05;
 const VERTICAL_MARGIN_FRAC = 0.05;
+// Lotus view: the fan's max angle above horizontal (degrees), its default and
+// where the operator's choice is kept.
+const LOTUS_MAX_DEG = 90;
+const LOTUS_DEFAULT_DEG = 35;
+const LOTUS_STORAGE_KEY = "ledctl.lotusMaxDeg";
 
 export function bindViz({
   root,           // outer #viz section (used for ResizeObserver)
@@ -52,9 +64,17 @@ export function bindViz({
   let leds = [];
   let strips = [];
   let ledRects = null;
-  let bboxMin = [0, 0, 0];
-  let bboxMax = [1, 1, 1];
   let stripLike = false;
+  // Where each LED is drawn, before scaling to the canvas: real x/y for the
+  // strip view, the fanned-out lotus otherwise. [x0, y0, x1, y1, ...].
+  let layoutPos = null;
+  let layoutMin = [0, 0];
+  let layoutMax = [1, 1];
+  let lotusDeg = LOTUS_DEFAULT_DEG;
+  try {
+    const saved = Number(localStorage.getItem(LOTUS_STORAGE_KEY));
+    if (saved > 0 && saved <= LOTUS_MAX_DEG) lotusDeg = saved;
+  } catch (_) { /* storage blocked: keep the default */ }
   let lastFrame = null;
   let projected = null;
   let mouseX = -1, mouseY = -1;
@@ -72,7 +92,7 @@ export function bindViz({
   // The backing store must hold exactly the device pixels the canvas covers.
   // One pixel off and the browser rescales the whole bitmap, which blends
   // neighbouring LEDs however carefully the rects were rounded. The CSS box
-  // is rarely a whole number of device px (vh heights, the star's
+  // is rarely a whole number of device px (vh heights, the lotus
   // aspect-ratio box), so take the browser's own count where it reports one.
   let devBox = null;   // [w, h] in device px, from the ResizeObserver below
   function resizeCanvas() {
@@ -94,11 +114,70 @@ export function bindViz({
     requestAnimationFrame(() => { reprojectScheduled = false; resizeCanvas(); });
   }
 
+  // Fill layoutPos for the current view. Strip view: the real x/y. Lotus:
+  // see the header comment.
+  function buildLayout() {
+    layoutPos = new Float32Array(leds.length * 2);
+    if (stripLike) {
+      leds.forEach((led, i) => {
+        layoutPos[i * 2] = led.position[0];
+        layoutPos[i * 2 + 1] = led.position[1];
+      });
+    } else {
+      const sides = { left: [], right: [] };
+      const vertical = [];
+      for (const s of strips) {
+        const dx = s.end[0] - s.start[0], dy = s.end[1] - s.start[1];
+        const len = Math.hypot(dx, dy) || 1;
+        const leg = { strip: s, flatness: Math.abs(dy) / len };
+        if (dx / len < -0.01) sides.left.push(leg);
+        else if (dx / len > 0.01) sides.right.push(leg);
+        else vertical.push(leg);
+      }
+      for (const leg of vertical) {
+        (sides.left.length < sides.right.length ? sides.left : sides.right).push(leg);
+      }
+      const maxRad = lotusDeg * Math.PI / 180;
+      for (const [side, legs] of Object.entries(sides)) {
+        legs.sort((a, b) => a.flatness - b.flatness);
+        const sign = side === "left" ? -1 : 1;
+        legs.forEach((leg, j) => {
+          const a = legs.length > 1 ? maxRad * j / (legs.length - 1) : 0;
+          const ux = sign * Math.cos(a), uy = Math.sin(a);
+          const { pixel_offset: off, pixel_count: n } = leg.strip;
+          for (let i = off; i < off + n; i++) {
+            const r = Math.hypot(leds[i].position[0], leds[i].position[1]);
+            layoutPos[i * 2] = ux * r;
+            layoutPos[i * 2 + 1] = uy * r;
+          }
+        });
+      }
+    }
+    layoutMin = [Infinity, Infinity];
+    layoutMax = [-Infinity, -Infinity];
+    if (!stripLike) { layoutMin = [0, 0]; layoutMax = [0, 0]; }  // keep the hub in view
+    for (let i = 0; i < leds.length; i++) {
+      for (let k = 0; k < 2; k++) {
+        const v = layoutPos[i * 2 + k];
+        if (v < layoutMin[k]) layoutMin[k] = v;
+        if (v > layoutMax[k]) layoutMax[k] = v;
+      }
+    }
+    if (!stripLike) {
+      // Width:height of the lotus, padded like the canvas, clamped so a flat
+      // fan still gets a usable band and a tall one stays on screen.
+      const w = (layoutMax[0] - layoutMin[0]) * (1 + 2 * HORIZONTAL_MARGIN_FRAC);
+      const h = (layoutMax[1] - layoutMin[1]) * (1 + 2 * VERTICAL_MARGIN_FRAC);
+      const aspect = Math.min(6, Math.max(1.2, w / (h || 1)));
+      document.documentElement.style.setProperty("--rig-aspect", aspect.toFixed(3));
+    }
+  }
+
   function reproject() {
-    if (!leds.length) { projected = null; return; }
+    if (!leds.length || !layoutPos) { projected = null; return; }
     const dpr = canvasDpr;
-    const dx = bboxMax[0] - bboxMin[0];
-    const dy = bboxMax[1] - bboxMin[1];
+    const dx = layoutMax[0] - layoutMin[0];
+    const dy = layoutMax[1] - layoutMin[1];
     // Thickness first: it is reserved in the padding so the outermost LEDs
     // sit fully inside the canvas.
     let thickCss, padX, padY, sx, sy;
@@ -113,8 +192,8 @@ export function bindViz({
       sx = Math.max(1, canvasW - 2 * padX) / (dx || 1);
       sy = Math.max(1, canvasH - 2 * padY) / (dy || 1);
     } else {
-      thickCss = Math.min(STAR_THICKNESS_MAX, Math.max(STAR_THICKNESS_MIN,
-        Math.round(Math.min(canvasW, canvasH) * STAR_THICKNESS_FRAC)));
+      thickCss = Math.min(LOTUS_THICKNESS_MAX, Math.max(LOTUS_THICKNESS_MIN,
+        Math.round(Math.min(canvasW, canvasH) * LOTUS_THICKNESS_FRAC)));
       padX = canvasW * HORIZONTAL_MARGIN_FRAC + thickCss / 2;
       padY = canvasH * VERTICAL_MARGIN_FRAC + thickCss / 2;
       sx = sy = Math.min(
@@ -125,12 +204,12 @@ export function bindViz({
     const thickDev = Math.max(1, Math.round(thickCss * dpr));
     const cx = canvasW / 2;
     const cy = canvasH / 2;
-    const ox = (bboxMin[0] + bboxMax[0]) / 2;
-    const oy = (bboxMin[1] + bboxMax[1]) / 2;
+    const ox = (layoutMin[0] + layoutMax[0]) / 2;
+    const oy = (layoutMin[1] + layoutMax[1]) / 2;
     projected = new Float32Array(leds.length * 2);
     for (let i = 0; i < leds.length; i++) {
-      projected[i * 2]     = cx + (leds[i].position[0] - ox) * sx;
-      projected[i * 2 + 1] = cy - (leds[i].position[1] - oy) * sy;
+      projected[i * 2]     = cx + (layoutPos[i * 2] - ox) * sx;
+      projected[i * 2 + 1] = cy - (layoutPos[i * 2 + 1] - oy) * sy;
     }
     ledRects = new Int32Array(leds.length * 4);
     strips.forEach((strip) => {
@@ -331,18 +410,44 @@ export function bindViz({
     } catch (e) { /* Safari has no device-pixel-content-box: rounding stays */ }
   }
 
+  // The lotus's max-angle slider, overlaid on the sim's bottom-left corner.
+  // Built here so both front-ends get it; hidden in the strip view.
+  const angleCtl = document.createElement("label");
+  angleCtl.className = "lotus-angle";
+  angleCtl.title = "Lotus view: how far the legs fan up from horizontal";
+  angleCtl.style.cssText =
+    "position:absolute;left:0.5rem;bottom:0.4rem;display:none;align-items:center;"
+    + "gap:0.35rem;font-size:0.68rem;color:#9ca3af;background:rgba(12,12,12,0.7);"
+    + "padding:0.15rem 0.45rem;border-radius:6px;z-index:2;";
+  const angleInput = Object.assign(document.createElement("input"), {
+    type: "range", min: "5", max: String(LOTUS_MAX_DEG), step: "5", value: String(lotusDeg),
+  });
+  angleInput.style.width = "5.5rem";
+  const angleVal = document.createElement("span");
+  angleVal.style.cssText = "min-width:2.2em;font-variant-numeric:tabular-nums;";
+  angleVal.textContent = `${lotusDeg}°`;
+  angleCtl.append("∠", angleInput, angleVal);
+  (root || canvas.parentElement).appendChild(angleCtl);
+  angleInput.addEventListener("input", () => {
+    lotusDeg = Number(angleInput.value);
+    angleVal.textContent = `${lotusDeg}°`;
+    try { localStorage.setItem(LOTUS_STORAGE_KEY, String(lotusDeg)); } catch (_) {}
+    buildLayout();
+    reproject();
+  });
+
   async function reloadTopology() {
     const topo = await loadTopology();
     leds = topo.leds || [];
     strips = topo.strips || [];
-    bboxMin = topo.bbox_min;
-    bboxMax = topo.bbox_max;
-    const dx = bboxMax[0] - bboxMin[0];
-    const dy = bboxMax[1] - bboxMin[1];
+    const dx = topo.bbox_max[0] - topo.bbox_min[0];
+    const dy = topo.bbox_max[1] - topo.bbox_min[1];
     stripLike = Math.max(dx, dy) > STRIP_LIKE_ASPECT * Math.min(dx, dy);
-    // The page's CSS resizes the canvas box on this; the ResizeObserver then
+    buildLayout();
+    // The page's CSS resizes the canvas box on these; the ResizeObserver then
     // reprojects into the new box.
-    document.documentElement.dataset.rigLayout = stripLike ? "strip" : "star";
+    document.documentElement.dataset.rigLayout = stripLike ? "strip" : "lotus";
+    angleCtl.style.display = stripLike ? "none" : "flex";
     if (pixelCountEl) pixelCountEl.textContent = topo.pixel_count;
     reproject();
   }

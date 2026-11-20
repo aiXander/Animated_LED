@@ -95,6 +95,12 @@
       width: 26px; height: 26px; background: var(--accent);
       border: 2px solid var(--accent-strong); border-radius: 50%;
     }
+    /* The lotus angle slider (viz.js) sits on the sim: keep it small. */
+    .lotus-angle input[type="range"] { height: 20px; }
+    .lotus-angle input[type="range"]::-webkit-slider-runnable-track { height: 6px; }
+    .lotus-angle input[type="range"]::-webkit-slider-thumb {
+      width: 16px; height: 16px; margin-top: -6px; }
+    .lotus-angle input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; }
 
     .tabnums { font-variant-numeric: tabular-nums; }
     .pill {
@@ -153,9 +159,11 @@
       border-bottom: 1px solid var(--line);
       height: 17vh; min-height: 120px;
     }
-    /* A star (viz.js sets data-rig-layout from /topology) is drawn to scale,
-       so it gets a near-square box instead of the strip's short band. */
-    :root[data-rig-layout="star"] #sim { height: min(80vw, 36vh); }
+    /* The hub rig's lotus view (viz.js sets data-rig-layout and the lotus's
+       width:height, --rig-aspect) gets a box of its own shape across the full
+       width, never over 36vh: a flat fan costs little height. */
+    :root[data-rig-layout="lotus"] #sim {
+      height: max(120px, min(calc(100vw / var(--rig-aspect, 1.2)), 36vh)); }
     #canvas { display: block; width: 100%; height: 100%; }
     #cal-banner {
       position: absolute; top: 0.4rem; left: 0.5rem;

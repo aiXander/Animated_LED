@@ -202,14 +202,17 @@
     #col-viz { display: flex; flex-direction: column; min-width: 0; min-height: 0;
                border-bottom: 1px solid var(--line); background: var(--bg);
                height: 22vh; }
-    /* A star (viz.js sets data-rig-layout from /topology) is drawn to scale,
-       so it needs height, in a near-square box centred in the column. */
-    :root[data-rig-layout="star"] #col-viz { height: 40vh; align-items: center;
-                                             position: relative; }
-    /* position: static hands the audio HUD and the calibration banner to
-       #col-viz, so they stay in the column's corners, off the star. */
-    :root[data-rig-layout="star"] #viz { aspect-ratio: 1.2; max-width: 100%;
-                                         position: static; }
+    /* The hub rig's lotus view (viz.js sets data-rig-layout and the lotus's
+       width:height, --rig-aspect, from /topology and the angle slider) gets
+       a box of its own shape centred in the column, as tall as the column's
+       width allows and never over 40vh: a flat fan costs little height. */
+    :root[data-rig-layout="lotus"] #col-viz {
+      height: min(40vh, calc((100vw - 1.4rem) / var(--rig-aspect, 1.2) + 0.4rem));
+      align-items: center; position: relative; }
+    /* position: static hands the audio HUD, the calibration banner and the
+       angle slider to #col-viz, so they sit in the column's corners. */
+    :root[data-rig-layout="lotus"] #viz { aspect-ratio: var(--rig-aspect, 1.2);
+                                          max-width: 100%; position: static; }
     #viz { position: relative; flex: 1 1 auto; min-height: 0;
            padding: 0 0.7rem 0.4rem; }
     #canvas { display: block; width: 100%; height: 100%; }
