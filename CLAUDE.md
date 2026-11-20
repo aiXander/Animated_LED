@@ -478,7 +478,10 @@ phone-controllable smart plug for a remote power-cycle.
 is not reconfigured per layout. In ledctl each strip is one leg, `reversed: false`, logical
 pixel 0 at the hub: `leg_1` at `pixel_offset` 0, `leg_2` at 450, `leg_3` at 900, `leg_4` at 1350.
 The dev config enables all four; `config.pi.yaml` comments out `leg_3` (output 3 is not wired
-on site; a strip on an output ledctl does not drive keeps showing WLED's own preset). The
+on site; a strip on an output ledctl does not drive keeps showing WLED's own preset). **The
+target setup for the gig is four legs:** wire output 3, uncomment `leg_3`, restart ledctl. No
+effect needs rewriting: every library effect reads `ctx.rig.n_legs` / `ctx.frames.leg`, and
+`tests/test_examples.py` renders each one on three and four legs. The
 four `angle_deg` values (90/180/270/0) are **placeholders, not yet
 calibrated against a real floor**: which physical leg each pixel range is has to be found on
 site with `/calibration/solo` (runbook in `docs/reference/rig-geometry.md`).

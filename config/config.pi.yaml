@@ -37,7 +37,8 @@ strips:
   pixel_count: 450
   leds_per_meter: 30.0
   geometry: {type: spoke, angle_deg: 180}
-# leg_3 (output 3) is not wired on site: uncomment to re-enable it.
+# leg_3 (output 3) is not wired on site yet. The target for the gig is all four
+# legs: once output 3 is wired, uncomment this block and restart ledctl.
 # - id: leg_3
 #   controller: gledopto_main
 #   output: 3
