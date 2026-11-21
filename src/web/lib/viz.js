@@ -32,9 +32,9 @@ const STRIP_LIKE_ASPECT = 6;
 const STRIP_THICKNESS_FRAC = 0.53;
 // Lotus view: leg thickness as a fraction of the canvas's short side, clamped
 // (CSS px). The legs are 1D lines; anything fat reads as a band with width.
-const LOTUS_THICKNESS_FRAC = 0.012;
-const LOTUS_THICKNESS_MIN = 3;
-const LOTUS_THICKNESS_MAX = 7;
+const LOTUS_THICKNESS_FRAC = 0.0156;
+const LOTUS_THICKNESS_MIN = 3.9;
+const LOTUS_THICKNESS_MAX = 9.1;
 const HOVER_DOT = 8;
 // Side of the ring drawn round a calibration-lit LED (CSS px). In the lotus one
 // LED is about one device px long, too small to find without it.
@@ -193,7 +193,7 @@ export function bindViz({
       sy = Math.max(1, canvasH - 2 * padY) / (dy || 1);
     } else {
       thickCss = Math.min(LOTUS_THICKNESS_MAX, Math.max(LOTUS_THICKNESS_MIN,
-        Math.round(Math.min(canvasW, canvasH) * LOTUS_THICKNESS_FRAC)));
+        Math.min(canvasW, canvasH) * LOTUS_THICKNESS_FRAC));
       padX = canvasW * HORIZONTAL_MARGIN_FRAC + thickCss / 2;
       padY = canvasH * VERTICAL_MARGIN_FRAC + thickCss / 2;
       sx = sy = Math.min(

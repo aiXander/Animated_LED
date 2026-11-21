@@ -3,7 +3,7 @@ summary: Each beat sends a soft ring out from the hub, the same distance on ever
   leg; rings widen and fade, and a quiet one leaves by itself in silence.
 source: agent
 created_at: 1794853542.926852
-updated_at: 1794854186.786551
+updated_at: 1795260719.7498748
 params:
 - key: palette
   label: Palette
@@ -60,10 +60,10 @@ params:
   step: 0.01
   default: 0.13
 param_values:
-  palette: sunset
+  palette: lava
   speed: 0.22
-  width: 0.04
+  width: 0.15
   reach: 1.1
-  brightness: 0.6
+  brightness: 1.0
   idle_gap: 4.0
   colour_step: 0.13
